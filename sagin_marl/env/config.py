@@ -219,6 +219,8 @@ class SaginConfig:
     dist_reward_scale: float = 0.0
     queue_penalty_mode: str = "quadratic"  # "quadratic", "linear", or "log"
     queue_log_k: float = 0.0
+    queue_norm_K: float = 1.0
+    queue_norm_arrival_floor: float = 0.0
     queue_topk_k: int = 0
     queue_topk_local: bool = False
     queue_delta_use_active: bool = False

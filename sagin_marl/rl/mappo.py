@@ -253,6 +253,8 @@ def train(
         "r_dist",
         "r_dist_delta",
         "r_energy",
+        "r_collision_penalty",
+        "r_battery_penalty",
         "r_fail_penalty",
         "r_term_service",
         "r_term_drop",
@@ -275,6 +277,9 @@ def train(
         "drop_sum",
         "queue_total",
         "queue_total_active",
+        "q_norm_active",
+        "prev_q_norm_active",
+        "q_norm_delta",
         "arrival_rate_eff",
         "gu_queue_mean",
         "uav_queue_mean",
@@ -425,6 +430,8 @@ def train(
         r_dist_sum = 0.0
         r_dist_delta_sum = 0.0
         r_energy_sum = 0.0
+        r_collision_penalty_sum = 0.0
+        r_battery_penalty_sum = 0.0
         r_fail_penalty_sum = 0.0
         r_term_service_sum = 0.0
         r_term_drop_sum = 0.0
@@ -448,6 +455,9 @@ def train(
         drop_sum_total = 0.0
         queue_total_sum = 0.0
         queue_total_active_sum = 0.0
+        q_norm_active_sum = 0.0
+        prev_q_norm_active_sum = 0.0
+        q_norm_delta_sum = 0.0
         arrival_rate_eff_sum = 0.0
 
         rollout_start = time.perf_counter()
@@ -629,6 +639,9 @@ def train(
                     drop_sum_total += float(parts.get("drop_sum", 0.0))
                     queue_total_sum += float(parts.get("queue_total", 0.0))
                     queue_total_active_sum += float(parts.get("queue_total_active", 0.0))
+                    q_norm_active_sum += float(parts.get("q_norm_active", 0.0))
+                    prev_q_norm_active_sum += float(parts.get("prev_q_norm_active", 0.0))
+                    q_norm_delta_sum += float(parts.get("q_norm_delta", 0.0))
                     arrival_rate_eff_sum += float(parts.get("arrival_rate_eff", 0.0))
                     r_queue_pen_sum += float(parts.get("queue_pen", 0.0))
                     r_queue_topk_sum += float(parts.get("queue_topk", 0.0))
@@ -641,6 +654,8 @@ def train(
                     r_dist_sum += float(parts.get("dist_reward", 0.0))
                     r_dist_delta_sum += float(parts.get("dist_delta", 0.0))
                     r_energy_sum += float(parts.get("energy_reward", 0.0))
+                    r_collision_penalty_sum += float(parts.get("collision_penalty", 0.0))
+                    r_battery_penalty_sum += float(parts.get("battery_penalty", 0.0))
                     r_fail_penalty_sum += float(parts.get("fail_penalty", 0.0))
                     r_term_service_sum += float(parts.get("term_service", 0.0))
                     r_term_drop_sum += float(parts.get("term_drop", 0.0))
@@ -905,6 +920,8 @@ def train(
             "r_dist": r_dist_sum / steps_count,
             "r_dist_delta": r_dist_delta_sum / steps_count,
             "r_energy": r_energy_sum / steps_count,
+            "r_collision_penalty": r_collision_penalty_sum / steps_count,
+            "r_battery_penalty": r_battery_penalty_sum / steps_count,
             "r_fail_penalty": r_fail_penalty_sum / steps_count,
             "r_term_service": r_term_service_sum / steps_count,
             "r_term_drop": r_term_drop_sum / steps_count,
@@ -927,6 +944,9 @@ def train(
             "drop_sum": drop_sum_total / steps_count,
             "queue_total": queue_total_sum / steps_count,
             "queue_total_active": queue_total_active_sum / steps_count,
+            "q_norm_active": q_norm_active_sum / steps_count,
+            "prev_q_norm_active": prev_q_norm_active_sum / steps_count,
+            "q_norm_delta": q_norm_delta_sum / steps_count,
             "arrival_rate_eff": arrival_rate_eff_sum / steps_count,
             "gu_queue_mean": gu_queue_sum / steps_count,
             "uav_queue_mean": uav_queue_sum / steps_count,

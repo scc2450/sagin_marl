@@ -54,6 +54,8 @@ class MetricLogger:
                     "Multiline",
                     [
                         "r_queue_pen",
+                        "r_collision_penalty",
+                        "r_battery_penalty",
                         "r_fail_penalty",
                     ],
                 ],
@@ -95,6 +97,7 @@ class MetricLogger:
             "Training/Queues": {
                 "QueueMean": ["Multiline", ["gu_queue_mean", "uav_queue_mean", "sat_queue_mean"]],
                 "QueueMax": ["Multiline", ["gu_queue_max", "uav_queue_max", "sat_queue_max"]],
+                "QueueNorm": ["Multiline", ["q_norm_active", "prev_q_norm_active", "q_norm_delta"]],
             },
             "Training/Drops": {
                 "Drops": ["Multiline", ["drop_sum", "gu_drop_sum", "uav_drop_sum"]],

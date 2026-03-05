@@ -23,3 +23,5 @@ def test_smoke_train(tmp_path):
     assert "reward_clip_frac" in header
     assert "drop_sum" in header
     assert "r_term_accel" in header
+    assert "r_collision_penalty" in header
+    assert "r_battery_penalty" in header

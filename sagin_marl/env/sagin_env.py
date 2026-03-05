@@ -73,6 +73,19 @@ class SaginParallelEnv(ParallelEnv):
             centroid_reward = float(np.mean(np.exp(-dists / scale))) if dists.size else 0.0
         return centroid_reward, centroid_dist_mean
 
+    def _queue_arrival_scale(self, arrival_sum: float) -> float:
+        cfg = self.cfg
+        queue_norm_k = max(float(getattr(cfg, "queue_norm_K", 1.0) or 1.0), 1e-9)
+        arrival_floor = float(getattr(cfg, "queue_norm_arrival_floor", 0.0) or 0.0)
+        if arrival_floor <= 0.0:
+            arrival_floor = (
+                float(getattr(self, "effective_task_arrival_rate", cfg.task_arrival_rate))
+                * float(cfg.num_gu)
+                * float(cfg.tau0)
+            )
+        arrival_ref = max(float(arrival_sum), arrival_floor, 1e-9)
+        return queue_norm_k * arrival_ref
+
     def _traffic_level_ratio(self) -> float:
         cfg = self.cfg
         raw_level = getattr(cfg, "traffic_level", 2)
@@ -205,6 +218,13 @@ class SaginParallelEnv(ParallelEnv):
             self.sat_queue = np.full((cfg.num_sat,), cfg.queue_max_sat * init_sat_frac, dtype=np.float32)
         self.prev_queue_sum = 0.0
         self.prev_queue_sum_active = 0.0
+        arrival_ref = (
+            float(getattr(self, "effective_task_arrival_rate", cfg.task_arrival_rate))
+            * float(cfg.num_gu)
+            * float(cfg.tau0)
+        )
+        self.prev_arrival_sum = max(arrival_ref, 1e-9)
+        self.prev_q_norm_active = 0.0
         self.prev_centroid_dist_mean = self._compute_centroid_stats()[1]
         self.prev_d_min = 0.0
         self.last_gu_outflow = np.zeros((cfg.num_gu,), dtype=np.float32)
@@ -232,6 +252,9 @@ class SaginParallelEnv(ParallelEnv):
             "queue_topk": 0.0,
             "assoc_ratio": 0.0,
             "queue_delta": 0.0,
+            "q_norm_active": 0.0,
+            "prev_q_norm_active": 0.0,
+            "q_norm_delta": 0.0,
             "centroid_eta": 0.0,
             "centroid_reward": 0.0,
             "centroid_dist_mean": 0.0,
@@ -240,6 +263,8 @@ class SaginParallelEnv(ParallelEnv):
             "dist_reward": 0.0,
             "dist_delta": 0.0,
             "energy_reward": 0.0,
+            "collision_penalty": 0.0,
+            "battery_penalty": 0.0,
             "fail_penalty": 0.0,
             "term_service": 0.0,
             "term_drop": 0.0,
@@ -303,6 +328,8 @@ class SaginParallelEnv(ParallelEnv):
             np.sum(self.gu_queue) + np.sum(self.uav_queue) + np.sum(self.sat_queue)
         )
         self.prev_queue_sum_active = float(np.sum(self.gu_queue) + np.sum(self.uav_queue))
+        prev_scale = self._queue_arrival_scale(float(getattr(self, "prev_arrival_sum", 0.0)))
+        self.prev_q_norm_active = float(np.clip(self.prev_queue_sum_active / prev_scale, 0.0, 1.0))
         self.prev_centroid_dist_mean = self._compute_centroid_stats()[1]
         if cfg.num_gu > 0:
             d2d = np.linalg.norm(self.gu_pos - self.uav_pos[:, None, :], axis=2)
@@ -871,32 +898,6 @@ class SaginParallelEnv(ParallelEnv):
         q_uav_norm = q_uav / q_uav_max
         q_sat_norm = q_sat / q_sat_max
         q_total_active = q_gu + q_uav
-        q_max_active = max(q_gu_max + q_uav_max, 1e-9)
-
-        def _queue_smooth(q_norm: float) -> float:
-            q_norm = float(np.clip(q_norm, 0.0, 1.0))
-            if use_queue_log_smoothing or queue_penalty_mode == "log":
-                k = float(getattr(cfg, "queue_log_k", 0.0) or 0.0)
-                if k > 0:
-                    return math.log1p(k * q_norm) / math.log1p(k)
-                return q_norm
-            if queue_penalty_mode == "linear":
-                return q_norm
-            # Default to quadratic queue penalty to amplify congestion gradients near full queues.
-            return q_norm * q_norm
-
-        queue_gu = _queue_smooth(q_gu_norm)
-        queue_uav = _queue_smooth(q_uav_norm)
-        queue_sat = _queue_smooth(q_sat_norm)
-        w_gu = float(getattr(cfg, "omega_q_gu", 0.0) or 0.0)
-        w_uav = float(getattr(cfg, "omega_q_uav", 0.0) or 0.0)
-        w_sat = float(getattr(cfg, "omega_q_sat", 0.0) or 0.0)
-        w_sum = abs(w_gu) + abs(w_uav) + abs(w_sat)
-        if w_sum < 1e-9:
-            q_ref = (q_total_active / q_max_active) if use_active_queue_delta else (q_total / q_max_total)
-            queue_term = _queue_smooth(q_ref)
-        else:
-            queue_term = (w_gu * queue_gu + w_uav * queue_uav + w_sat * queue_sat) / w_sum
 
         arrival_sum = float(np.sum(self.last_gu_arrival))
         outflow_sum = float(np.sum(self.last_gu_outflow))
@@ -919,16 +920,48 @@ class SaginParallelEnv(ParallelEnv):
         throughput_access_norm = outflow_sum / arrival_scale
         throughput_backhaul_norm = backhaul_sum / arrival_scale
 
+        queue_norm_scale = self._queue_arrival_scale(arrival_sum)
+        q_norm_active = float(np.clip(q_total_active / queue_norm_scale, 0.0, 1.0))
+        prev_q_norm_active = float(getattr(self, "prev_q_norm_active", q_norm_active))
+        q_norm_delta = float(prev_q_norm_active - q_norm_active)
+
+        def _queue_smooth(q_norm: float) -> float:
+            q_norm = float(np.clip(q_norm, 0.0, 1.0))
+            if use_queue_log_smoothing or queue_penalty_mode == "log":
+                k = float(getattr(cfg, "queue_log_k", 0.0) or 0.0)
+                if k > 0:
+                    return math.log1p(k * q_norm) / math.log1p(k)
+                return q_norm
+            if queue_penalty_mode == "linear":
+                return q_norm
+            # Default to quadratic queue penalty to amplify congestion gradients near full queues.
+            return q_norm * q_norm
+
         if use_active_queue_delta:
-            prev_sum = float(getattr(self, "prev_queue_sum_active", self.prev_queue_sum))
-            cur_sum = q_total_active
-            q_delta_den = q_max_active
+            # Active queue (GU+UAV) is normalized by arrival scale for both
+            # absolute penalty and delta reward to keep one consistent gradient scale.
+            queue_gu = q_gu_norm
+            queue_uav = q_uav_norm
+            queue_sat = q_sat_norm
+            queue_term = q_norm_active
+            queue_delta = float(np.clip(q_norm_delta, -1.0, 1.0))
         else:
+            queue_gu = _queue_smooth(q_gu_norm)
+            queue_uav = _queue_smooth(q_uav_norm)
+            queue_sat = _queue_smooth(q_sat_norm)
+            w_gu = float(getattr(cfg, "omega_q_gu", 0.0) or 0.0)
+            w_uav = float(getattr(cfg, "omega_q_uav", 0.0) or 0.0)
+            w_sat = float(getattr(cfg, "omega_q_sat", 0.0) or 0.0)
+            w_sum = abs(w_gu) + abs(w_uav) + abs(w_sat)
+            if w_sum < 1e-9:
+                queue_term = _queue_smooth(q_total / q_max_total)
+            else:
+                queue_term = (w_gu * queue_gu + w_uav * queue_uav + w_sat * queue_sat) / w_sum
             prev_sum = self.prev_queue_sum
             cur_sum = q_total
             q_delta_den = q_max_total
-        queue_delta = (prev_sum - cur_sum) / max(q_delta_den, 1e-9)
-        queue_delta = float(np.clip(queue_delta, -1.0, 1.0))
+            queue_delta = (prev_sum - cur_sum) / max(q_delta_den, 1e-9)
+            queue_delta = float(np.clip(queue_delta, -1.0, 1.0))
 
         if cfg.a_max > 0:
             accel_norm2 = float(np.mean(np.sum(self.last_exec_accel**2, axis=1))) / (cfg.a_max**2 + 1e-9)
@@ -965,11 +998,9 @@ class SaginParallelEnv(ParallelEnv):
             + term_energy
         )
 
-        fail_penalty = 0.0
-        if self._check_collision():
-            fail_penalty -= cfg.eta_crash
-        if cfg.energy_enabled and np.any(self.uav_energy <= 0.0):
-            fail_penalty -= cfg.eta_batt
+        collision_penalty = -cfg.eta_crash if self._check_collision() else 0.0
+        battery_penalty = -cfg.eta_batt if (cfg.energy_enabled and np.any(self.uav_energy <= 0.0)) else 0.0
+        fail_penalty = collision_penalty + battery_penalty
 
         reward = raw_reward
         if use_reward_tanh:
@@ -985,6 +1016,8 @@ class SaginParallelEnv(ParallelEnv):
         term_dist_delta = 0.0
         term_bw_align = 0.0
         term_sat_score = 0.0
+        self.prev_arrival_sum = arrival_sum
+        self.prev_q_norm_active = q_norm_active
 
         self.last_reward_parts = {
             "service_ratio": service_ratio,
@@ -1007,6 +1040,9 @@ class SaginParallelEnv(ParallelEnv):
             "queue_total_active": q_total_active,
             "assoc_ratio": assoc_ratio,
             "queue_delta": queue_delta,
+            "q_norm_active": q_norm_active,
+            "prev_q_norm_active": prev_q_norm_active,
+            "q_norm_delta": q_norm_delta,
             "centroid_eta": centroid_eta,
             "dist_reward": dist_reward,
             "dist_delta": dist_delta,
@@ -1015,6 +1051,8 @@ class SaginParallelEnv(ParallelEnv):
             "bw_align": bw_align,
             "sat_score": sat_score,
             "energy_reward": float(r_energy),
+            "collision_penalty": collision_penalty,
+            "battery_penalty": battery_penalty,
             "fail_penalty": fail_penalty,
             "arrival_rate_eff": float(getattr(self, "last_arrival_rate", cfg.task_arrival_rate)),
             "term_service": term_service,

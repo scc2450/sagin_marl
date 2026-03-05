@@ -18,8 +18,9 @@ def _fmt(x: float) -> str:
     return f"{x:,.3g}"
 
 
-def _estimate_once(env: SaginParallelEnv, cfg, seed: int) -> tuple[float, float, int, int, int]:
+def _estimate_once(env: SaginParallelEnv, cfg, seed: int) -> tuple[float, float, float, int, int, int]:
     env.reset(seed=seed)
+    effective_arrival_rate = float(getattr(env, "effective_task_arrival_rate", cfg.task_arrival_rate))
     assoc = env._associate_users()
     candidates = env._build_candidate_users(assoc)
 
@@ -44,7 +45,8 @@ def _estimate_once(env: SaginParallelEnv, cfg, seed: int) -> tuple[float, float,
     active_sats = {l for sels in sat_selection for l in sels}
     active_sat_count = len(active_sats)
     link_count = int(sum(len(sels) for sels in sat_selection))
-    return access_cap, backhaul_cap, assoc_count, active_sat_count, link_count
+    arrival_effective = cfg.num_gu * effective_arrival_rate * cfg.tau0
+    return arrival_effective, access_cap, backhaul_cap, assoc_count, active_sat_count, link_count
 
 
 def main() -> None:
@@ -69,33 +71,40 @@ def main() -> None:
             cfg.sat_select_mode = args.sat_mode
     env = SaginParallelEnv(cfg)
 
+    arrival_effective_vals = []
     access_caps = []
     backhaul_caps = []
     assoc_counts = []
     active_sats = []
     link_counts = []
     for i in range(max(1, args.samples)):
-        access_cap, backhaul_cap, assoc_count, active_sat_count, link_count = _estimate_once(env, cfg, cfg.seed + i)
+        arrival_effective, access_cap, backhaul_cap, assoc_count, active_sat_count, link_count = _estimate_once(
+            env, cfg, cfg.seed + i
+        )
+        arrival_effective_vals.append(arrival_effective)
         access_caps.append(access_cap)
         backhaul_caps.append(backhaul_cap)
         assoc_counts.append(assoc_count)
         active_sats.append(active_sat_count)
         link_counts.append(link_count)
 
+    arrival_raw = cfg.num_gu * cfg.task_arrival_rate * cfg.tau0
+    arrival_effective = float(np.mean(arrival_effective_vals))
     access_cap = float(np.mean(access_caps))
     backhaul_cap = float(np.mean(backhaul_caps))
     assoc_count = float(np.mean(assoc_counts))
     active_sat = float(np.mean(active_sats))
     link_count = float(np.mean(link_counts))
 
-    arrival_per_slot = cfg.num_gu * cfg.task_arrival_rate
     compute_cap = cfg.num_sat * (cfg.sat_cpu_freq / cfg.task_cycles_per_bit) * cfg.tau0
     compute_cap_eff = active_sat * (cfg.sat_cpu_freq / cfg.task_cycles_per_bit) * cfg.tau0
     bottleneck = min(access_cap, backhaul_cap, compute_cap_eff)
-    util = float("inf") if bottleneck <= 0 else arrival_per_slot / bottleneck
+    util_raw = float("inf") if bottleneck <= 0 else arrival_raw / bottleneck
+    util_effective = float("inf") if bottleneck <= 0 else arrival_effective / bottleneck
 
     print("Throughput sanity check (bits/slot)")
-    print(f"- Arrival:      {_fmt(arrival_per_slot)} (num_gu * task_arrival_rate)")
+    print(f"- Arrival raw:  {_fmt(arrival_raw)} (num_gu * task_arrival_rate * tau0)")
+    print(f"- Arrival eff:  {_fmt(arrival_effective)} (effective_task_arrival_rate from env reset)")
     print(f"- Access cap:   {_fmt(access_cap)} (avg over {len(access_caps)} samples)")
     print(f"- Backhaul cap: {_fmt(backhaul_cap)} (avg over {len(backhaul_caps)} samples)")
     print(f"- Compute cap:  {_fmt(compute_cap)} (theoretical, all sats)")
@@ -110,10 +119,11 @@ def main() -> None:
         print("! Bottleneck is zero. Check pathloss threshold or visibility settings.")
         return
 
-    print(f"- Utilization:  {_fmt(util)} (arrival / bottleneck)")
-    if util < 0.4:
+    print(f"- Util raw:     {_fmt(util_raw)} (arrival_raw / bottleneck)")
+    print(f"- Util eff:     {_fmt(util_effective)} (arrival_effective / bottleneck)")
+    if util_effective < 0.4:
         print("Assessment: underloaded (queues likely near zero).")
-    elif util > 1.5:
+    elif util_effective > 1.5:
         print("Assessment: overloaded (queues likely grow).")
     else:
         print("Assessment: balanced (queues should show dynamics).")

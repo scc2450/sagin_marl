@@ -19,7 +19,7 @@
 
 ### 1.2 奖励拆解（比率项与分项）
 - 比率/中间项:  
-`r_service_ratio`, `r_drop_ratio`, `r_assoc_ratio`, `r_queue_pen`, `r_queue_topk`, `r_queue_delta`, `r_centroid`, `centroid_dist_mean`, `r_bw_align`, `r_sat_score`, `r_dist`, `r_dist_delta`, `r_energy`, `r_fail_penalty`。
+`r_service_ratio`, `r_drop_ratio`, `r_assoc_ratio`, `r_queue_pen`, `r_queue_topk`, `r_queue_delta`, `r_centroid`, `centroid_dist_mean`, `r_bw_align`, `r_sat_score`, `r_dist`, `r_dist_delta`, `r_energy`, `r_collision_penalty`, `r_battery_penalty`, `r_fail_penalty`。
 - 最终奖励各项（`term_*`）:  
 `r_term_service`, `r_term_drop`, `r_term_queue`, `r_term_topk`, `r_term_assoc`, `r_term_q_delta`, `r_term_dist`, `r_term_dist_delta`, `r_term_centroid`, `r_term_bw_align`, `r_term_sat_score`, `r_term_energy`, `r_term_accel`。
 - 归一化流量/队列项:  
@@ -43,6 +43,8 @@
 ## 3. 常见“为 0 / 不变化”解释
 
 - `energy_mean`, `r_energy`, `r_term_energy`: `energy_enabled=false` 时为 0。
+- `r_collision_penalty`: 仅发生碰撞时为负值，未碰撞时为 0。
+- `r_battery_penalty`: 仅能量耗尽时为负值，`energy_enabled=false` 时恒为 0。
 - `r_term_service`: `eta_service=0` 时为 0（即使 `service_norm` 非零）。
 - `r_term_assoc`: 当前奖励实现中未启用，固定 0。
 - `r_term_bw_align`: `eta_bw_align=0` 时为 0（`r_bw_align` 可能仍有值）。
