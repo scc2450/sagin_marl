@@ -52,6 +52,12 @@ class SaginParallelEnv(ParallelEnv):
         self.traffic_level = int(2 if raw_level is None else raw_level)
         self.traffic_level_ratio = 1.0
         self._set_effective_task_arrival_rate()
+        self.avoidance_eta_eff = float(cfg.avoidance_eta)
+        self.avoidance_collision_rate_ema = 0.0
+        self.prev_episode_collision_rate = 0.0
+        self.last_avoidance_eta_exec = float(cfg.avoidance_eta)
+        self._episode_collision_count = 0
+        self._episode_step_count = 0
         self._init_state()
 
     def _compute_centroid_stats(self) -> Tuple[float, float]:
@@ -85,6 +91,56 @@ class SaginParallelEnv(ParallelEnv):
             )
         arrival_ref = max(float(arrival_sum), arrival_floor, 1e-9)
         return queue_norm_k * arrival_ref
+
+    def _centroid_anneal_state(self) -> Tuple[float, float, float]:
+        cfg = self.cfg
+        eta_start = float(getattr(cfg, "eta_centroid", 0.0) or 0.0)
+        eta_final_cfg = getattr(cfg, "eta_centroid_final", None)
+        eta_current = eta_start
+        decay_steps = int(getattr(cfg, "eta_centroid_decay_steps", 0) or 0)
+        if eta_final_cfg is not None and decay_steps > 0:
+            progress = min(1.0, float(self.global_step) / float(max(decay_steps, 1)))
+            eta_final = float(eta_final_cfg)
+            eta_current = eta_start + (eta_final - eta_start) * progress
+        decayed = max(eta_start - eta_current, 0.0)
+        if eta_start > 1e-9:
+            transfer_ratio = float(np.clip(decayed / eta_start, 0.0, 1.0))
+        else:
+            transfer_ratio = 0.0
+        return eta_start, eta_current, transfer_ratio
+
+    def _update_adaptive_avoidance_after_episode(self) -> None:
+        cfg = self.cfg
+        adaptive_enabled = bool(getattr(cfg, "avoidance_adaptive_enabled", False))
+        eta_min = max(float(getattr(cfg, "avoidance_eta_min", 0.0) or 0.0), 0.0)
+        eta_max_cfg = getattr(cfg, "avoidance_eta_max", None)
+        eta_max = float(cfg.a_max) if eta_max_cfg is None else float(eta_max_cfg)
+        eta_max = max(eta_min, eta_max)
+
+        if not adaptive_enabled:
+            self.avoidance_eta_eff = float(np.clip(float(cfg.avoidance_eta), eta_min, eta_max))
+            return
+
+        prev_steps = int(getattr(self, "_episode_step_count", 0))
+        prev_collisions = int(getattr(self, "_episode_collision_count", 0))
+        if prev_steps > 0:
+            prev_rate = float(prev_collisions) / float(prev_steps)
+            self.prev_episode_collision_rate = prev_rate
+            beta = float(getattr(cfg, "avoidance_adaptive_ema_beta", 0.9) or 0.9)
+            beta = float(np.clip(beta, 0.0, 0.9999))
+            self.avoidance_collision_rate_ema = (
+                beta * float(getattr(self, "avoidance_collision_rate_ema", 0.0))
+                + (1.0 - beta) * prev_rate
+            )
+            target = float(getattr(cfg, "avoidance_collision_target", 0.05) or 0.05)
+            gain = float(getattr(cfg, "avoidance_adaptive_gain", 1.0) or 1.0)
+            eta_cur = float(getattr(self, "avoidance_eta_eff", cfg.avoidance_eta))
+            eta_next = eta_cur + gain * (self.avoidance_collision_rate_ema - target) * float(cfg.a_max)
+            self.avoidance_eta_eff = float(np.clip(eta_next, eta_min, eta_max))
+        else:
+            self.avoidance_eta_eff = float(
+                np.clip(float(getattr(self, "avoidance_eta_eff", cfg.avoidance_eta)), eta_min, eta_max)
+            )
 
     def _traffic_level_ratio(self) -> float:
         cfg = self.cfg
@@ -189,6 +245,8 @@ class SaginParallelEnv(ParallelEnv):
     def _init_state(self) -> None:
         cfg = self.cfg
         self.t = 0
+        self._episode_collision_count = 0
+        self._episode_step_count = 0
         self.gu_pos = thomas_cluster_process(
             cfg.num_gu,
             cfg.map_size,
@@ -255,6 +313,12 @@ class SaginParallelEnv(ParallelEnv):
             "q_norm_active": 0.0,
             "prev_q_norm_active": 0.0,
             "q_norm_delta": 0.0,
+            "q_norm_tail_q0": 0.0,
+            "q_norm_tail_excess": 0.0,
+            "queue_weight": 0.0,
+            "q_delta_weight": 0.0,
+            "crash_weight": 0.0,
+            "centroid_transfer_ratio": 0.0,
             "centroid_eta": 0.0,
             "centroid_reward": 0.0,
             "centroid_dist_mean": 0.0,
@@ -263,9 +327,14 @@ class SaginParallelEnv(ParallelEnv):
             "dist_reward": 0.0,
             "dist_delta": 0.0,
             "energy_reward": 0.0,
+            "collision_event": 0.0,
             "collision_penalty": 0.0,
             "battery_penalty": 0.0,
             "fail_penalty": 0.0,
+            "avoidance_eta_eff": float(getattr(self, "avoidance_eta_eff", cfg.avoidance_eta)),
+            "avoidance_eta_exec": float(getattr(self, "last_avoidance_eta_exec", cfg.avoidance_eta)),
+            "avoidance_collision_rate_ema": float(getattr(self, "avoidance_collision_rate_ema", 0.0)),
+            "avoidance_prev_episode_collision_rate": float(getattr(self, "prev_episode_collision_rate", 0.0)),
             "term_service": 0.0,
             "term_drop": 0.0,
             "term_drop_step": 0.0,
@@ -292,6 +361,7 @@ class SaginParallelEnv(ParallelEnv):
     def reset(self, seed=None, options=None):
         if seed is not None:
             self.rng = np.random.default_rng(seed)
+        self._update_adaptive_avoidance_after_episode()
         self.episode_idx = int(getattr(self, "episode_idx", 0)) + 1
         self._set_effective_task_arrival_rate()
         self._init_state()
@@ -368,7 +438,12 @@ class SaginParallelEnv(ParallelEnv):
 
         # Rewards and done
         reward = self._compute_reward()
-        collision = self._check_collision()
+        collision = bool(getattr(self, "last_reward_parts", {}).get("collision_event", 0.0) > 0.5)
+        if not collision:
+            collision = self._check_collision()
+        self._episode_step_count = int(getattr(self, "_episode_step_count", 0)) + 1
+        if collision:
+            self._episode_collision_count = int(getattr(self, "_episode_collision_count", 0)) + 1
         energy_depleted = cfg.energy_enabled and np.any(self.uav_energy <= 0.0)
         terminated = collision or energy_depleted
         truncated = self.t >= (cfg.T_steps - 1)
@@ -398,6 +473,19 @@ class SaginParallelEnv(ParallelEnv):
             default=False,
         )
         d_alert = cfg.avoidance_alert_factor * cfg.d_safe if use_avoidance else 0.0
+        repulse_mode = str(getattr(cfg, "avoidance_repulse_mode", "inverse") or "inverse").strip().lower()
+        eta_avoid = float(getattr(self, "avoidance_eta_eff", cfg.avoidance_eta))
+        _, _, centroid_transfer_ratio = self._centroid_anneal_state()
+        cross_enabled = bool(getattr(cfg, "centroid_cross_anneal_enabled", False))
+        if cross_enabled:
+            avoid_gain = float(getattr(cfg, "centroid_cross_avoidance_gain", 0.0) or 0.0)
+            eta_avoid = eta_avoid * max(0.0, 1.0 + avoid_gain * centroid_transfer_ratio)
+            eta_min = max(float(getattr(cfg, "avoidance_eta_min", 0.0) or 0.0), 0.0)
+            eta_max_cfg = getattr(cfg, "avoidance_eta_max", None)
+            eta_max = float(cfg.a_max) if eta_max_cfg is None else float(eta_max_cfg)
+            eta_max = max(eta_min, eta_max)
+            eta_avoid = float(np.clip(eta_avoid, eta_min, eta_max))
+        self.last_avoidance_eta_exec = float(eta_avoid)
         for i, agent in enumerate(self.agents):
             a = np.array(actions[agent]["accel"], dtype=np.float32)
             a = np.clip(a, -1.0, 1.0) * cfg.a_max
@@ -409,7 +497,19 @@ class SaginParallelEnv(ParallelEnv):
                     diff = self.uav_pos[i] - self.uav_pos[j]
                     dist = float(np.linalg.norm(diff))
                     if dist < d_alert and dist > 1e-6:
-                        a_rep += cfg.avoidance_eta * (1.0 / dist - 1.0 / d_alert) * (diff / dist)
+                        direction = diff / dist
+                        if repulse_mode == "linear":
+                            denom = max(d_alert - cfg.d_safe, 1e-6)
+                            strength = float(np.clip((d_alert - dist) / denom, 0.0, 1.0))
+                        elif repulse_mode == "quadratic":
+                            denom = max(d_alert - cfg.d_safe, 1e-6)
+                            base = float(np.clip((d_alert - dist) / denom, 0.0, 1.0))
+                            strength = base * base
+                        else:
+                            strength = (1.0 / dist - 1.0 / d_alert)
+                        a_rep += eta_avoid * strength * direction
+                if bool(getattr(cfg, "avoidance_repulse_clip", True)):
+                    a_rep = np.clip(a_rep, -cfg.a_max, cfg.a_max)
             if cfg.energy_enabled and use_energy_safety:
                 v_next = self.uav_vel[i] + a * cfg.tau0
                 speed_next = float(np.linalg.norm(v_next))
@@ -924,6 +1024,11 @@ class SaginParallelEnv(ParallelEnv):
         q_norm_active = float(np.clip(q_total_active / queue_norm_scale, 0.0, 1.0))
         prev_q_norm_active = float(getattr(self, "prev_q_norm_active", q_norm_active))
         q_norm_delta = float(prev_q_norm_active - q_norm_active)
+        q_norm_tail_q0 = max(float(getattr(cfg, "q_norm_tail_q0", 0.0) or 0.0), 0.0)
+        q_norm_tail_excess = 0.0
+        queue_weight = float(cfg.omega_q)
+        q_delta_weight = float(cfg.eta_q_delta)
+        crash_weight = float(cfg.eta_crash)
 
         def _queue_smooth(q_norm: float) -> float:
             q_norm = float(np.clip(q_norm, 0.0, 1.0))
@@ -943,7 +1048,13 @@ class SaginParallelEnv(ParallelEnv):
             queue_gu = q_gu_norm
             queue_uav = q_uav_norm
             queue_sat = q_sat_norm
-            queue_term = q_norm_active
+            if q_norm_tail_q0 > 0.0:
+                q_norm_tail_excess = max(q_norm_active - q_norm_tail_q0, 0.0)
+                queue_term = q_norm_tail_excess * q_norm_tail_excess
+            else:
+                queue_term = q_norm_active
+            omega_q_tail = getattr(cfg, "omega_q_tail", None)
+            queue_weight = float(cfg.omega_q if omega_q_tail is None else omega_q_tail)
             queue_delta = float(np.clip(q_norm_delta, -1.0, 1.0))
         else:
             queue_gu = _queue_smooth(q_gu_norm)
@@ -962,6 +1073,7 @@ class SaginParallelEnv(ParallelEnv):
             q_delta_den = q_max_total
             queue_delta = (prev_sum - cur_sum) / max(q_delta_den, 1e-9)
             queue_delta = float(np.clip(queue_delta, -1.0, 1.0))
+            queue_weight = float(cfg.omega_q)
 
         if cfg.a_max > 0:
             accel_norm2 = float(np.mean(np.sum(self.last_exec_accel**2, axis=1))) / (cfg.a_max**2 + 1e-9)
@@ -969,13 +1081,15 @@ class SaginParallelEnv(ParallelEnv):
             accel_norm2 = 0.0
 
         centroid_reward, centroid_dist_mean = self._compute_centroid_stats()
-        centroid_eta_start = float(getattr(cfg, "eta_centroid", 0.0) or 0.0)
-        centroid_eta_final = getattr(cfg, "eta_centroid_final", None)
-        centroid_eta_decay_steps = int(getattr(cfg, "eta_centroid_decay_steps", 0) or 0)
-        centroid_eta = centroid_eta_start
-        if centroid_eta_final is not None and centroid_eta_decay_steps > 0:
-            progress = min(1.0, float(self.global_step) / float(max(centroid_eta_decay_steps, 1)))
-            centroid_eta = centroid_eta_start + (float(centroid_eta_final) - centroid_eta_start) * progress
+        centroid_eta_start, centroid_eta, centroid_transfer_ratio = self._centroid_anneal_state()
+        cross_enabled = bool(getattr(cfg, "centroid_cross_anneal_enabled", False))
+        if cross_enabled:
+            queue_gain = float(getattr(cfg, "centroid_cross_queue_gain", 0.0) or 0.0)
+            q_delta_gain = float(getattr(cfg, "centroid_cross_q_delta_gain", 0.0) or 0.0)
+            crash_gain = float(getattr(cfg, "centroid_cross_crash_gain", 0.0) or 0.0)
+            queue_weight = max(0.0, queue_weight * (1.0 + queue_gain * centroid_transfer_ratio))
+            q_delta_weight = max(0.0, q_delta_weight * (1.0 + q_delta_gain * centroid_transfer_ratio))
+            crash_weight = max(0.0, crash_weight * (1.0 + crash_gain * centroid_transfer_ratio))
         dist_delta = 0.0
         queue_topk = 0.0
         bw_align = float(getattr(self, "last_bw_align", 0.0))
@@ -983,8 +1097,8 @@ class SaginParallelEnv(ParallelEnv):
         term_service = cfg.eta_service * service_norm
         term_drop_step = -float(getattr(cfg, "eta_drop_step", 0.0) or 0.0) * drop_event
         term_drop = -cfg.eta_drop * drop_norm + term_drop_step
-        term_queue = -cfg.omega_q * queue_term
-        term_q_delta = cfg.eta_q_delta * queue_delta
+        term_queue = -queue_weight * queue_term
+        term_q_delta = q_delta_weight * queue_delta
         term_centroid = centroid_eta * centroid_reward
         term_accel = -cfg.eta_accel * accel_norm2
         term_energy = cfg.omega_e * r_energy if use_energy_reward else 0.0
@@ -998,7 +1112,8 @@ class SaginParallelEnv(ParallelEnv):
             + term_energy
         )
 
-        collision_penalty = -cfg.eta_crash if self._check_collision() else 0.0
+        collision_now = self._check_collision()
+        collision_penalty = -crash_weight if collision_now else 0.0
         battery_penalty = -cfg.eta_batt if (cfg.energy_enabled and np.any(self.uav_energy <= 0.0)) else 0.0
         fail_penalty = collision_penalty + battery_penalty
 
@@ -1043,6 +1158,12 @@ class SaginParallelEnv(ParallelEnv):
             "q_norm_active": q_norm_active,
             "prev_q_norm_active": prev_q_norm_active,
             "q_norm_delta": q_norm_delta,
+            "q_norm_tail_q0": q_norm_tail_q0,
+            "q_norm_tail_excess": q_norm_tail_excess,
+            "queue_weight": queue_weight,
+            "q_delta_weight": q_delta_weight,
+            "crash_weight": crash_weight,
+            "centroid_transfer_ratio": centroid_transfer_ratio,
             "centroid_eta": centroid_eta,
             "dist_reward": dist_reward,
             "dist_delta": dist_delta,
@@ -1051,10 +1172,15 @@ class SaginParallelEnv(ParallelEnv):
             "bw_align": bw_align,
             "sat_score": sat_score,
             "energy_reward": float(r_energy),
+            "collision_event": 1.0 if collision_now else 0.0,
             "collision_penalty": collision_penalty,
             "battery_penalty": battery_penalty,
             "fail_penalty": fail_penalty,
             "arrival_rate_eff": float(getattr(self, "last_arrival_rate", cfg.task_arrival_rate)),
+            "avoidance_eta_eff": float(getattr(self, "avoidance_eta_eff", cfg.avoidance_eta)),
+            "avoidance_eta_exec": float(getattr(self, "last_avoidance_eta_exec", cfg.avoidance_eta)),
+            "avoidance_collision_rate_ema": float(getattr(self, "avoidance_collision_rate_ema", 0.0)),
+            "avoidance_prev_episode_collision_rate": float(getattr(self, "prev_episode_collision_rate", 0.0)),
             "term_service": term_service,
             "term_drop": term_drop,
             "term_drop_step": term_drop_step,

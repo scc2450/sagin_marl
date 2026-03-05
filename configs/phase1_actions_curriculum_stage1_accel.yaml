@@ -80,8 +80,16 @@ exec_teacher_actor_path: null
 exec_teacher_deterministic: true
 
 avoidance_enabled: true
-avoidance_eta: 100.0
+avoidance_eta: 3.0
 avoidance_alert_factor: 1.5
+avoidance_repulse_mode: linear
+avoidance_repulse_clip: true
+avoidance_adaptive_enabled: true
+avoidance_collision_target: 0.05
+avoidance_adaptive_gain: 1.0
+avoidance_adaptive_ema_beta: 0.9
+avoidance_eta_min: 1.0
+avoidance_eta_max: 5.0
 eta_crash: 5.0
 
 omega_q: 1.0
@@ -98,7 +106,12 @@ eta_throughput_backhaul: 0.0
 eta_accel: 0.02
 eta_centroid: 0.45
 eta_centroid_final: 0.15
-eta_centroid_decay_steps: 120000
+eta_centroid_decay_steps: 50000
+centroid_cross_anneal_enabled: true
+centroid_cross_queue_gain: 0.6
+centroid_cross_q_delta_gain: 0.5
+centroid_cross_crash_gain: 1.0
+centroid_cross_avoidance_gain: 0.8
 centroid_dist_scale: 400.0
 eta_bw_align: 0.0
 eta_sat_score: 0.0
@@ -106,6 +119,8 @@ eta_dist_delta: 0.0
 queue_penalty_mode: linear
 queue_log_k: 0.0
 queue_norm_K: 1.0
+q_norm_tail_q0: 0.005
+omega_q_tail: 10.0
 queue_delta_use_active: true
 
 input_norm_enabled: true

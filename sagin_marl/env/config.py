@@ -156,6 +156,14 @@ class SaginConfig:
     avoidance_enabled: bool = False
     avoidance_eta: float = 100.0
     avoidance_alert_factor: float = 1.5
+    avoidance_repulse_mode: str = "inverse"  # "inverse", "linear", "quadratic"
+    avoidance_repulse_clip: bool = True
+    avoidance_adaptive_enabled: bool = False
+    avoidance_collision_target: float = 0.05
+    avoidance_adaptive_gain: float = 1.0
+    avoidance_adaptive_ema_beta: float = 0.9
+    avoidance_eta_min: float = 0.0
+    avoidance_eta_max: float | None = None
 
     # Energy placeholders
     uav_energy_init: float = 1.0
@@ -211,6 +219,11 @@ class SaginConfig:
     eta_centroid: float = 0.6
     eta_centroid_final: float | None = None
     eta_centroid_decay_steps: int = 0
+    centroid_cross_anneal_enabled: bool = False
+    centroid_cross_queue_gain: float = 0.0
+    centroid_cross_q_delta_gain: float = 0.0
+    centroid_cross_crash_gain: float = 0.0
+    centroid_cross_avoidance_gain: float = 0.0
     centroid_dist_scale: float = 800.0
     eta_bw_align: float = 0.3
     eta_sat_score: float = 0.1
@@ -221,6 +234,8 @@ class SaginConfig:
     queue_log_k: float = 0.0
     queue_norm_K: float = 1.0
     queue_norm_arrival_floor: float = 0.0
+    q_norm_tail_q0: float = 0.0
+    omega_q_tail: float | None = None
     queue_topk_k: int = 0
     queue_topk_local: bool = False
     queue_delta_use_active: bool = False

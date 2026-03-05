@@ -97,10 +97,38 @@ class MetricLogger:
             "Training/Queues": {
                 "QueueMean": ["Multiline", ["gu_queue_mean", "uav_queue_mean", "sat_queue_mean"]],
                 "QueueMax": ["Multiline", ["gu_queue_max", "uav_queue_max", "sat_queue_max"]],
-                "QueueNorm": ["Multiline", ["q_norm_active", "prev_q_norm_active", "q_norm_delta"]],
+                "QueueNorm": [
+                    "Multiline",
+                    ["q_norm_active", "q_norm_active_p95", "q_norm_active_p99", "prev_q_norm_active", "q_norm_delta"],
+                ],
+                "QueueActiveTail": [
+                    "Multiline",
+                    [
+                        "queue_total_active",
+                        "queue_total_active_p95",
+                        "queue_total_active_p99",
+                        "q_norm_tail_excess",
+                        "queue_weight",
+                        "q_delta_weight",
+                    ],
+                ],
             },
             "Training/Drops": {
                 "Drops": ["Multiline", ["drop_sum", "gu_drop_sum", "uav_drop_sum"]],
+            },
+            "Training/Safety": {
+                "Collision": ["Multiline", ["collision_rate", "r_collision_penalty"]],
+                "Avoidance": [
+                    "Multiline",
+                    [
+                        "avoidance_eta_eff",
+                        "avoidance_eta_exec",
+                        "avoidance_collision_rate_ema",
+                        "avoidance_prev_episode_collision_rate",
+                        "crash_weight",
+                        "centroid_transfer_ratio",
+                    ],
+                ],
             },
             "Training/Satellite": {
                 "SatFlow": ["Multiline", ["sat_incoming_sum", "sat_processed_sum"]],

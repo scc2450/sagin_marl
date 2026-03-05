@@ -113,7 +113,7 @@
 
 ## <a id="f002"></a>📄 `configs/phase1_actions_curriculum_stage1_accel.yaml`
 - 功能：Stage 1 训练配置，重点学习 UAV 机动（`accel`），不启用带宽与卫星动作。
-- 关键内容：`train_accel=true`、`train_bw=false`、`train_sat=false`，并使用 `traffic_level=0` 与课程化出生点。
+- 关键内容：`train_accel=true`、`train_bw=false`、`train_sat=false`，并启用尾部队列惩罚（`q_norm_tail_q0`/`omega_q_tail`）、线性避碰+自适应安全权重（`avoidance_*`）与 centroid 交叉退火（`centroid_cross_*`）。
 - 项目作用：作为三阶段课程训练的起点，产出 `stage1_accel` 权重。
 
 ## <a id="f003"></a>📄 `configs/phase1_actions_curriculum_stage2_bw.yaml`
@@ -138,7 +138,7 @@
 
 ## <a id="f005"></a>📄 `docs/metrics_guide.md`
 - 功能：说明训练与评估日志字段的定义及解读方式。
-- 关键内容：覆盖 `metrics.csv` 与 `eval_*.csv` 中奖励、队列、丢包、吞吐、性能等指标。
+- 关键内容：覆盖 `metrics.csv` 与 `eval_*.csv` 中奖励、队列、丢包、吞吐、性能等指标，并新增尾部分位（P95/P99）、安全指标（`collision_rate`、`avoidance_*`）与交叉退火权重（`queue_weight` 等）说明。
 - 项目作用：统一实验结果口径，减少“指标含义不一致”问题。
 
 ## <a id="f006"></a>📄 `docs/model_architecture.md`
@@ -328,7 +328,7 @@
 
 ## <a id="f040"></a>📄 `sagin_marl/env/config.py`
 - 功能：定义全局配置对象与配置加载流程。
-- 关键内容：`SaginConfig` 与 `AblationConfig` dataclass 覆盖地图、流量分级、队列、信道、奖励、PPO 超参与消融开关，并新增阶段训练开关（`train_accel/train_bw/train_sat`）与执行覆盖来源（`exec_*_source`）；`load_config` 读 YAML；`update_config` 支持嵌套键更新与 `ablation_flags` 别名；`_coerce_scalar` 处理字符串到数值/布尔转换。
+- 关键内容：`SaginConfig` 与 `AblationConfig` dataclass 覆盖地图、流量分级、队列、信道、奖励、PPO 超参与消融开关；支持阶段训练开关（`train_accel/train_bw/train_sat`）与执行覆盖来源（`exec_*_source`），并新增尾部惩罚、避碰势场/自适应安全、centroid 交叉退火等配置项；`load_config` 读 YAML；`update_config` 支持嵌套键更新与 `ablation_flags` 别名。
 - 项目作用：统一参数入口，是所有模块共享的配置中心。
 
 ## <a id="f041"></a>📄 `sagin_marl/env/orbit.py`
@@ -339,7 +339,7 @@
 ## <a id="f042"></a>📄 `sagin_marl/env/sagin_env.py`
 - 功能：核心多智能体环境（PettingZoo `ParallelEnv`）。
 - 关键流程：`reset` 初始化用户聚类、UAV 状态和缓存，并按 `traffic_level` 设置有效到达率；`step` 依次执行 UAV 动力学、用户关联、接入速率、卫星选择、回传速率、三级队列更新、奖励计算和终止判断。
-- 关键机制：支持候选用户模式（assoc/nearest/radius）、多普勒与可见性约束、可选衰落/干扰/大气损耗、能量模型与安全层、流量课程学习（Level 0/1/2）、吞吐奖励与势能整形、奖励分解缓存 `last_reward_parts`、全局状态 `get_global_state` 与渲染 `render`。
+- 关键机制：支持候选用户模式（assoc/nearest/radius）、多普勒与可见性约束、可选衰落/干扰/大气损耗、能量模型与安全层、流量课程学习（Level 0/1/2）；新增 active 队列尾部阈值惩罚、线性/平方避碰势场与预限幅、自适应避碰权重、centroid 交叉退火权重迁移，并在 `last_reward_parts` 记录完整中间量。
 - 项目作用：这是训练与评估的环境主体，几乎所有实验行为都由该文件定义。
 
 ## <a id="f043"></a>📄 `sagin_marl/env/topology.py`
@@ -380,7 +380,7 @@
 ## <a id="f049"></a>📄 `sagin_marl/rl/mappo.py`
 - 功能：MAPPO 训练主循环实现。
 - 关键函数：`compute_gae` 与 `train`。
-- 关键实现：支持单环境与多环境并行 rollout；包含动作掩码执行、按阶段的动作头冻结训练、执行时动作覆盖（policy/teacher/heuristic/zero）、按动作头重算 logprob、按环境独立 GAE、奖励归一化、PPO clipped objective、可选 KL 正则/早停、可选 imitation loss、梯度裁剪、NaN/Inf 防护、指标记录和 checkpoint 保存。
+- 关键实现：支持单环境与多环境并行 rollout；包含动作掩码执行、按阶段的动作头冻结训练、执行时动作覆盖（policy/teacher/heuristic/zero）、按动作头重算 logprob、按环境独立 GAE、奖励归一化、PPO clipped objective、可选 KL 正则/早停、可选 imitation loss、梯度裁剪、NaN/Inf 防护、指标记录和 checkpoint 保存；新增队列尾部分位（P95/P99）、碰撞率与交叉退火/避碰有效权重日志。
 - 项目作用：整个训练流程的中枢控制文件。
 
 ## <a id="f050"></a>📄 `sagin_marl/rl/policy.py`
@@ -395,7 +395,7 @@
 
 ## <a id="f052"></a>📄 `sagin_marl/utils/logging.py`
 - 功能：训练日志落盘与 TensorBoard 写入。
-- 关键类：`MetricLogger`，自动初始化 CSV 表头、写入标量，并定义训练自定义面板布局（Reward、Queue、Drops、Satellite、Performance 等）。
+- 关键类：`MetricLogger`，自动初始化 CSV 表头、写入标量，并定义训练自定义面板布局（Reward、Queue、Safety、Satellite、Performance 等），含尾部分位与安全权重曲线。
 - 项目作用：统一训练指标记录格式。
 
 ## <a id="f053"></a>📄 `sagin_marl/utils/normalization.py`
@@ -485,7 +485,7 @@
 
 ## <a id="f069"></a>📄 `tests/test_env_step_invariants.py`
 - 功能：环境 step 不变量测试。
-- 关键内容：连续执行多步，验证 GU/UAV/SAT 队列非负且有限。
+- 关键内容：连续执行多步验证 GU/UAV/SAT 队列非负且有限；并覆盖 active 尾部惩罚公式、线性避碰限幅与 centroid 交叉退火权重迁移的单元测试。
 - 项目作用：防止队列更新出现数值异常。
 
 ## <a id="f070"></a>📄 `tests/test_run_dir_paths.py`

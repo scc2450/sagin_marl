@@ -277,9 +277,24 @@ def train(
         "drop_sum",
         "queue_total",
         "queue_total_active",
+        "queue_total_active_p95",
+        "queue_total_active_p99",
         "q_norm_active",
+        "q_norm_active_p95",
+        "q_norm_active_p99",
         "prev_q_norm_active",
         "q_norm_delta",
+        "q_norm_tail_q0",
+        "q_norm_tail_excess",
+        "queue_weight",
+        "q_delta_weight",
+        "crash_weight",
+        "centroid_transfer_ratio",
+        "collision_rate",
+        "avoidance_eta_eff",
+        "avoidance_eta_exec",
+        "avoidance_collision_rate_ema",
+        "avoidance_prev_episode_collision_rate",
         "arrival_rate_eff",
         "gu_queue_mean",
         "uav_queue_mean",
@@ -458,7 +473,20 @@ def train(
         q_norm_active_sum = 0.0
         prev_q_norm_active_sum = 0.0
         q_norm_delta_sum = 0.0
+        q_norm_tail_q0_sum = 0.0
+        q_norm_tail_excess_sum = 0.0
+        queue_weight_sum = 0.0
+        q_delta_weight_sum = 0.0
+        crash_weight_sum = 0.0
+        centroid_transfer_ratio_sum = 0.0
+        collision_event_sum = 0.0
+        avoidance_eta_eff_sum = 0.0
+        avoidance_eta_exec_sum = 0.0
+        avoidance_collision_rate_ema_sum = 0.0
+        avoidance_prev_episode_collision_rate_sum = 0.0
         arrival_rate_eff_sum = 0.0
+        q_norm_active_values: List[float] = []
+        queue_total_active_values: List[float] = []
 
         rollout_start = time.perf_counter()
         for step in range(cfg.buffer_size):
@@ -642,7 +670,22 @@ def train(
                     q_norm_active_sum += float(parts.get("q_norm_active", 0.0))
                     prev_q_norm_active_sum += float(parts.get("prev_q_norm_active", 0.0))
                     q_norm_delta_sum += float(parts.get("q_norm_delta", 0.0))
+                    q_norm_tail_q0_sum += float(parts.get("q_norm_tail_q0", 0.0))
+                    q_norm_tail_excess_sum += float(parts.get("q_norm_tail_excess", 0.0))
+                    queue_weight_sum += float(parts.get("queue_weight", 0.0))
+                    q_delta_weight_sum += float(parts.get("q_delta_weight", 0.0))
+                    crash_weight_sum += float(parts.get("crash_weight", 0.0))
+                    centroid_transfer_ratio_sum += float(parts.get("centroid_transfer_ratio", 0.0))
+                    collision_event_sum += float(parts.get("collision_event", 0.0))
+                    avoidance_eta_eff_sum += float(parts.get("avoidance_eta_eff", 0.0))
+                    avoidance_eta_exec_sum += float(parts.get("avoidance_eta_exec", 0.0))
+                    avoidance_collision_rate_ema_sum += float(parts.get("avoidance_collision_rate_ema", 0.0))
+                    avoidance_prev_episode_collision_rate_sum += float(
+                        parts.get("avoidance_prev_episode_collision_rate", 0.0)
+                    )
                     arrival_rate_eff_sum += float(parts.get("arrival_rate_eff", 0.0))
+                    q_norm_active_values.append(float(parts.get("q_norm_active", 0.0)))
+                    queue_total_active_values.append(float(parts.get("queue_total_active", 0.0)))
                     r_queue_pen_sum += float(parts.get("queue_pen", 0.0))
                     r_queue_topk_sum += float(parts.get("queue_topk", 0.0))
                     r_centroid_sum += float(parts.get("centroid_reward", 0.0))
@@ -944,9 +987,30 @@ def train(
             "drop_sum": drop_sum_total / steps_count,
             "queue_total": queue_total_sum / steps_count,
             "queue_total_active": queue_total_active_sum / steps_count,
+            "queue_total_active_p95": (
+                float(np.percentile(queue_total_active_values, 95)) if queue_total_active_values else 0.0
+            ),
+            "queue_total_active_p99": (
+                float(np.percentile(queue_total_active_values, 99)) if queue_total_active_values else 0.0
+            ),
             "q_norm_active": q_norm_active_sum / steps_count,
+            "q_norm_active_p95": float(np.percentile(q_norm_active_values, 95)) if q_norm_active_values else 0.0,
+            "q_norm_active_p99": float(np.percentile(q_norm_active_values, 99)) if q_norm_active_values else 0.0,
             "prev_q_norm_active": prev_q_norm_active_sum / steps_count,
             "q_norm_delta": q_norm_delta_sum / steps_count,
+            "q_norm_tail_q0": q_norm_tail_q0_sum / steps_count,
+            "q_norm_tail_excess": q_norm_tail_excess_sum / steps_count,
+            "queue_weight": queue_weight_sum / steps_count,
+            "q_delta_weight": q_delta_weight_sum / steps_count,
+            "crash_weight": crash_weight_sum / steps_count,
+            "centroid_transfer_ratio": centroid_transfer_ratio_sum / steps_count,
+            "collision_rate": collision_event_sum / steps_count,
+            "avoidance_eta_eff": avoidance_eta_eff_sum / steps_count,
+            "avoidance_eta_exec": avoidance_eta_exec_sum / steps_count,
+            "avoidance_collision_rate_ema": avoidance_collision_rate_ema_sum / steps_count,
+            "avoidance_prev_episode_collision_rate": (
+                avoidance_prev_episode_collision_rate_sum / steps_count
+            ),
             "arrival_rate_eff": arrival_rate_eff_sum / steps_count,
             "gu_queue_mean": gu_queue_sum / steps_count,
             "uav_queue_mean": uav_queue_sum / steps_count,
