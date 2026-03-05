@@ -226,3 +226,30 @@ cfg = load_config("configs/phase1_actions_curriculum_stage1_accel.yaml")
 env = SaginParallelEnv(cfg)
 obs, infos = env.reset()
 ```
+
+## 策略对照实验（固定 vs 随机 vs 追质心）
+
+目标：在同一环境配置下，比较三种机动策略对队列 KPI 的影响。
+
+1. 激活虚拟环境
+```powershell
+.\.venv\Scripts\Activate.ps1
+```
+
+2. 在同一配置、同一 episode 种子序列下分别评估三种策略（示例 `N=20`）
+```powershell
+python scripts/evaluate.py --config configs/phase1_actions_curriculum_stage1_accel.yaml --episodes 20 --baseline fixed --episode_seed_base 42000 --out runs/stage1_accel/eval_fixed_n20.csv
+python scripts/evaluate.py --config configs/phase1_actions_curriculum_stage1_accel.yaml --episodes 20 --baseline random_accel --episode_seed_base 42000 --out runs/stage1_accel/eval_random_accel_n20.csv
+python scripts/evaluate.py --config configs/phase1_actions_curriculum_stage1_accel.yaml --episodes 20 --baseline centroid --episode_seed_base 42000 --out runs/stage1_accel/eval_centroid_n20.csv
+```
+
+3. 汇总对照指标（`queue_total_active` 的 mean/P95/P99，`outflow_arrival_ratio` 的 mean/P05，`drop_ratio` 的 mean）
+```powershell
+python scripts/summarize_policy_kpi.py --input fixed=runs/stage1_accel/eval_fixed_n20.csv random=runs/stage1_accel/eval_random_accel_n20.csv centroid=runs/stage1_accel/eval_centroid_n20.csv
+```
+
+4. 关键输出文件
+- `runs/stage1_accel/eval_fixed_n20.csv`
+- `runs/stage1_accel/eval_random_accel_n20.csv`
+- `runs/stage1_accel/eval_centroid_n20.csv`
+- `scripts/summarize_policy_kpi.py`

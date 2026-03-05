@@ -17,7 +17,12 @@ from torch.utils.tensorboard import SummaryWriter
 from sagin_marl.env.config import load_config
 from sagin_marl.env.sagin_env import SaginParallelEnv
 from sagin_marl.rl.action_assembler import assemble_actions
-from sagin_marl.rl.baselines import queue_aware_policy, zero_accel_policy
+from sagin_marl.rl.baselines import (
+    centroid_accel_policy,
+    queue_aware_policy,
+    random_accel_policy,
+    zero_accel_policy,
+)
 from sagin_marl.rl.policy import ActorNet, batch_flatten_obs
 from sagin_marl.utils.progress import Progress
 
@@ -100,9 +105,16 @@ def _baseline_actions(
     obs_list,
     cfg,
     num_agents: int,
+    rng: np.random.Generator | None = None,
 ):
-    if baseline == "zero_accel":
+    if baseline in ("zero_accel", "fixed"):
         return zero_accel_policy(num_agents), None, None
+    if baseline == "random_accel":
+        return random_accel_policy(num_agents, rng=rng), None, None
+    if baseline == "centroid":
+        gain = float(getattr(cfg, "baseline_centroid_gain", 2.0))
+        queue_weighted = bool(getattr(cfg, "baseline_centroid_queue_weighted", True))
+        return centroid_accel_policy(obs_list, gain=gain, queue_weighted=queue_weighted), None, None
     if baseline == "queue_aware":
         return queue_aware_policy(obs_list, cfg)
     raise ValueError(f"Unknown baseline: {baseline}")
@@ -158,7 +170,7 @@ def main():
         "--baseline",
         type=str,
         default="none",
-        choices=["none", "zero_accel", "queue_aware"],
+        choices=["none", "fixed", "zero_accel", "random_accel", "centroid", "queue_aware"],
         help="Use a baseline policy instead of a trained model.",
     )
     parser.add_argument(
@@ -167,6 +179,12 @@ def main():
         default="none",
         choices=["none", "queue_aware"],
         help="Use queue_aware for bw/sat while keeping accel from the trained actor.",
+    )
+    parser.add_argument(
+        "--episode_seed_base",
+        type=int,
+        default=None,
+        help="If set, episode e resets with seed=episode_seed_base+e for reproducible cross-policy comparisons.",
     )
     args = parser.parse_args()
 
@@ -208,6 +226,13 @@ def main():
         "steps_per_sec",
         "service_norm",
         "drop_norm",
+        "queue_total_active",
+        "arrival_sum",
+        "outflow_sum",
+        "outflow_arrival_ratio",
+        "drop_sum",
+        "drop_ratio",
+        "drop_ratio_step_mean",
         "centroid_dist_mean",
         "gu_queue_mean",
         "uav_queue_mean",
@@ -228,7 +253,10 @@ def main():
         writer = csv.writer(f)
         writer.writerow(fieldnames)
         for ep in range(args.episodes):
-            obs, _ = env.reset()
+            ep_seed = None
+            if args.episode_seed_base is not None:
+                ep_seed = int(args.episode_seed_base) + ep
+            obs, _ = env.reset(seed=ep_seed)
             done = False
             reward_sum = 0.0
             steps = 0
@@ -248,13 +276,18 @@ def main():
             reward_raw_sum = 0.0
             service_norm_sum = 0.0
             drop_norm_sum = 0.0
+            queue_total_active_sum = 0.0
+            arrival_sum_ep = 0.0
+            outflow_sum_ep = 0.0
+            drop_sum_ep = 0.0
+            drop_ratio_step_sum = 0.0
             centroid_dist_sum = 0.0
             ep_start = time.perf_counter()
             while not done:
                 if use_baseline:
                     obs_list = list(obs.values())
                     accel_actions, bw_logits, sat_logits = _baseline_actions(
-                        args.baseline, obs_list, cfg, len(env.agents)
+                        args.baseline, obs_list, cfg, len(env.agents), rng=env.rng
                     )
                     actions = assemble_actions(
                         cfg, env.agents, accel_actions, bw_logits=bw_logits, sat_logits=sat_logits
@@ -294,6 +327,11 @@ def main():
                     reward_raw_sum += float(parts.get("reward_raw", 0.0))
                     service_norm_sum += float(parts.get("service_norm", 0.0))
                     drop_norm_sum += float(parts.get("drop_norm", 0.0))
+                    queue_total_active_sum += float(parts.get("queue_total_active", 0.0))
+                    arrival_sum_ep += float(parts.get("arrival_sum", 0.0))
+                    outflow_sum_ep += float(parts.get("outflow_sum", 0.0))
+                    drop_sum_ep += float(parts.get("drop_sum", 0.0))
+                    drop_ratio_step_sum += float(parts.get("drop_ratio", 0.0))
                     centroid_dist_sum += float(parts.get("centroid_dist_mean", 0.0))
                 assoc_ratio = 0.0
                 assoc_dist = 0.0
@@ -320,6 +358,13 @@ def main():
                 "steps_per_sec": steps / max(1e-9, ep_time),
                 "service_norm": service_norm_sum / steps,
                 "drop_norm": drop_norm_sum / steps,
+                "queue_total_active": queue_total_active_sum / steps,
+                "arrival_sum": arrival_sum_ep,
+                "outflow_sum": outflow_sum_ep,
+                "outflow_arrival_ratio": outflow_sum_ep / max(arrival_sum_ep, 1e-9),
+                "drop_sum": drop_sum_ep,
+                "drop_ratio": drop_sum_ep / max(arrival_sum_ep, 1e-9),
+                "drop_ratio_step_mean": drop_ratio_step_sum / steps,
                 "centroid_dist_mean": centroid_dist_sum / steps,
                 "gu_queue_mean": gu_queue_sum / steps,
                 "uav_queue_mean": uav_queue_sum / steps,
@@ -345,6 +390,13 @@ def main():
                     metrics["steps_per_sec"],
                     metrics["service_norm"],
                     metrics["drop_norm"],
+                    metrics["queue_total_active"],
+                    metrics["arrival_sum"],
+                    metrics["outflow_sum"],
+                    metrics["outflow_arrival_ratio"],
+                    metrics["drop_sum"],
+                    metrics["drop_ratio"],
+                    metrics["drop_ratio_step_mean"],
                     metrics["centroid_dist_mean"],
                     metrics["gu_queue_mean"],
                     metrics["uav_queue_mean"],

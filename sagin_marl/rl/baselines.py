@@ -9,6 +9,37 @@ def zero_accel_policy(num_agents: int) -> np.ndarray:
     return np.zeros((num_agents, 2), dtype=np.float32)
 
 
+def random_accel_policy(
+    num_agents: int,
+    rng: np.random.Generator | None = None,
+) -> np.ndarray:
+    rng = rng or np.random.default_rng()
+    return rng.uniform(-1.0, 1.0, size=(num_agents, 2)).astype(np.float32)
+
+
+def centroid_accel_policy(
+    obs_list: List[Dict[str, np.ndarray]],
+    gain: float = 2.0,
+    queue_weighted: bool = True,
+) -> np.ndarray:
+    num_agents = len(obs_list)
+    accel = np.zeros((num_agents, 2), dtype=np.float32)
+    for i, obs in enumerate(obs_list):
+        users = obs["users"]
+        users_mask = obs["users_mask"] > 0.0
+        if not np.any(users_mask):
+            continue
+        rel = users[users_mask, 0:2]
+        vec = np.mean(rel, axis=0)
+        if queue_weighted and users.shape[1] >= 3:
+            q = np.clip(users[users_mask, 2], 0.0, None)
+            q_sum = float(np.sum(q))
+            if q_sum > 1e-6:
+                vec = (rel * q[:, None]).sum(axis=0) / (q_sum + 1e-9)
+        accel[i] = np.clip(vec * gain, -1.0, 1.0).astype(np.float32)
+    return accel
+
+
 def queue_aware_policy(
     obs_list: List[Dict[str, np.ndarray]],
     cfg,

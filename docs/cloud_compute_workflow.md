@@ -282,6 +282,10 @@ tar -czf <RUN_ID>.tar.gz <RUN_ID>
 ```powershell
 scp -P <PORT> <USER>@<SERVER_IP>:~/workspace/sagin_marl/runs/phase1_actions/<RUN_ID>.tar.gz .
 ```
+如：
+打开 AutoDL 的控制台，找到你那个实例的 “SSH联系方式”，通常长这样：ssh -p 34567 root@region-1.autodl.com
+# 注意：-P 是大写的
+scp -P 34567 root@region-1.autodl.com:~/workspace/sagin_marl/runs/phase1_actions/stage1_accel.tar.gz .
 
 建议长期保存两份：
 - 本地硬盘

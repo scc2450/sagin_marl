@@ -52,6 +52,10 @@
         - 📄 [eval_trained.csv](#f034)
         - 📄 [events.out.tfevents.1770274612.LAPTOP-CC8EJ2BL.108328.0](#f035)
         - 📄 [metrics.csv](#f036)
+    - 📂 `stage1_accel/`
+      - 📄 [eval_fixed_n20.csv](#f078)
+      - 📄 [eval_random_accel_n20.csv](#f079)
+      - 📄 [eval_centroid_n20.csv](#f080)
   - 📂 `sagin_marl/`
     - 📄 [__init__.py](#f037)
     - 📂 `env/`
@@ -84,6 +88,7 @@
     - 📄 [estimate_throughput.py](#f059)
     - 📄 [evaluate.py](#f060)
     - 📄 [render_episode.py](#f061)
+    - 📄 [summarize_policy_kpi.py](#f081)
     - 📄 [train.py](#f062)
   - 📂 `tests/`
     - 📄 [conftest.py](#f063)
@@ -291,6 +296,21 @@
 - 关键内容：字段与 Stage 1 对齐，可做跨阶段横向分析。
 - 项目作用：实验报告与结果复盘的核心依据。
 
+## <a id="f078"></a>📄 `runs/stage1_accel/eval_fixed_n20.csv`
+- 功能：固定策略（`baseline=fixed`）对照评估结果。
+- 关键内容：在 `configs/phase1_actions_curriculum_stage1_accel.yaml` 下评估 20 个 episode，记录 `queue_total_active`、`arrival_sum`、`outflow_sum`、`drop_ratio` 等字段。
+- 项目作用：作为“位置不动”基线，用于衡量队列 KPI 的参考下界。
+
+## <a id="f079"></a>📄 `runs/stage1_accel/eval_random_accel_n20.csv`
+- 功能：随机移动策略（`baseline=random_accel`）对照评估结果。
+- 关键内容：与 fixed 组使用相同配置与 episode 种子序列，字段口径一致。
+- 项目作用：用于验证“随机机动”对队列尾部指标（P95/P99）的影响。
+
+## <a id="f080"></a>📄 `runs/stage1_accel/eval_centroid_n20.csv`
+- 功能：追质心策略（`baseline=centroid`）对照评估结果。
+- 关键内容：采用启发式“向用户质心移动”加速度策略，并输出与其它基线一致的 KPI 字段。
+- 项目作用：用于比较“结构化启发式机动”相对固定/随机策略的队列控制效果。
+
 ## <a id="f037"></a>📄 `sagin_marl/__init__.py`
 - 功能：顶层包初始化文件。
 - 关键内容：当前为空实现。
@@ -344,7 +364,7 @@
 
 ## <a id="f046"></a>📄 `sagin_marl/rl/baselines.py`
 - 功能：内置启发式基线策略。
-- 关键函数：`zero_accel_policy`（零加速度对照）与 `queue_aware_policy`（队列+信道感知，含邻机排斥与低能量减速逻辑）。
+- 关键函数：`zero_accel_policy`（固定不动）、`random_accel_policy`（同分布随机动作）、`centroid_accel_policy`（向用户质心移动）与 `queue_aware_policy`（队列+信道感知，含邻机排斥与低能量减速逻辑）。
 - 项目作用：用于评估对照与 imitation target 生成。
 
 ## <a id="f047"></a>📄 `sagin_marl/rl/buffer.py`
@@ -415,13 +435,18 @@
 
 ## <a id="f060"></a>📄 `scripts/evaluate.py`
 - 功能：评估入口脚本。
-- 关键内容：支持训练策略评估、`zero_accel`/`queue_aware` 基线评估、`hybrid_bw_sat` 混合评估；输出 CSV，并写入 `eval_tb` TensorBoard；`_resolve_eval_paths` 管理 run 目录路径。
+- 关键内容：支持训练策略评估、`fixed`/`random_accel`/`centroid`/`zero_accel`/`queue_aware` 基线评估、`hybrid_bw_sat` 混合评估；支持 `--episode_seed_base` 做跨策略同种子对照；输出 `queue_total_active`、`arrival_sum`、`outflow_sum`、`outflow_arrival_ratio`、`drop_ratio` 等评估字段，并写入 `eval_tb` TensorBoard。
 - 项目作用：统一产出可对比评估结果。
 
 ## <a id="f061"></a>📄 `scripts/render_episode.py`
 - 功能：渲染单回合并导出 GIF。
 - 关键内容：加载 actor 权重，以确定性动作执行环境并逐帧保存；`_resolve_render_paths` 支持 run 目录默认路径。
 - 项目作用：用于可视化策略行为与调试。
+
+## <a id="f081"></a>📄 `scripts/summarize_policy_kpi.py`
+- 功能：对多策略评估 CSV 进行 KPI 汇总对照。
+- 关键内容：读取 `label=csv_path` 输入，输出 `queue_total_active` 的 mean/P95/P99，`outflow_arrival_ratio` 的 mean/P05，以及 `drop_ratio` 的 mean。
+- 项目作用：用于固定/随机/追质心等对照实验的一键统计汇总。
 
 ## <a id="f062"></a>📄 `scripts/train.py`
 - 功能：训练启动脚本。
@@ -440,7 +465,7 @@
 
 ## <a id="f065"></a>📄 `tests/test_baselines.py`
 - 功能：基线策略单元测试。
-- 关键内容：验证 `zero_accel_policy` 形状与数值；验证 `queue_aware_policy` 输出 shape、dtype、有限性和范围约束。
+- 关键内容：验证 `zero_accel_policy`、`random_accel_policy`、`centroid_accel_policy` 的输出形状/范围，并验证 `queue_aware_policy` 输出 shape、dtype、有限性和范围约束。
 - 项目作用：保证评估对照策略稳定可用。
 
 ## <a id="f066"></a>📄 `tests/test_config_parsing.py`
