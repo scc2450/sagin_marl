@@ -80,18 +80,24 @@ class MetricLogger:
                         "r_term_bw_align",
                         "r_term_sat_score",
                         "r_term_energy",
+                        "r_term_accel",
                     ],
                 ],
             },
             "Training/Losses": {
-                "Losses": ["Multiline", ["policy_loss", "value_loss", "entropy"]],
+                "Losses": ["Multiline", ["policy_loss", "value_loss", "entropy", "imitation_loss"]],
+            },
+            "Training/Diagnostics": {
+                "PPO": ["Multiline", ["approx_kl", "clip_frac"]],
+                "Advantage": ["Multiline", ["adv_raw_mean", "adv_raw_std", "adv_norm_mean", "adv_norm_std"]],
+                "RewardNorm": ["Multiline", ["reward_rms_sigma", "reward_clip_frac"]],
             },
             "Training/Queues": {
                 "QueueMean": ["Multiline", ["gu_queue_mean", "uav_queue_mean", "sat_queue_mean"]],
                 "QueueMax": ["Multiline", ["gu_queue_max", "uav_queue_max", "sat_queue_max"]],
             },
             "Training/Drops": {
-                "Drops": ["Multiline", ["gu_drop_sum", "uav_drop_sum"]],
+                "Drops": ["Multiline", ["drop_sum", "gu_drop_sum", "uav_drop_sum"]],
             },
             "Training/Satellite": {
                 "SatFlow": ["Multiline", ["sat_incoming_sum", "sat_processed_sum"]],

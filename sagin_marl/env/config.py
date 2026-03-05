@@ -286,11 +286,17 @@ class SaginConfig:
 def ablation_flag(cfg: SaginConfig, name: str, fallback_attr: str | None = None, default: bool = False) -> bool:
     """Read an ablation flag with optional legacy fallback."""
     ablation = getattr(cfg, "ablation", None)
+    ablation_value: bool | None = None
     if ablation is not None and hasattr(ablation, name):
-        return bool(getattr(ablation, name))
+        ablation_value = bool(getattr(ablation, name))
+    fallback_value: bool | None = None
     if fallback_attr and hasattr(cfg, fallback_attr):
-        return bool(getattr(cfg, fallback_attr))
-    return bool(default)
+        fallback_value = bool(getattr(cfg, fallback_attr))
+    if ablation_value is None and fallback_value is None:
+        return bool(default)
+    # Backward compatibility: legacy toggles (e.g., imitation_enabled) should
+    # still enable the feature unless explicitly turned off there as well.
+    return bool((ablation_value or False) or (fallback_value or False))
 
 
 def load_config(path: str) -> SaginConfig:

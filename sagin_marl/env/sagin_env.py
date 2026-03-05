@@ -223,6 +223,7 @@ class SaginParallelEnv(ParallelEnv):
         self.last_reward_parts = {
             "service_ratio": 0.0,
             "drop_ratio": 0.0,
+            "drop_sum": 0.0,
             "drop_event": 0.0,
             "queue_pen": 0.0,
             "queue_pen_gu": 0.0,
@@ -988,6 +989,7 @@ class SaginParallelEnv(ParallelEnv):
         self.last_reward_parts = {
             "service_ratio": service_ratio,
             "drop_ratio": drop_ratio,
+            "drop_sum": drop_sum,
             "drop_event": drop_event,
             "arrival_sum": arrival_sum,
             "outflow_sum": outflow_sum,

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from sagin_marl.env.config import load_config
+from sagin_marl.env.config import SaginConfig, ablation_flag, load_config
 
 
 def test_load_config_coerces_numeric_strings(tmp_path):
@@ -31,3 +31,17 @@ def test_load_config_nested_ablation_flags(tmp_path):
     assert cfg.ablation.use_imitation_loss is True
     assert cfg.ablation.use_curriculum_spawn is False
     assert cfg.ablation.use_heuristic_mask is True
+
+
+def test_ablation_flag_legacy_fallback_compatibility():
+    cfg = SaginConfig()
+    cfg.imitation_enabled = True
+    cfg.ablation.use_imitation_loss = False
+    assert ablation_flag(cfg, "use_imitation_loss", fallback_attr="imitation_enabled", default=False) is True
+
+
+def test_ablation_flag_false_when_both_disabled():
+    cfg = SaginConfig()
+    cfg.imitation_enabled = False
+    cfg.ablation.use_imitation_loss = False
+    assert ablation_flag(cfg, "use_imitation_loss", fallback_attr="imitation_enabled", default=False) is False

@@ -228,6 +228,14 @@ def train(
         "policy_loss",
         "value_loss",
         "entropy",
+        "reward_rms_sigma",
+        "reward_clip_frac",
+        "approx_kl",
+        "clip_frac",
+        "adv_raw_mean",
+        "adv_raw_std",
+        "adv_norm_mean",
+        "adv_norm_std",
         "imitation_loss",
         "imitation_coef",
         "actor_lr",
@@ -258,11 +266,13 @@ def train(
         "r_term_bw_align",
         "r_term_sat_score",
         "r_term_energy",
+        "r_term_accel",
         "reward_raw",
         "arrival_sum",
         "outflow_sum",
         "service_norm",
         "drop_norm",
+        "drop_sum",
         "queue_total",
         "queue_total_active",
         "arrival_rate_eff",
@@ -428,12 +438,14 @@ def train(
         r_term_bw_align_sum = 0.0
         r_term_sat_score_sum = 0.0
         r_term_energy_sum = 0.0
+        r_term_accel_sum = 0.0
         imitation_loss_sum = 0.0
         reward_raw_sum = 0.0
         arrival_sum_sum = 0.0
         outflow_sum_sum = 0.0
         service_norm_sum = 0.0
         drop_norm_sum = 0.0
+        drop_sum_total = 0.0
         queue_total_sum = 0.0
         queue_total_active_sum = 0.0
         arrival_rate_eff_sum = 0.0
@@ -614,6 +626,7 @@ def train(
                     outflow_sum_sum += float(parts.get("outflow_sum", 0.0))
                     service_norm_sum += float(parts.get("service_norm", 0.0))
                     drop_norm_sum += float(parts.get("drop_norm", 0.0))
+                    drop_sum_total += float(parts.get("drop_sum", 0.0))
                     queue_total_sum += float(parts.get("queue_total", 0.0))
                     queue_total_active_sum += float(parts.get("queue_total_active", 0.0))
                     arrival_rate_eff_sum += float(parts.get("arrival_rate_eff", 0.0))
@@ -641,6 +654,7 @@ def train(
                     r_term_bw_align_sum += float(parts.get("term_bw_align", 0.0))
                     r_term_sat_score_sum += float(parts.get("term_sat_score", 0.0))
                     r_term_energy_sum += float(parts.get("term_energy", 0.0))
+                    r_term_accel_sum += float(parts.get("term_accel", 0.0))
                     reward_raw_sum += float(parts.get("reward_raw", 0.0))
 
                 buffers[env_idx].add(
@@ -671,11 +685,15 @@ def train(
         adv_list = []
         rets_list = []
         clip_val = float(getattr(cfg, "reward_norm_clip", 0.0) or 0.0)
+        reward_clip_hits = 0
+        reward_clip_total = 0
         for obs_arr_e, act_arr_e, logp_arr_e, rewards_e, values_e, dones_e, state_arr_e, imitation_arr_e in buffer_data:
             rewards_proc = rewards_e
             if getattr(cfg, "reward_norm_enabled", False) and reward_rms is not None:
                 rewards_proc = (rewards_proc - reward_rms.mean) / (np.sqrt(reward_rms.var) + 1e-8)
                 if clip_val > 0:
+                    reward_clip_hits += int(np.count_nonzero(np.abs(rewards_proc) > clip_val))
+                    reward_clip_total += int(rewards_proc.size)
                     rewards_proc = np.clip(rewards_proc, -clip_val, clip_val)
             adv_e, rets_e = compute_gae(rewards_proc, values_e, dones_e, cfg.gamma, cfg.gae_lambda)
             obs_arr_list.append(obs_arr_e)
@@ -693,8 +711,12 @@ def train(
         imitation_arr = np.concatenate(imitation_arr_list, axis=0)
         adv = np.concatenate(adv_list, axis=0)
         rets = np.concatenate(rets_list, axis=0)
-        adv = (adv - adv.mean()) / (adv.std() + 1e-8)
+        adv_raw_mean = float(np.mean(adv))
+        adv_raw_std = float(np.std(adv))
+        adv = (adv - adv_raw_mean) / (adv_raw_std + 1e-8)
         adv = np.clip(adv, -5.0, 5.0)
+        adv_norm_mean = float(np.mean(adv))
+        adv_norm_std = float(np.std(adv))
 
         T, N, _ = obs_arr.shape
         obs_flat = obs_arr.reshape(T * N, -1)
@@ -756,6 +778,8 @@ def train(
         policy_losses = []
         value_losses = []
         entropies = []
+        approx_kls = []
+        clip_fracs = []
 
         optim_start = time.perf_counter()
         stop_early = False
@@ -784,6 +808,7 @@ def train(
                 surr2 = torch.clamp(ratio, 1.0 - cfg.clip_ratio, 1.0 + cfg.clip_ratio) * adv_flat_t[mb_idx]
                 policy_loss = -torch.min(surr1, surr2).mean()
                 approx_kl = (logp_flat_t[mb_idx] - new_logp).mean()
+                clip_frac = ((ratio - 1.0).abs() > cfg.clip_ratio).float().mean()
                 kl_coef = float(getattr(cfg, "kl_coef", 0.0) or 0.0)
                 if kl_coef > 0:
                     policy_loss = policy_loss + kl_coef * approx_kl
@@ -819,6 +844,8 @@ def train(
 
                 policy_losses.append(policy_loss.item())
                 entropies.append(entropy.mean().item())
+                approx_kls.append(float(approx_kl.item()))
+                clip_fracs.append(float(clip_frac.item()))
                 imitation_loss_sum += float(imitation_loss.item())
                 if stop_early:
                     break
@@ -838,16 +865,34 @@ def train(
         update_time = time.perf_counter() - update_start
         steps_count = max(1, steps_count)
         episode_reward = ep_reward / steps_count
+        reward_rms_sigma = (
+            float(np.sqrt(reward_rms.var))
+            if getattr(cfg, "reward_norm_enabled", False) and reward_rms is not None
+            else 0.0
+        )
+        reward_clip_frac = (
+            float(reward_clip_hits) / float(reward_clip_total)
+            if reward_clip_total > 0
+            else 0.0
+        )
         metrics = {
             "episode_reward": episode_reward,
             "policy_loss": float(np.mean(policy_losses)),
             "value_loss": float(np.mean(value_losses)),
             "entropy": float(np.mean(entropies)),
+            "reward_rms_sigma": reward_rms_sigma,
+            "reward_clip_frac": reward_clip_frac,
+            "approx_kl": float(np.mean(approx_kls)) if approx_kls else 0.0,
+            "clip_frac": float(np.mean(clip_fracs)) if clip_fracs else 0.0,
+            "adv_raw_mean": adv_raw_mean,
+            "adv_raw_std": adv_raw_std,
+            "adv_norm_mean": adv_norm_mean,
+            "adv_norm_std": adv_norm_std,
             "imitation_loss": imitation_loss_sum / max(1, len(policy_losses)),
             "imitation_coef": imitation_coef_curr,
             "actor_lr": float(actor_optim.param_groups[0]["lr"]),
             "critic_lr": float(critic_optim.param_groups[0]["lr"]),
-              "r_service_ratio": r_service_ratio_sum / steps_count,
+            "r_service_ratio": r_service_ratio_sum / steps_count,
             "r_drop_ratio": r_drop_ratio_sum / steps_count,
             "r_queue_pen": r_queue_pen_sum / steps_count,
             "r_queue_topk": r_queue_topk_sum / steps_count,
@@ -855,29 +900,31 @@ def train(
             "centroid_dist_mean": centroid_dist_mean_sum / steps_count,
             "r_bw_align": r_bw_align_sum / steps_count,
             "r_sat_score": r_sat_score_sum / steps_count,
-              "r_assoc_ratio": r_assoc_ratio_sum / steps_count,
-              "r_queue_delta": r_queue_delta_sum / steps_count,
-              "r_dist": r_dist_sum / steps_count,
-              "r_dist_delta": r_dist_delta_sum / steps_count,
-              "r_energy": r_energy_sum / steps_count,
-              "r_fail_penalty": r_fail_penalty_sum / steps_count,
-              "r_term_service": r_term_service_sum / steps_count,
+            "r_assoc_ratio": r_assoc_ratio_sum / steps_count,
+            "r_queue_delta": r_queue_delta_sum / steps_count,
+            "r_dist": r_dist_sum / steps_count,
+            "r_dist_delta": r_dist_delta_sum / steps_count,
+            "r_energy": r_energy_sum / steps_count,
+            "r_fail_penalty": r_fail_penalty_sum / steps_count,
+            "r_term_service": r_term_service_sum / steps_count,
             "r_term_drop": r_term_drop_sum / steps_count,
             "r_term_queue": r_term_queue_sum / steps_count,
             "r_term_topk": r_term_topk_sum / steps_count,
             "r_term_assoc": r_term_assoc_sum / steps_count,
-              "r_term_q_delta": r_term_q_delta_sum / steps_count,
-              "r_term_dist": r_term_dist_sum / steps_count,
+            "r_term_q_delta": r_term_q_delta_sum / steps_count,
+            "r_term_dist": r_term_dist_sum / steps_count,
             "r_term_dist_delta": r_term_dist_delta_sum / steps_count,
             "r_term_centroid": r_term_centroid_sum / steps_count,
             "r_term_bw_align": r_term_bw_align_sum / steps_count,
             "r_term_sat_score": r_term_sat_score_sum / steps_count,
             "r_term_energy": r_term_energy_sum / steps_count,
+            "r_term_accel": r_term_accel_sum / steps_count,
             "reward_raw": reward_raw_sum / steps_count,
             "arrival_sum": arrival_sum_sum / steps_count,
             "outflow_sum": outflow_sum_sum / steps_count,
             "service_norm": service_norm_sum / steps_count,
             "drop_norm": drop_norm_sum / steps_count,
+            "drop_sum": drop_sum_total / steps_count,
             "queue_total": queue_total_sum / steps_count,
             "queue_total_active": queue_total_active_sum / steps_count,
             "arrival_rate_eff": arrival_rate_eff_sum / steps_count,
