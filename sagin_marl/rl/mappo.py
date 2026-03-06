@@ -234,12 +234,19 @@ def train(
         "clip_frac",
         "adv_raw_mean",
         "adv_raw_std",
+        "adv_preclip_mean",
+        "adv_preclip_std",
+        "adv_postclip_mean",
+        "adv_postclip_std",
+        "adv_clip_frac",
         "adv_norm_mean",
         "adv_norm_std",
         "imitation_loss",
         "imitation_coef",
         "actor_lr",
         "critic_lr",
+        "log_std_mean",
+        "action_std_mean",
         "r_service_ratio",
         "r_drop_ratio",
         "r_queue_pen",
@@ -279,9 +286,13 @@ def train(
         "queue_total_active",
         "queue_total_active_p95",
         "queue_total_active_p99",
+        "queue_total_active_max",
         "q_norm_active",
         "q_norm_active_p95",
         "q_norm_active_p99",
+        "q_norm_active_max",
+        "q_norm_active_nonzero_rate",
+        "q_norm_tail_hit_rate",
         "prev_q_norm_active",
         "q_norm_delta",
         "q_norm_tail_q0",
@@ -487,6 +498,10 @@ def train(
         arrival_rate_eff_sum = 0.0
         q_norm_active_values: List[float] = []
         queue_total_active_values: List[float] = []
+        q_norm_active_nonzero_count = 0
+        q_norm_tail_hit_count = 0
+        q_norm_active_max = 0.0
+        queue_total_active_max = 0.0
 
         rollout_start = time.perf_counter()
         for step in range(cfg.buffer_size):
@@ -666,11 +681,14 @@ def train(
                     drop_norm_sum += float(parts.get("drop_norm", 0.0))
                     drop_sum_total += float(parts.get("drop_sum", 0.0))
                     queue_total_sum += float(parts.get("queue_total", 0.0))
-                    queue_total_active_sum += float(parts.get("queue_total_active", 0.0))
-                    q_norm_active_sum += float(parts.get("q_norm_active", 0.0))
+                    queue_total_active_step = float(parts.get("queue_total_active", 0.0))
+                    q_norm_active_step = float(parts.get("q_norm_active", 0.0))
+                    q_norm_tail_q0_step = max(float(parts.get("q_norm_tail_q0", 0.0)), 0.0)
+                    queue_total_active_sum += queue_total_active_step
+                    q_norm_active_sum += q_norm_active_step
                     prev_q_norm_active_sum += float(parts.get("prev_q_norm_active", 0.0))
                     q_norm_delta_sum += float(parts.get("q_norm_delta", 0.0))
-                    q_norm_tail_q0_sum += float(parts.get("q_norm_tail_q0", 0.0))
+                    q_norm_tail_q0_sum += q_norm_tail_q0_step
                     q_norm_tail_excess_sum += float(parts.get("q_norm_tail_excess", 0.0))
                     queue_weight_sum += float(parts.get("queue_weight", 0.0))
                     q_delta_weight_sum += float(parts.get("q_delta_weight", 0.0))
@@ -684,8 +702,14 @@ def train(
                         parts.get("avoidance_prev_episode_collision_rate", 0.0)
                     )
                     arrival_rate_eff_sum += float(parts.get("arrival_rate_eff", 0.0))
-                    q_norm_active_values.append(float(parts.get("q_norm_active", 0.0)))
-                    queue_total_active_values.append(float(parts.get("queue_total_active", 0.0)))
+                    q_norm_active_values.append(q_norm_active_step)
+                    queue_total_active_values.append(queue_total_active_step)
+                    if q_norm_active_step > 0.0:
+                        q_norm_active_nonzero_count += 1
+                    if q_norm_active_step > q_norm_tail_q0_step:
+                        q_norm_tail_hit_count += 1
+                    q_norm_active_max = max(q_norm_active_max, q_norm_active_step)
+                    queue_total_active_max = max(queue_total_active_max, queue_total_active_step)
                     r_queue_pen_sum += float(parts.get("queue_pen", 0.0))
                     r_queue_topk_sum += float(parts.get("queue_topk", 0.0))
                     r_centroid_sum += float(parts.get("centroid_reward", 0.0))
@@ -771,10 +795,20 @@ def train(
         rets = np.concatenate(rets_list, axis=0)
         adv_raw_mean = float(np.mean(adv))
         adv_raw_std = float(np.std(adv))
-        adv = (adv - adv_raw_mean) / (adv_raw_std + 1e-8)
-        adv = np.clip(adv, -5.0, 5.0)
-        adv_norm_mean = float(np.mean(adv))
-        adv_norm_std = float(np.std(adv))
+        adv_preclip = (adv - adv_raw_mean) / (adv_raw_std + 1e-8)
+        adv_preclip_mean = float(np.mean(adv_preclip))
+        adv_preclip_std = float(np.std(adv_preclip))
+        adv_clip = float(getattr(cfg, "adv_clip", 5.0) or 0.0)
+        if adv_clip > 0.0:
+            adv = np.clip(adv_preclip, -adv_clip, adv_clip)
+            adv_clip_frac = float(np.count_nonzero(np.abs(adv_preclip) > adv_clip)) / float(adv_preclip.size)
+        else:
+            adv = adv_preclip
+            adv_clip_frac = 0.0
+        adv_postclip_mean = float(np.mean(adv))
+        adv_postclip_std = float(np.std(adv))
+        adv_norm_mean = adv_postclip_mean
+        adv_norm_std = adv_postclip_std
 
         T, N, _ = obs_arr.shape
         obs_flat = obs_arr.reshape(T * N, -1)
@@ -933,6 +967,18 @@ def train(
             if reward_clip_total > 0
             else 0.0
         )
+        log_std_terms: List[np.ndarray] = []
+        if train_heads["accel"]:
+            log_std_terms.append(torch.clamp(actor.log_std.detach(), -5.0, 2.0).cpu().numpy().reshape(-1))
+        if train_heads["bw"] and actor.bw_log_std is not None:
+            log_std_terms.append(torch.clamp(actor.bw_log_std.detach(), -5.0, 2.0).cpu().numpy().reshape(-1))
+        if train_heads["sat"] and actor.sat_log_std is not None:
+            log_std_terms.append(torch.clamp(actor.sat_log_std.detach(), -5.0, 2.0).cpu().numpy().reshape(-1))
+        if log_std_terms:
+            log_std_vec = np.concatenate(log_std_terms, axis=0)
+        else:
+            log_std_vec = np.zeros((1,), dtype=np.float32)
+        action_std_vec = np.exp(log_std_vec)
         metrics = {
             "episode_reward": episode_reward,
             "policy_loss": float(np.mean(policy_losses)),
@@ -944,12 +990,19 @@ def train(
             "clip_frac": float(np.mean(clip_fracs)) if clip_fracs else 0.0,
             "adv_raw_mean": adv_raw_mean,
             "adv_raw_std": adv_raw_std,
+            "adv_preclip_mean": adv_preclip_mean,
+            "adv_preclip_std": adv_preclip_std,
+            "adv_postclip_mean": adv_postclip_mean,
+            "adv_postclip_std": adv_postclip_std,
+            "adv_clip_frac": adv_clip_frac,
             "adv_norm_mean": adv_norm_mean,
             "adv_norm_std": adv_norm_std,
             "imitation_loss": imitation_loss_sum / max(1, len(policy_losses)),
             "imitation_coef": imitation_coef_curr,
             "actor_lr": float(actor_optim.param_groups[0]["lr"]),
             "critic_lr": float(critic_optim.param_groups[0]["lr"]),
+            "log_std_mean": float(np.mean(log_std_vec)),
+            "action_std_mean": float(np.mean(action_std_vec)),
             "r_service_ratio": r_service_ratio_sum / steps_count,
             "r_drop_ratio": r_drop_ratio_sum / steps_count,
             "r_queue_pen": r_queue_pen_sum / steps_count,
@@ -993,9 +1046,13 @@ def train(
             "queue_total_active_p99": (
                 float(np.percentile(queue_total_active_values, 99)) if queue_total_active_values else 0.0
             ),
+            "queue_total_active_max": queue_total_active_max,
             "q_norm_active": q_norm_active_sum / steps_count,
             "q_norm_active_p95": float(np.percentile(q_norm_active_values, 95)) if q_norm_active_values else 0.0,
             "q_norm_active_p99": float(np.percentile(q_norm_active_values, 99)) if q_norm_active_values else 0.0,
+            "q_norm_active_max": q_norm_active_max,
+            "q_norm_active_nonzero_rate": float(q_norm_active_nonzero_count) / float(steps_count),
+            "q_norm_tail_hit_rate": float(q_norm_tail_hit_count) / float(steps_count),
             "prev_q_norm_active": prev_q_norm_active_sum / steps_count,
             "q_norm_delta": q_norm_delta_sum / steps_count,
             "q_norm_tail_q0": q_norm_tail_q0_sum / steps_count,

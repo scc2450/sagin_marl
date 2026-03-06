@@ -19,9 +19,15 @@ def test_smoke_train(tmp_path):
     assert "approx_kl" in header
     assert "clip_frac" in header
     assert "adv_raw_std" in header
+    assert "adv_preclip_mean" in header
+    assert "adv_postclip_std" in header
+    assert "adv_clip_frac" in header
+    assert "log_std_mean" in header
+    assert "action_std_mean" in header
     assert "reward_rms_sigma" in header
     assert "reward_clip_frac" in header
     assert "drop_sum" in header
     assert "r_term_accel" in header
     assert "r_collision_penalty" in header
     assert "r_battery_penalty" in header
+    assert "q_norm_tail_hit_rate" in header

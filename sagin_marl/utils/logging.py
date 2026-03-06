@@ -91,7 +91,21 @@ class MetricLogger:
             },
             "Training/Diagnostics": {
                 "PPO": ["Multiline", ["approx_kl", "clip_frac"]],
-                "Advantage": ["Multiline", ["adv_raw_mean", "adv_raw_std", "adv_norm_mean", "adv_norm_std"]],
+                "PolicyStd": ["Multiline", ["log_std_mean", "action_std_mean", "entropy"]],
+                "Advantage": [
+                    "Multiline",
+                    [
+                        "adv_raw_mean",
+                        "adv_raw_std",
+                        "adv_preclip_mean",
+                        "adv_preclip_std",
+                        "adv_postclip_mean",
+                        "adv_postclip_std",
+                        "adv_norm_mean",
+                        "adv_norm_std",
+                        "adv_clip_frac",
+                    ],
+                ],
                 "RewardNorm": ["Multiline", ["reward_rms_sigma", "reward_clip_frac"]],
             },
             "Training/Queues": {
@@ -99,7 +113,16 @@ class MetricLogger:
                 "QueueMax": ["Multiline", ["gu_queue_max", "uav_queue_max", "sat_queue_max"]],
                 "QueueNorm": [
                     "Multiline",
-                    ["q_norm_active", "q_norm_active_p95", "q_norm_active_p99", "prev_q_norm_active", "q_norm_delta"],
+                    [
+                        "q_norm_active",
+                        "q_norm_active_p95",
+                        "q_norm_active_p99",
+                        "q_norm_active_max",
+                        "q_norm_active_nonzero_rate",
+                        "q_norm_tail_hit_rate",
+                        "prev_q_norm_active",
+                        "q_norm_delta",
+                    ],
                 ],
                 "QueueActiveTail": [
                     "Multiline",
@@ -107,6 +130,7 @@ class MetricLogger:
                         "queue_total_active",
                         "queue_total_active_p95",
                         "queue_total_active_p99",
+                        "queue_total_active_max",
                         "q_norm_tail_excess",
                         "queue_weight",
                         "q_delta_weight",

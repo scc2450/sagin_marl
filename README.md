@@ -139,6 +139,22 @@ tensorboard --logdir <RUN_DIR>
 ```
 - 分组图在 `Custom Scalars` 标签页（训练 + 评估）。
 
+批量导出 TensorBoard 曲线为图片（按 tag 批量）：
+```powershell
+python scripts/export_tb_scalars.py --logdir <RUN_DIR> --outdir <RUN_DIR>/tb_plots --format png --dpi 180
+```
+- 默认导出该 run 下全部 scalar tag（每个 tag 一张图）。
+- 可用 `--tag` 过滤（可重复），例如：`--tag q_norm_* --tag queue_total_active*`
+- 可选平滑：`--ema_alpha 0.9`
+
+跨多个 run 叠加导出（同一 tag 多 run 对比）：
+```powershell
+python scripts/export_tb_scalars.py --logdir runs/phase1_actions --run stage1_* --tag q_norm_active --tag q_norm_tail_hit_rate --overlay
+```
+- 结果目录包含：
+  - `by_run/`：每个 run 的单独曲线图
+  - `overlay/`：同一 tag 的多 run 叠加图（仅在 `--overlay` 时生成）
+
 吞吐估算（判断到达率是否合理）：
 ```powershell
 python scripts/estimate_throughput.py --config configs/phase1_actions_curriculum_stage1_accel.yaml

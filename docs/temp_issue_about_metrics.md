@@ -1,147 +1,191 @@
-# 下一步应该改什么：把“队列惩罚”从平均线性变成“尾部阈值惩罚”（K 仍然=1，物理意义保留）
+这个对照很有价值，结论已经比较清楚了：
 
-你担心 `q_norm_active` 小、平方会更小——没错，所以我们**不是对 q_norm 平方**，而是对**超过阈值的那部分**平方：
+## 结论
 
-[
-P_{\text{tail}} = w_{\text{tail}}\cdot \big[\max(q_norm-q_0,0)\big]^2
-]
+`adv_clip` 不是你现在的主矛盾。
 
-这样：
+从你给的后 10 个 update 均值看：
 
-* 在安全区 (q_norm \le q_0)：惩罚≈0（不扰动）
-* 在爆尾区 (q_norm \gg q_0)：惩罚迅速变大（专治 P95/P99）
+* **A (`clip=5`) 最稳**
 
-### 2.1 阈值怎么选（直接用 eval_fixed）
+  * `approx_kl` 最高：`8.324e-05`
+  * `q_norm_tail_excess` 最低：`9.08e-04`
+  * `q_norm_tail_hit_rate` 最低：`1.75e-03`
+* **B/C 并没有让 PPO 更新“回来”**
 
-用 fixed 的 P99：
-✅ **`q0 = 0.0051`**（我建议先用 0.005，四舍五入）
+  * `approx_kl` 反而更小
+  * `clip_frac` 都还是 0
+* **B/C 让尾部风险更差**
 
-### 2.2 权重怎么选（给你一个“不容易炸”的起点）
+  * `q_norm_tail_excess` 和 `tail_hit_rate` 都更高
 
-看 random 的 P95：0.0339。
-此时 (q-q0 \approx 0.029)，平方约 0.00084。
-如果我们希望在这种“明显危险但还没极端”的区域，惩罚贡献大概到 **0.01** 量级，则：
+所以当前证据支持：
 
-[
-w \approx 0.01 / 0.00084 \approx 12
-]
-
-✅ 起步建议：**`omega_q_tail = 10`**（先保守点）
-
-### 2.3 代码怎么改（只改 active 分支）
-
-在你的 `_compute_reward()` 里，`use_active_queue_delta` 分支现在是：
-
-```python
-queue_term = q_norm_active
-term_queue = -cfg.omega_q * queue_term
-```
-
-改成：
-
-```python
-# --- tail-risk queue penalty (active) ---
-q0 = float(getattr(cfg, "q_norm_tail_q0", 0.005) or 0.005)  # fixed P99 ≈ 0.00506
-x = max(q_norm_active - q0, 0.0)
-queue_term = x * x   # quadratic on exceedance
-term_queue = -float(getattr(cfg, "omega_q_tail", cfg.omega_q)) * queue_term
-```
-
-并把 `last_reward_parts["queue_pen"]` 保持为 `queue_term`，同时把 `q0` 也记录一下方便调参。
-
-### 2.4 配置新增项（建议）
-
-```yaml
-q_norm_tail_q0: 0.005
-omega_q_tail: 10.0
-```
-
-> 注意：你原来的 `omega_q=1` 不用动；我们是新增一个“尾部风险专用权重”。
-
-
-# 4) 防撞层你现在这套“距离势场”为什么不好用？怎么改才更稳？
-
-你现在的 repulsion：
-
-```python
-a_rep += eta * (1/dist - 1/d_alert) * unit(diff)
-a = clip(a + a_rep, a_max)
-```
-
-常见问题是：**dist 小时 1/dist 爆炸 → a_rep 巨大 → 最后被 a_max clip → 方向抖动/推不开**。而且它只看距离，不看相对速度（加速度控制很容易“来不及刹”）。
-
-## 4.1 立刻能提升稳定性的两处小改动（强烈建议先做）
-
-### (A) 给 repulsion 自己加限幅（在 clip 之前）
-
-```python
-a_rep = np.clip(a_rep, -cfg.a_max, cfg.a_max)
-a = a + a_rep
-a = np.clip(a, -cfg.a_max, cfg.a_max)
-```
-
-### (B) 把 (1/dist - 1/d_alert) 换成“线性/平方”更平滑的形状
-
-例如线性：
-
-```python
-# dist in (0, d_alert)
-strength = (d_alert - dist) / max(d_alert - cfg.d_safe, 1e-6)   # 0..something
-strength = np.clip(strength, 0.0, 1.0)
-a_rep += cfg.avoidance_eta * strength * (diff / dist)
-```
-
-然后 `avoidance_eta` 的量纲就清晰了：它就是“最大推开加速度”。
-✅ 建议你把 `avoidance_eta` 设成 **0.5~1.0 * a_max**（先别用 100 这种会必然触发 clip 的值）。
-
-> 你现在 `avoidance_eta=100`，大概率是“几乎每次都被 clip 成 a_max”，所以效果看起来反而差。
-
-## 4.2 解决“热点 vs 避碰矛盾”的更好方法：自适应安全权重（而不是固定增大 crash 惩罚）
-
-共享 actor 下固定提高 crash 权重确实可能压死任务。更稳的是：
-
-* 设目标碰撞率 `p_target`（例如每 400 步碰撞概率 < 5%）
-* 若最近窗口碰撞率 > 目标：自动提高 `avoidance_eta` 或安全惩罚权重
-* 若低于目标：自动降低
-
-这相当于把“避碰”做成约束优化（拉格朗日乘子），不会一直把热点目标压死。
+> `adv_clip=5` 不是过度保守，反而是在你这套环境和奖励结构下更稳定。
+> 现在不该继续折腾 adv clip 了。
 
 ---
 
-# 5) 追质心还要不要？
+## 这说明什么
 
-结合你的 eval：centroid 策略碰撞极多（16/20 早停），且队列尾部也远差于 fixed。说明 **“追质心 ≠ 更稳更小队列”**。
+你之前的问题不是“优势被 clip 太狠，导致学不动”，而更像是：
 
-但你也说过：一开始完全没有 centroid，训练会崩（队列很快满溢）。因此建议是：
+1. **PPO 主更新本来就弱**
 
-* **保留 centroid 作为早期 stabilizer**
-* 但做两件事：
+   * `approx_kl` 一直很小
+   * `clip_frac` 一直 0
+     这说明 policy ratio 基本没离开 1 附近，更新幅度本来就不够。
 
-  1. **更快退火**（比如 120k 步太长了，可以缩短到 30k 或 50k）
-  2. 退火的同时，让 **tail penalty + safety penalty 接棒**（这就是你说的交叉退火的意义）
+2. **一旦放松 adv clip，学到的不是更好的更新，而是更差的尾部行为**
 
----
+   * 也就是更大的 advantage 尾部并没有提供更有效的学习信号，反而更多放大了噪声/极端样本。
 
-# 6) 为什么 reward 一直下降？你该看什么指标？
+3. **当前 reward 结构里，真正难学的是“稀疏尾部风险 + 碰撞 + centroid 退火后的接棒”**
 
-只要 `centroid_eta` 在下降，`r_term_centroid` 就会下降，episode_reward 跟着下降是必然的（你图里就是这样）。这不是“训练变差”的证据。
-
-从现在起你评估“训练是否进步”，建议用这 3 个稳定 KPI（逐 update 统计）：
-
-1. `collision_rate`（每 N 步碰撞次数或 early stop 率）
-2. `q_norm_active` 的 **P95/P99**（不要只看均值）
-3. `queue_total_active` 的 **P95/P99**（bits）
-
-你已经证明策略差异主要体现在尾部，这比均值更重要。
+   * 不是 adv clip。
 
 ---
 
+## 所以，1) 你的问题“adv 还需要 clip 吗？”
 
+需要，至少目前看 **保留 `clip=5` 更合适**。
+
+而且现在你可以明确地说：
+
+* `adv_clip=5` 不仅没有明显压死学习；
+* 还在你的实验里带来了更低的尾部风险；
+* 所以短期内不要再把时间花在 adv clip 上。
 
 ---
 
-1. 不要并行读取 
+## 2) “我应该看 `adv_preclip_mean` 代替现在的 `adv_raw_mean` 吗？”
+
+不是代替，是分开看：
+
+* **`adv_raw_mean`**：看训练动态、value 偏置、reward 漂移
+* **`adv_preclip_mean`**：看标准化实现是否正常，理论上应接近 0
+* **`adv_postclip_mean`**：看裁剪把分布偏斜了多少
+
+也就是说：
+
+* 诊断“实现是否正常”看 `adv_preclip_mean`
+* 理解“训练在发生什么”还得看 `adv_raw_mean`
+
+---
+
+## 3) 现在该把精力放到哪里？
+
+按优先级，我建议你接下来不要再动 adv clip，而是去查这三件事：
+
+### 第一优先级：为什么 PPO 更新一直起不来
+
+因为你现在最大的硬证据仍然是：
+
+* `approx_kl` 很小
+* `clip_frac` 为 0
+
+这比 reward 细节更根本。
+
+你下一步该优先做的 ablation 是：
+
+* **关掉或减弱 lr decay**
+
+  * 尤其是 actor 的
+* 或者 **提高 actor_lr**
+* 或者 **增加 ppo_epochs**
+
+你现在需要的是把 KL 拉回到一个正常范围，而不是继续修饰 reward 的尾部。
+
+### 第二优先级：entropy 上升是不是 `log_std` 在单独变大
+
+你之前已经给了 policy 代码：
+
+* `self.log_std = nn.Parameter(torch.zeros(2))`
+* entropy bonus 是 `-entropy_coef * entropy`
+
+现在很像是：
+
+* 均值没怎么学
+* `log_std` 在慢慢涨
+
+所以建议直接把下面两个东西打日志：
+
+* `log_std_mean`
+* `action_std_mean`
+
+这能直接验证“entropy 上升是不是纯粹由方差头在涨”。
+
+### 第三优先级：tail penalty 是否太稀疏
+
+你这次已经有：
+
+* `q_norm_tail_hit_rate`
+
+而且数值很小，后 10 个 update 大概在：
+
+* A: `0.00175`
+* B: `0.00325`
+* C: `0.004`
+
+这说明 tail penalty 触发比例只有 **千分之几**。
+这可能意味着：
+
+> 你现在的 tail 项虽然方向对，但仍然太稀疏，不足以成为稳定的训练主信号。
+
+---
+
+## 4) 基于这次结果，我建议你下一步做什么
+
+### 建议 A：保留 `adv_clip=5`
+
+这个先别动了。
+
+### 建议 B：做一组“优化器/更新强度”对照，而不是 reward 对照
+
+我建议只改一项，做 30–50 updates：
+
+1. `lr_decay_enabled = false`
+2. 或 `lr_final_factor: 0.1 -> 0.5`
+3. 或 `actor_lr: 3e-4 -> 6e-4`
+4. 或 `ppo_epochs: 3 -> 5`
+
+重点看：
+
+* `approx_kl`
+* `clip_frac`
+* `entropy`
+* `collision_rate`
+* `q_norm_tail_excess`
+
+### 建议 C：把 `log_std_mean` 打出来
+
+如果 entropy 上升只是 `log_std` 单独在涨，那你后面可以很有针对性地：
+
+* 降低 entropy_coef
+* 或 clamp 更紧一点
+* 或单独 regularize std
+
+---
+
+## 5) 我对当前主因的最新判断
+
+结合你所有实验，到现在为止最像的主因是：
+
+> **奖励已经比之前合理了，但 actor 实际更新太弱，导致 centroid 退火后的“接棒学习”没有真正发生；与此同时，entropy 项在慢慢把策略变得更随机。**
+
+所以你下一步最该验证的，不是 reward 再怎么雕，而是：
+
+* **为什么 KL 起不来**
+* **为什么 std 在涨**
+
+---
+
+你下一轮最值得做的是“学习率/衰减”消融。我建议先做最小的一个：**只把 `lr_decay_enabled=false` 跑 40 updates**，其它全不动。这样最容易判断现在是不是 lr decay 把 PPO 更新压没了。
+
+
+--------
+注意：1. 不要并行读取 
 2. 执行代码前先激活虚拟环境 
-    ```powershell
+    
+powershell
     .\.venv\Scripts\Activate.ps1
-    ```

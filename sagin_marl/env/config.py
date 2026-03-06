@@ -254,6 +254,7 @@ class SaginConfig:
     gamma: float = 0.99
     gae_lambda: float = 0.95
     clip_ratio: float = 0.2
+    adv_clip: float = 5.0
     actor_lr: float = 3e-4
     critic_lr: float = 3e-4
     entropy_coef: float = 0.01

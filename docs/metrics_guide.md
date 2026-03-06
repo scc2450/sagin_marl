@@ -6,10 +6,11 @@
 ### 1.1 PPO 与优化过程
 - `episode_reward`, `policy_loss`, `value_loss`, `entropy`
 - `approx_kl`, `clip_frac`
-- `adv_raw_mean`, `adv_raw_std`, `adv_norm_mean`, `adv_norm_std`
+- `adv_raw_mean`, `adv_raw_std`, `adv_preclip_mean`, `adv_preclip_std`, `adv_postclip_mean`, `adv_postclip_std`, `adv_norm_mean`, `adv_norm_std`, `adv_clip_frac`
 - `reward_rms_sigma`, `reward_clip_frac`
 - `imitation_loss`, `imitation_coef`
 - `actor_lr`, `critic_lr`
+- `log_std_mean`, `action_std_mean`
 
 ### 1.2 奖励分解与中间量
 - 比率/中间项：  
@@ -28,6 +29,8 @@
 `gu_queue_mean`, `uav_queue_mean`, `sat_queue_mean`, `gu_queue_max`, `uav_queue_max`, `sat_queue_max`
 - 尾部分位（按 update 内步序列统计）：  
 `q_norm_active_p95`, `q_norm_active_p99`, `queue_total_active_p95`, `queue_total_active_p99`
+- 稀疏尖峰诊断：  
+`q_norm_active_max`, `queue_total_active_max`, `q_norm_active_nonzero_rate`, `q_norm_tail_hit_rate`
 - 丢包与卫星流量：  
 `gu_drop_sum`, `uav_drop_sum`, `sat_processed_sum`, `sat_incoming_sum`
 
@@ -61,6 +64,10 @@
 - `q_norm_active` 是逐步计算：  
 `q_norm_active = clip(queue_total_active / queue_arrival_scale(arrival_sum), 0, 1)`。
 - `q_norm_active_p95/p99` 与 `queue_total_active_p95/p99` 是“单个 update 内所有环境步样本”的分位数，不是跨 update 分位。
+- `q_norm_tail_hit_rate` 是单个 update 内 `q_norm_active > q_norm_tail_q0` 的步占比（tail 命中率）。
+- `q_norm_active_nonzero_rate` 是单个 update 内 `q_norm_active > 0` 的步占比。
+- `adv_preclip_*` 是标准化后、clip 前统计；`adv_postclip_*`/`adv_norm_*` 是 clip 后统计，`adv_clip_frac` 是被 clip 的样本比例。
+- `log_std_mean` / `action_std_mean` 是当前可训练动作头（accel/bw/sat）分布方差参数的步后均值（其中 `action_std_mean = exp(log_std_mean)` 在逐维后再取均值）。
 - `collision_rate` 是 update 内 `collision_event` 的步均值（0/1 事件平均）。
 - 当启用尾部惩罚（`q_norm_tail_q0 > 0`）时，`queue_pen = max(q_norm_active-q0,0)^2`（active 分支）；`queue_weight` 反映该步实际惩罚权重。
 - 启用交叉退火后，`centroid_transfer_ratio` 反映 centroid 退火进度，`queue_weight/q_delta_weight/crash_weight/avoidance_eta_exec` 为迁移后的有效权重。
