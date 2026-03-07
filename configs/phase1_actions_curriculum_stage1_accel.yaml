@@ -64,10 +64,13 @@ energy_enabled: false
 fading_enabled: false
 interference_enabled: false
 
-enable_bw_action: false
-fixed_satellite_strategy: true
+# enable_bw_action: false
+# fixed_satellite_strategy: true
+enable_bw_action: true
+fixed_satellite_strategy: false
 sat_select_mode: sample
 N_RF: 2
+# N_RF: 1
 
 train_accel: true
 train_bw: false

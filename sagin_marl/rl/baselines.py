@@ -39,6 +39,27 @@ def centroid_accel_policy(
         accel[i] = np.clip(vec * gain, -1.0, 1.0).astype(np.float32)
     return accel
 
+def uniform_bw_policy(num_agents: int, users_obs_max: int) -> np.ndarray:
+    return np.zeros((num_agents, users_obs_max), dtype=np.float32)
+
+def random_bw_policy(
+    num_agents: int,
+    cfg,
+    rng: np.random.Generator | None = None,
+) -> np.ndarray:
+    rng = rng or np.random.default_rng()
+    return rng.uniform(-cfg.bw_logit_scale, cfg.bw_logit_scale, size=(num_agents, cfg.users_obs_max)).astype(np.float32)
+
+def uniform_sat_policy(num_agents: int, sats_obs_max: int) -> np.ndarray:
+    return np.zeros((num_agents, sats_obs_max), dtype=np.float32)
+
+def random_sat_policy(
+    num_agents: int,
+    cfg,
+    rng: np.random.Generator | None = None,
+) -> np.ndarray:
+    rng = rng or np.random.default_rng()
+    return rng.uniform(-cfg.sat_logit_scale, cfg.sat_logit_scale, size=(num_agents, cfg.sats_obs_max)).astype(np.float32)
 
 def queue_aware_policy(
     obs_list: List[Dict[str, np.ndarray]],
@@ -135,3 +156,17 @@ def queue_aware_policy(
         accel[i] = np.clip(accel_vec, -1.0, 1.0)
 
     return accel, bw_logits, sat_logits
+
+def queue_aware_bw_policy(
+    obs_list: List[Dict[str, np.ndarray]],
+    cfg,
+) -> np.ndarray:
+    _, bw_logits, _ = queue_aware_policy(obs_list, cfg)
+    return bw_logits
+
+def queue_aware_sat_policy(
+    obs_list: List[Dict[str, np.ndarray]],
+    cfg,
+) -> np.ndarray:
+    _, _, sat_logits = queue_aware_policy(obs_list, cfg)
+    return sat_logits

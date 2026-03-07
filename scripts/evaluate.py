@@ -22,6 +22,12 @@ from sagin_marl.rl.baselines import (
     queue_aware_policy,
     random_accel_policy,
     zero_accel_policy,
+    uniform_bw_policy,
+    random_bw_policy,
+    queue_aware_bw_policy,
+    uniform_sat_policy,
+    random_sat_policy,
+    queue_aware_sat_policy,
 )
 from sagin_marl.rl.policy import ActorNet, batch_flatten_obs
 from sagin_marl.utils.progress import Progress
@@ -115,6 +121,18 @@ def _baseline_actions(
         gain = float(getattr(cfg, "baseline_centroid_gain", 2.0))
         queue_weighted = bool(getattr(cfg, "baseline_centroid_queue_weighted", True))
         return centroid_accel_policy(obs_list, gain=gain, queue_weighted=queue_weighted), None, None
+    if baseline == "uniform_bw":
+        return zero_accel_policy(num_agents), uniform_bw_policy(num_agents, cfg.users_obs_max), None
+    if baseline == "random_bw":
+        return zero_accel_policy(num_agents), random_bw_policy(num_agents, cfg, rng=rng), None
+    if baseline == "queue_aware_bw":
+        return zero_accel_policy(num_agents), queue_aware_bw_policy(obs_list, cfg), None
+    if baseline == "uniform_sat":
+        return zero_accel_policy(num_agents), None, uniform_sat_policy(num_agents, cfg.sats_obs_max)
+    if baseline == "random_sat":
+        return zero_accel_policy(num_agents), None, random_sat_policy(num_agents, cfg, rng=rng)
+    if baseline == "queue_aware_sat":
+        return zero_accel_policy(num_agents), None, queue_aware_sat_policy(obs_list, cfg)
     if baseline == "queue_aware":
         return queue_aware_policy(obs_list, cfg)
     raise ValueError(f"Unknown baseline: {baseline}")
@@ -170,7 +188,20 @@ def main():
         "--baseline",
         type=str,
         default="none",
-        choices=["none", "fixed", "zero_accel", "random_accel", "centroid", "queue_aware"],
+        choices=[
+            "none", 
+            "fixed", 
+            "zero_accel", 
+            "random_accel", 
+            "centroid", 
+            "queue_aware", 
+            "uniform_bw", 
+            "random_bw", 
+            "queue_aware_bw", 
+            "uniform_sat",
+            "random_sat",
+            "queue_aware_sat"
+        ],
         help="Use a baseline policy instead of a trained model.",
     )
     parser.add_argument(

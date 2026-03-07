@@ -253,3 +253,27 @@ python scripts/summarize_policy_kpi.py --input fixed=runs/stage1_accel/eval_fixe
 - `runs/stage1_accel/eval_random_accel_n20.csv`
 - `runs/stage1_accel/eval_centroid_n20.csv`
 - `scripts/summarize_policy_kpi.py`
+
+## 补充策略对照：带宽分配与卫星选择
+同上，分别评估 `queue_aware_bw` 和 `queue_aware_sat` 基线，比较带宽分配和卫星选择策略对 KPI 的影响。三种带宽策略（uniform_bw、random_bw、queue_aware_bw）和三种卫星策略（uniform_sat、random_sat、queue_aware_sat）：平均分配、随机分配、基于队列状态的分配。
+
+```powershell
+python scripts/evaluate.py --config configs/phase1_actions_curriculum_stage1_accel.yaml --episodes 20 --baseline uniform_bw --episode_seed_base 42000 --out runs/stage1_accel/eval_uniform_bw_n20.csv
+python scripts/evaluate.py --config configs/phase1_actions_curriculum_stage1_accel.yaml --episodes 20 --baseline random_bw --episode_seed_base 42000 --out runs/stage1_accel/eval_random_bw_n20.csv
+python scripts/evaluate.py --config configs/phase1_actions_curriculum_stage1_accel.yaml --episodes 20 --baseline queue_aware_bw --episode_seed_base 42000 --out runs/stage1_accel/eval_queue_aware_bw_n20.csv
+```
+
+```powershell
+python scripts/summarize_policy_kpi.py --input uniform=runs/stage1_accel/eval_uniform_bw_n20.csv random=runs/stage1_accel/eval_random_bw_n20.csv queue_aware=runs/stage1_accel/eval_queue_aware_bw_n20.csv
+```
+```
+---
+```powershell
+python scripts/evaluate.py --config configs/phase1_actions_curriculum_stage1_accel.yaml --episodes 20 --baseline uniform_sat --episode_seed_base 42000 --out runs/stage1_accel/eval_uniform_sat_n20.csv
+python scripts/evaluate.py --config configs/phase1_actions_curriculum_stage1_accel.yaml --episodes 20 --baseline random_sat --episode_seed_base 42000 --out runs/stage1_accel/eval_random_sat_n20.csv
+python scripts/evaluate.py --config configs/phase1_actions_curriculum_stage1_accel.yaml --episodes 20 --baseline queue_aware_sat --episode_seed_base 42000 --out runs/stage1_accel/eval_queue_aware_sat_n20.csv
+```
+
+```powershell
+python scripts/summarize_policy_kpi.py --input uniform=runs/stage1_accel/eval_uniform_sat_n20.csv random=runs/stage1_accel/eval_random_sat_n20.csv queue_aware=runs/stage1_accel/eval_queue_aware_sat_n20.csv
+```
