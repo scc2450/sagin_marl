@@ -59,6 +59,8 @@ python scripts/evaluate.py --config configs/phase1_actions_curriculum_stage1_acc
 ```powershell
 python scripts/evaluate.py --config configs/phase1_actions_curriculum_stage1_accel.yaml --run_dir <RUN_DIR> --episodes 20 --hybrid_bw_sat queue_aware
 ```
+python scripts/evaluate.py --config configs/phase1_actions_curriculum_stage1_accel.yaml --run_dir runs/ablation\centroid_disabled_200 --episodes 20 --hybrid_bw_sat queue_aware
+
 4. 评估（启发式基线，推荐）
 ```powershell
 python scripts/evaluate.py --config configs/phase1_actions_curriculum_stage1_accel.yaml --run_dir <RUN_DIR> --episodes 20 --baseline queue_aware

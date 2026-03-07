@@ -104,10 +104,10 @@ eta_q_delta: 2.0
 eta_throughput_access: 0.0
 eta_throughput_backhaul: 0.0
 eta_accel: 0.02
-eta_centroid: 0.45
-eta_centroid_final: 0.15
-eta_centroid_decay_steps: 50000
-centroid_cross_anneal_enabled: true
+eta_centroid: 0.0
+eta_centroid_final: 0.0
+eta_centroid_decay_steps: 0
+centroid_cross_anneal_enabled: false
 centroid_cross_queue_gain: 0.6
 centroid_cross_q_delta_gain: 0.5
 centroid_cross_crash_gain: 1.0
@@ -133,11 +133,11 @@ critic_lr: 1.0e-4
 actor_hidden: 256
 critic_hidden: 256
 
-imitation_enabled: true
-imitation_coef: 0.35
-imitation_coef_final: 0.20
-imitation_coef_decay_updates: 400
-imitation_accel: true
+imitation_enabled: false
+imitation_coef: 0.0
+imitation_coef_final: 0.0
+imitation_coef_decay_updates: 0
+imitation_accel: false
 imitation_bw: false
 imitation_sat: false
 
