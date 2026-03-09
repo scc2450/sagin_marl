@@ -258,12 +258,20 @@ def main():
         "service_norm",
         "drop_norm",
         "queue_total_active",
+        "queue_total_active_max",
+        "queue_total_active_p95_step",
         "arrival_sum",
         "outflow_sum",
         "outflow_arrival_ratio",
         "drop_sum",
         "drop_ratio",
         "drop_ratio_step_mean",
+        "terminated_early",
+        "termination_reason",
+        "collision",
+        "min_inter_uav_dist",
+        "near_collision_steps",
+        "near_collision_ratio",
         "centroid_dist_mean",
         "gu_queue_mean",
         "uav_queue_mean",
@@ -308,10 +316,14 @@ def main():
             service_norm_sum = 0.0
             drop_norm_sum = 0.0
             queue_total_active_sum = 0.0
+            queue_total_active_steps: list[float] = []
             arrival_sum_ep = 0.0
             outflow_sum_ep = 0.0
             drop_sum_ep = 0.0
             drop_ratio_step_sum = 0.0
+            collision_any = 0.0
+            min_inter_uav_dist = float("inf")
+            near_collision_steps = 0.0
             centroid_dist_sum = 0.0
             ep_start = time.perf_counter()
             while not done:
@@ -358,12 +370,23 @@ def main():
                     reward_raw_sum += float(parts.get("reward_raw", 0.0))
                     service_norm_sum += float(parts.get("service_norm", 0.0))
                     drop_norm_sum += float(parts.get("drop_norm", 0.0))
-                    queue_total_active_sum += float(parts.get("queue_total_active", 0.0))
+                    queue_total_active_step = float(parts.get("queue_total_active", 0.0))
+                    queue_total_active_sum += queue_total_active_step
+                    queue_total_active_steps.append(queue_total_active_step)
                     arrival_sum_ep += float(parts.get("arrival_sum", 0.0))
                     outflow_sum_ep += float(parts.get("outflow_sum", 0.0))
                     drop_sum_ep += float(parts.get("drop_sum", 0.0))
                     drop_ratio_step_sum += float(parts.get("drop_ratio", 0.0))
+                    collision_any = max(collision_any, float(parts.get("collision_event", 0.0)))
                     centroid_dist_sum += float(parts.get("centroid_dist_mean", 0.0))
+                if cfg.num_uav > 1 and hasattr(env, "uav_pos"):
+                    diff = env.uav_pos[:, None, :] - env.uav_pos[None, :, :]
+                    dists = np.linalg.norm(diff, axis=2)
+                    np.fill_diagonal(dists, np.inf)
+                    cur_min_dist = float(np.min(dists))
+                    min_inter_uav_dist = min(min_inter_uav_dist, cur_min_dist)
+                    if cur_min_dist < float(cfg.avoidance_alert_factor) * float(cfg.d_safe):
+                        near_collision_steps += 1.0
                 assoc_ratio = 0.0
                 assoc_dist = 0.0
                 if cfg.num_gu > 0 and hasattr(env, "last_association"):
@@ -381,6 +404,12 @@ def main():
                 assoc_dist_sum += assoc_dist
             ep_time = time.perf_counter() - ep_start
             steps = max(1, steps)
+            if collision_any >= 0.5:
+                termination_reason = "collision"
+            elif steps < int(cfg.T_steps):
+                termination_reason = "energy" if cfg.energy_enabled else "early_non_collision"
+            else:
+                termination_reason = "time_limit"
             metrics = {
                 "reward_sum": reward_sum,
                 "reward_raw": reward_raw_sum / steps,
@@ -390,12 +419,21 @@ def main():
                 "service_norm": service_norm_sum / steps,
                 "drop_norm": drop_norm_sum / steps,
                 "queue_total_active": queue_total_active_sum / steps,
+                "queue_total_active_max": max(queue_total_active_steps) if queue_total_active_steps else 0.0,
+                "queue_total_active_p95_step": (
+                    float(np.percentile(queue_total_active_steps, 95)) if queue_total_active_steps else 0.0
+                ),
                 "arrival_sum": arrival_sum_ep,
                 "outflow_sum": outflow_sum_ep,
                 "outflow_arrival_ratio": outflow_sum_ep / max(arrival_sum_ep, 1e-9),
                 "drop_sum": drop_sum_ep,
                 "drop_ratio": drop_sum_ep / max(arrival_sum_ep, 1e-9),
                 "drop_ratio_step_mean": drop_ratio_step_sum / steps,
+                "terminated_early": 1.0 if steps < int(cfg.T_steps) else 0.0,
+                "collision": collision_any,
+                "min_inter_uav_dist": 0.0 if not np.isfinite(min_inter_uav_dist) else min_inter_uav_dist,
+                "near_collision_steps": near_collision_steps,
+                "near_collision_ratio": near_collision_steps / steps,
                 "centroid_dist_mean": centroid_dist_sum / steps,
                 "gu_queue_mean": gu_queue_sum / steps,
                 "uav_queue_mean": uav_queue_sum / steps,
@@ -422,12 +460,20 @@ def main():
                     metrics["service_norm"],
                     metrics["drop_norm"],
                     metrics["queue_total_active"],
+                    metrics["queue_total_active_max"],
+                    metrics["queue_total_active_p95_step"],
                     metrics["arrival_sum"],
                     metrics["outflow_sum"],
                     metrics["outflow_arrival_ratio"],
                     metrics["drop_sum"],
                     metrics["drop_ratio"],
                     metrics["drop_ratio_step_mean"],
+                    metrics["terminated_early"],
+                    termination_reason,
+                    metrics["collision"],
+                    metrics["min_inter_uav_dist"],
+                    metrics["near_collision_steps"],
+                    metrics["near_collision_ratio"],
                     metrics["centroid_dist_mean"],
                     metrics["gu_queue_mean"],
                     metrics["uav_queue_mean"],
