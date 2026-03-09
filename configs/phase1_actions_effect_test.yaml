@@ -1,0 +1,152 @@
+# Stage 1: accel-only curriculum.
+# Train:
+#   python scripts/train.py --config configs/phase1_actions_curriculum_stage1_accel.yaml --updates 400 --log_dir runs/phase1_actions --run_id stage1_accel
+seed: 42
+map_size: 1500.0
+tau0: 1.0
+T_steps: 400
+
+num_uav: 3
+num_gu: 20
+num_sat: 72
+walker_num_planes: 6
+sat_state_max: 9
+
+users_obs_max: 20
+sats_obs_max: 6
+visible_sats_max: 6
+visible_sats_min: null
+nbrs_obs_max: 4
+
+uav_height: 100.0
+sat_height: 500000.0
+theta_min_deg: 5.0
+v_max: 30.0
+a_max: 5.0
+d_safe: 20.0
+boundary_mode: reflect
+
+candidate_mode: "nearest"
+candidate_k: 20
+
+uav_spawn_curriculum_enabled: true
+uav_spawn_radius_start: 300.0
+uav_spawn_radius_end: 900.0
+uav_spawn_curriculum_steps: 100
+uav_spawn_full_random_final: true
+
+task_arrival_rate: 1.0e5
+task_arrival_poisson: true
+traffic_level: 1
+traffic_level_nav_ratio: 0.08
+traffic_level_easy_ratio: 0.5
+traffic_level_hard_ratio: 1.0
+arrival_ramp_steps: 0
+arrival_ramp_start: 0.0
+arrival_ramp_use_global: false
+queue_init_frac: 0.1
+queue_init_uav_frac: 0.02
+queue_init_sat_frac: 0.01
+
+gu_tx_power: 0.18
+uav_tx_gain: 300.0
+sat_rx_gain: 300.0
+b_acc: 1.0e7
+b_sat_total: 2.0e7
+sat_cpu_freq: 1.0e10
+noise_density: 4.0e-21
+pathloss_mode: prob_los
+pl_threshold_db: 140.0
+
+doppler_observed: true
+doppler_enabled: false
+energy_enabled: false
+fading_enabled: false
+interference_enabled: false
+
+# enable_bw_action: false
+# fixed_satellite_strategy: true
+enable_bw_action: true
+fixed_satellite_strategy: false
+sat_select_mode: sample
+N_RF: 2
+# N_RF: 1
+
+train_accel: true
+train_bw: false
+train_sat: false
+train_shared_backbone: true
+exec_accel_source: policy
+exec_bw_source: zero
+exec_sat_source: zero
+exec_teacher_actor_path: null
+exec_teacher_deterministic: true
+
+avoidance_enabled: true
+avoidance_eta: 3.0
+avoidance_alert_factor: 1.5
+avoidance_repulse_mode: linear
+avoidance_repulse_clip: true
+avoidance_adaptive_enabled: true
+avoidance_collision_target: 0.05
+avoidance_adaptive_gain: 1.0
+avoidance_adaptive_ema_beta: 0.9
+avoidance_eta_min: 1.0
+avoidance_eta_max: 5.0
+eta_crash: 5.0
+
+omega_q: 1.0
+omega_q_gu: 1.0
+omega_q_uav: 0.0
+omega_q_sat: 0.0
+eta_drop: 1.3
+eta_drop_step: 10.0
+eta_service: 0.0
+eta_assoc: 0.0
+eta_q_delta: 2.0
+eta_throughput_access: 0.0
+eta_throughput_backhaul: 0.0
+eta_accel: 0.02
+eta_centroid: 0.45
+eta_centroid_final: 0.15
+eta_centroid_decay_steps: 50000
+centroid_cross_anneal_enabled: true
+centroid_cross_queue_gain: 0.6
+centroid_cross_q_delta_gain: 0.5
+centroid_cross_crash_gain: 1.0
+centroid_cross_avoidance_gain: 0.8
+centroid_dist_scale: 400.0
+eta_bw_align: 0.0
+eta_sat_score: 0.0
+eta_dist_delta: 0.0
+queue_penalty_mode: linear
+queue_log_k: 0.0
+queue_norm_K: 1.0
+q_norm_tail_q0: 0.005
+omega_q_tail: 10.0
+queue_delta_use_active: true
+
+input_norm_enabled: true
+reward_norm_enabled: false
+reward_norm_clip: 5.0
+reward_tanh_enabled: false
+lr_decay_enabled: true
+lr_final_factor: 0.1
+critic_lr: 1.0e-4
+actor_hidden: 256
+critic_hidden: 256
+
+imitation_enabled: true
+imitation_coef: 0.35
+imitation_coef_final: 0.20
+imitation_coef_decay_updates: 400
+imitation_accel: true
+imitation_bw: false
+imitation_sat: false
+
+buffer_size: 400
+num_mini_batch: 4
+ppo_epochs: 1
+entropy_coef: 0.005
+
+early_stop_enabled: false
