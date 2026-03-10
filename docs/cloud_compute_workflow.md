@@ -276,6 +276,9 @@ python scripts/render_episode.py \
 cd ~/workspace/sagin_marl/runs/phase1_actions
 tar -czf <RUN_ID>.tar.gz <RUN_ID>
 ```
+cd ~/workspace/sagin_marl/runs/ablation_followup
+tar -czf s1_safe_static_warm200.tar.gz s1_safe_static_warm200
+
 
 再从本地 PowerShell 下载：
 
@@ -285,7 +288,9 @@ scp -P <PORT> <USER>@<SERVER_IP>:~/workspace/sagin_marl/runs/phase1_actions/<RUN
 如：
 打开 AutoDL 的控制台，找到你那个实例的 “SSH联系方式”，通常长这样：ssh -p 34567 root@region-1.autodl.com
 # 注意：-P 是大写的
-scp -P 34567 root@region-1.autodl.com:~/workspace/sagin_marl/runs/phase1_actions/stage1_accel.tar.gz .
+scp -P 15942 root@connect.cqa1.seetacloud.com:~/workspace/sagin_marl/runs/ablation_followup/s1_safe_static_warm200.tar.gz .
+
+
 
 建议长期保存两份：
 - 本地硬盘

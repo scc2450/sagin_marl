@@ -45,11 +45,19 @@ def main() -> None:
 
     print(
         "policy,episodes,"
+        "reward_sum_mean,"
+        "collision_rate_mean,"
+        "near_collision_ratio_mean,"
+        "min_inter_uav_dist_mean,min_inter_uav_dist_min,"
         "queue_total_active_mean,queue_total_active_p95,queue_total_active_p99,"
         "outflow_arrival_ratio_mean,outflow_arrival_ratio_p05,"
         "drop_ratio_mean"
     )
     for label, csv_path in pairs:
+        reward = _load_series(csv_path, "reward_sum")
+        collision = _load_series(csv_path, "collision")
+        near_collision = _load_series(csv_path, "near_collision_ratio")
+        min_dist = _load_series(csv_path, "min_inter_uav_dist")
         q = _load_series(csv_path, "queue_total_active")
         ratio = _load_series(csv_path, "outflow_arrival_ratio")
         drop = _load_series(csv_path, "drop_ratio")
@@ -58,6 +66,11 @@ def main() -> None:
                 [
                     label,
                     str(int(q.size)),
+                    _fmt(float(np.mean(reward))),
+                    _fmt(float(np.mean(collision))),
+                    _fmt(float(np.mean(near_collision))),
+                    _fmt(float(np.mean(min_dist))),
+                    _fmt(float(np.min(min_dist))),
                     _fmt(float(np.mean(q))),
                     _fmt(float(np.percentile(q, 95))),
                     _fmt(float(np.percentile(q, 99))),

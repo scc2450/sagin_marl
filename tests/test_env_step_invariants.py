@@ -92,6 +92,445 @@ def test_avoidance_linear_repulsion_and_clip():
     assert accel[1, 0] > 0.0
 
 
+def test_avoidance_prealert_triggers_for_fast_closing_pair():
+    cfg = SaginConfig(
+        num_uav=2,
+        num_gu=2,
+        num_sat=3,
+        users_obs_max=2,
+        sats_obs_max=3,
+        nbrs_obs_max=1,
+        avoidance_enabled=True,
+        avoidance_eta=3.0,
+        avoidance_alert_factor=2.0,
+        avoidance_prealert_factor=6.0,
+        avoidance_prealert_closing_speed=5.0,
+        avoidance_repulse_mode="linear",
+        avoidance_repulse_clip=True,
+    )
+    env = SaginParallelEnv(cfg)
+    env.reset()
+    env.uav_pos[0] = np.array([100.0, 100.0], dtype=np.float32)
+    env.uav_pos[1] = np.array([200.0, 100.0], dtype=np.float32)
+    env.uav_vel[0] = np.array([15.0, 0.0], dtype=np.float32)
+    env.uav_vel[1] = np.array([-15.0, 0.0], dtype=np.float32)
+    actions = {
+        agent: {
+            "accel": np.zeros(2, dtype=np.float32),
+            "bw_logits": np.zeros(cfg.users_obs_max, dtype=np.float32),
+            "sat_logits": np.zeros(cfg.sats_obs_max, dtype=np.float32),
+        }
+        for agent in env.agents
+    }
+    env._apply_uav_dynamics(actions)
+    accel = env.last_exec_accel
+    assert accel[0, 0] < 0.0
+    assert accel[1, 0] > 0.0
+
+
+def test_avoidance_prealert_does_not_trigger_for_non_closing_pair():
+    cfg = SaginConfig(
+        num_uav=2,
+        num_gu=2,
+        num_sat=3,
+        users_obs_max=2,
+        sats_obs_max=3,
+        nbrs_obs_max=1,
+        avoidance_enabled=True,
+        avoidance_eta=3.0,
+        avoidance_alert_factor=2.0,
+        avoidance_prealert_factor=6.0,
+        avoidance_prealert_closing_speed=5.0,
+        avoidance_repulse_mode="linear",
+        avoidance_repulse_clip=True,
+    )
+    env = SaginParallelEnv(cfg)
+    env.reset()
+    env.uav_pos[0] = np.array([100.0, 100.0], dtype=np.float32)
+    env.uav_pos[1] = np.array([200.0, 100.0], dtype=np.float32)
+    env.uav_vel[0] = np.array([-10.0, 0.0], dtype=np.float32)
+    env.uav_vel[1] = np.array([10.0, 0.0], dtype=np.float32)
+    actions = {
+        agent: {
+            "accel": np.zeros(2, dtype=np.float32),
+            "bw_logits": np.zeros(cfg.users_obs_max, dtype=np.float32),
+            "sat_logits": np.zeros(cfg.sats_obs_max, dtype=np.float32),
+        }
+        for agent in env.agents
+    }
+    env._apply_uav_dynamics(actions)
+    accel = env.last_exec_accel
+    assert np.allclose(accel, 0.0, atol=1e-6)
+
+
+def test_avoidance_ttc_prealert_triggers_before_legacy_distance_threshold():
+    cfg = SaginConfig(
+        num_uav=2,
+        num_gu=2,
+        num_sat=3,
+        users_obs_max=2,
+        sats_obs_max=3,
+        nbrs_obs_max=1,
+        avoidance_enabled=True,
+        avoidance_eta=3.0,
+        avoidance_alert_factor=2.0,
+        avoidance_prealert_factor=6.0,
+        avoidance_prealert_closing_speed=0.0,
+        avoidance_prealert_mode="ttc",
+        avoidance_prealert_ttc=3.0,
+        avoidance_prealert_dist_cap=200.0,
+        avoidance_repulse_mode="linear",
+        avoidance_repulse_clip=True,
+    )
+    env = SaginParallelEnv(cfg)
+    env.reset()
+    env.uav_pos[0] = np.array([100.0, 100.0], dtype=np.float32)
+    env.uav_pos[1] = np.array([280.0, 100.0], dtype=np.float32)
+    env.uav_vel[0] = np.array([30.0, 0.0], dtype=np.float32)
+    env.uav_vel[1] = np.array([-30.0, 0.0], dtype=np.float32)
+    actions = {
+        agent: {
+            "accel": np.zeros(2, dtype=np.float32),
+            "bw_logits": np.zeros(cfg.users_obs_max, dtype=np.float32),
+            "sat_logits": np.zeros(cfg.sats_obs_max, dtype=np.float32),
+        }
+        for agent in env.agents
+    }
+    env._apply_uav_dynamics(actions)
+    accel = env.last_exec_accel
+    assert accel[0, 0] < 0.0
+    assert accel[1, 0] > 0.0
+
+
+def test_avoidance_ttc_prealert_respects_ttc_horizon():
+    cfg = SaginConfig(
+        num_uav=2,
+        num_gu=2,
+        num_sat=3,
+        users_obs_max=2,
+        sats_obs_max=3,
+        nbrs_obs_max=1,
+        avoidance_enabled=True,
+        avoidance_eta=3.0,
+        avoidance_alert_factor=2.0,
+        avoidance_prealert_closing_speed=0.0,
+        avoidance_prealert_mode="ttc",
+        avoidance_prealert_ttc=3.0,
+        avoidance_prealert_dist_cap=200.0,
+        avoidance_repulse_mode="linear",
+        avoidance_repulse_clip=True,
+    )
+    env = SaginParallelEnv(cfg)
+    env.reset()
+    env.uav_pos[0] = np.array([100.0, 100.0], dtype=np.float32)
+    env.uav_pos[1] = np.array([280.0, 100.0], dtype=np.float32)
+    env.uav_vel[0] = np.array([10.0, 0.0], dtype=np.float32)
+    env.uav_vel[1] = np.array([-10.0, 0.0], dtype=np.float32)
+    actions = {
+        agent: {
+            "accel": np.zeros(2, dtype=np.float32),
+            "bw_logits": np.zeros(cfg.users_obs_max, dtype=np.float32),
+            "sat_logits": np.zeros(cfg.sats_obs_max, dtype=np.float32),
+        }
+        for agent in env.agents
+    }
+    env._apply_uav_dynamics(actions)
+    accel = env.last_exec_accel
+    assert np.allclose(accel, 0.0, atol=1e-6)
+
+
+def test_avoidance_ttc_prealert_respects_dist_cap():
+    cfg = SaginConfig(
+        num_uav=2,
+        num_gu=2,
+        num_sat=3,
+        users_obs_max=2,
+        sats_obs_max=3,
+        nbrs_obs_max=1,
+        avoidance_enabled=True,
+        avoidance_eta=3.0,
+        avoidance_alert_factor=2.0,
+        avoidance_prealert_closing_speed=0.0,
+        avoidance_prealert_mode="ttc",
+        avoidance_prealert_ttc=3.0,
+        avoidance_prealert_dist_cap=200.0,
+        avoidance_repulse_mode="linear",
+        avoidance_repulse_clip=True,
+    )
+    env = SaginParallelEnv(cfg)
+    env.reset()
+    env.uav_pos[0] = np.array([100.0, 100.0], dtype=np.float32)
+    env.uav_pos[1] = np.array([340.0, 100.0], dtype=np.float32)
+    env.uav_vel[0] = np.array([40.0, 0.0], dtype=np.float32)
+    env.uav_vel[1] = np.array([-40.0, 0.0], dtype=np.float32)
+    actions = {
+        agent: {
+            "accel": np.zeros(2, dtype=np.float32),
+            "bw_logits": np.zeros(cfg.users_obs_max, dtype=np.float32),
+            "sat_logits": np.zeros(cfg.sats_obs_max, dtype=np.float32),
+        }
+        for agent in env.agents
+    }
+    env._apply_uav_dynamics(actions)
+    accel = env.last_exec_accel
+    assert np.allclose(accel, 0.0, atol=1e-6)
+
+
+def test_boundary_hard_filter_projects_next_step_inside_margin():
+    cfg = SaginConfig(
+        num_uav=1,
+        num_gu=2,
+        num_sat=3,
+        users_obs_max=2,
+        sats_obs_max=3,
+        nbrs_obs_max=1,
+        boundary_mode="reflect",
+        boundary_hard_filter_enabled=True,
+        boundary_margin=30.0,
+    )
+    env = SaginParallelEnv(cfg)
+    env.reset()
+    env.uav_pos[0] = np.array([34.0, 100.0], dtype=np.float32)
+    env.uav_vel[0] = np.array([-5.0, 0.0], dtype=np.float32)
+    actions = {
+        agent: {
+            "accel": np.zeros(2, dtype=np.float32),
+            "bw_logits": np.zeros(cfg.users_obs_max, dtype=np.float32),
+            "sat_logits": np.zeros(cfg.sats_obs_max, dtype=np.float32),
+        }
+        for agent in env.agents
+    }
+    env._apply_uav_dynamics(actions)
+    assert abs(float(env.last_exec_accel[0, 0]) - 1.0) < 1e-6
+    assert abs(float(env.uav_pos[0, 0]) - 30.0) < 1e-6
+    assert abs(float(env.uav_vel[0, 0]) + 4.0) < 1e-6
+    assert abs(float(env.last_filter_active_ratio) - 1.0) < 1e-6
+    assert abs(float(env.last_boundary_filter_count) - 1.0) < 1e-6
+    assert abs(float(env.last_fallback_count) - 0.0) < 1e-6
+
+
+def test_boundary_hard_filter_uses_inward_fallback_when_margin_is_infeasible():
+    cfg = SaginConfig(
+        num_uav=1,
+        num_gu=2,
+        num_sat=3,
+        users_obs_max=2,
+        sats_obs_max=3,
+        nbrs_obs_max=1,
+        boundary_mode="reflect",
+        boundary_hard_filter_enabled=True,
+        boundary_margin=30.0,
+    )
+    env = SaginParallelEnv(cfg)
+    env.reset()
+    env.uav_pos[0] = np.array([31.0, 100.0], dtype=np.float32)
+    env.uav_vel[0] = np.array([-10.0, 0.0], dtype=np.float32)
+    actions = {
+        agent: {
+            "accel": np.zeros(2, dtype=np.float32),
+            "bw_logits": np.zeros(cfg.users_obs_max, dtype=np.float32),
+            "sat_logits": np.zeros(cfg.sats_obs_max, dtype=np.float32),
+        }
+        for agent in env.agents
+    }
+    env._apply_uav_dynamics(actions)
+    assert abs(float(env.last_exec_accel[0, 0]) - cfg.a_max) < 1e-6
+    assert abs(float(env.uav_vel[0, 0]) + 5.0) < 1e-6
+    assert abs(float(env.uav_pos[0, 0]) - 26.0) < 1e-6
+    assert abs(float(env.last_filter_active_ratio) - 1.0) < 1e-6
+    assert abs(float(env.last_boundary_filter_count) - 1.0) < 1e-6
+    assert abs(float(env.last_fallback_count) - 1.0) < 1e-6
+
+
+def test_pairwise_hard_filter_projects_most_dangerous_pair_to_d_hard():
+    cfg = SaginConfig(
+        num_uav=2,
+        num_gu=2,
+        num_sat=3,
+        users_obs_max=2,
+        sats_obs_max=3,
+        nbrs_obs_max=1,
+        pairwise_hard_filter_enabled=True,
+        pairwise_hard_distance=25.0,
+    )
+    env = SaginParallelEnv(cfg)
+    env.reset()
+    env.uav_pos[0] = np.array([100.0, 100.0], dtype=np.float32)
+    env.uav_pos[1] = np.array([124.0, 100.0], dtype=np.float32)
+    env.uav_vel[:] = 0.0
+    actions = {
+        agent: {
+            "accel": np.zeros(2, dtype=np.float32),
+            "bw_logits": np.zeros(cfg.users_obs_max, dtype=np.float32),
+            "sat_logits": np.zeros(cfg.sats_obs_max, dtype=np.float32),
+        }
+        for agent in env.agents
+    }
+    env._apply_uav_dynamics(actions)
+    assert abs(float(env.uav_pos[0, 0]) - 99.5) < 1e-6
+    assert abs(float(env.uav_pos[1, 0]) - 124.5) < 1e-6
+    assert abs(float(np.linalg.norm(env.uav_pos[0] - env.uav_pos[1])) - 25.0) < 1e-6
+    assert env.last_exec_accel[0, 0] < 0.0
+    assert env.last_exec_accel[1, 0] > 0.0
+    assert abs(float(env.last_pairwise_filter_count) - 1.0) < 1e-6
+    assert abs(float(env.last_pairwise_filter_active_ratio) - 1.0) < 1e-6
+    assert abs(float(env.last_pairwise_fallback_count) - 0.0) < 1e-6
+    assert abs(float(env.last_pairwise_candidate_infeasible_count) - 0.0) < 1e-6
+    assert float(env.last_pairwise_projected_delta_norm) > 0.4
+
+
+def test_pairwise_hard_filter_uses_fallback_when_one_step_separation_is_infeasible():
+    cfg = SaginConfig(
+        num_uav=2,
+        num_gu=2,
+        num_sat=3,
+        users_obs_max=2,
+        sats_obs_max=3,
+        nbrs_obs_max=1,
+        pairwise_hard_filter_enabled=True,
+        pairwise_hard_distance=25.0,
+    )
+    env = SaginParallelEnv(cfg)
+    env.reset()
+    env.uav_pos[0] = np.array([100.0, 100.0], dtype=np.float32)
+    env.uav_pos[1] = np.array([122.0, 100.0], dtype=np.float32)
+    env.uav_vel[0] = np.array([10.0, 0.0], dtype=np.float32)
+    env.uav_vel[1] = np.array([-10.0, 0.0], dtype=np.float32)
+    actions = {
+        agent: {
+            "accel": np.zeros(2, dtype=np.float32),
+            "bw_logits": np.zeros(cfg.users_obs_max, dtype=np.float32),
+            "sat_logits": np.zeros(cfg.sats_obs_max, dtype=np.float32),
+        }
+        for agent in env.agents
+    }
+    env._apply_uav_dynamics(actions)
+    assert abs(float(env.last_exec_accel[0, 0]) + cfg.a_max) < 1e-6
+    assert abs(float(env.last_exec_accel[1, 0]) - cfg.a_max) < 1e-6
+    assert abs(float(np.linalg.norm(env.uav_pos[0] - env.uav_pos[1])) - 12.0) < 1e-6
+    assert abs(float(env.last_pairwise_filter_count) - 1.0) < 1e-6
+    assert abs(float(env.last_pairwise_filter_active_ratio) - 1.0) < 1e-6
+    assert abs(float(env.last_pairwise_fallback_count) - 1.0) < 1e-6
+    assert abs(float(env.last_pairwise_candidate_infeasible_count) - 1.0) < 1e-6
+    assert abs(float(env.last_fallback_count) - 1.0) < 1e-6
+
+
+def test_pairwise_ttc_filter_triggers_before_next_step_distance_violation():
+    cfg = SaginConfig(
+        num_uav=2,
+        num_gu=2,
+        num_sat=3,
+        users_obs_max=2,
+        sats_obs_max=3,
+        nbrs_obs_max=1,
+        pairwise_hard_filter_enabled=True,
+        pairwise_hard_distance=25.0,
+        pairwise_hard_trigger_mode="ttc",
+        pairwise_hard_trigger_ttc=2.0,
+        pairwise_hard_trigger_distance=80.0,
+        pairwise_hard_closing_speed=0.0,
+    )
+    env = SaginParallelEnv(cfg)
+    env.reset()
+    env.uav_pos[0] = np.array([100.0, 100.0], dtype=np.float32)
+    env.uav_pos[1] = np.array([150.0, 100.0], dtype=np.float32)
+    env.uav_vel[0] = np.array([8.0, 0.0], dtype=np.float32)
+    env.uav_vel[1] = np.array([-8.0, 0.0], dtype=np.float32)
+    actions = {
+        agent: {
+            "accel": np.zeros(2, dtype=np.float32),
+            "bw_logits": np.zeros(cfg.users_obs_max, dtype=np.float32),
+            "sat_logits": np.zeros(cfg.sats_obs_max, dtype=np.float32),
+        }
+        for agent in env.agents
+    }
+    env._apply_uav_dynamics(actions)
+    assert abs(float(env.last_exec_accel[0, 0]) + 1.75) < 1e-5
+    assert abs(float(env.last_exec_accel[1, 0]) - 1.75) < 1e-5
+    assert abs(float(env.uav_pos[0, 0]) - 106.25) < 1e-5
+    assert abs(float(env.uav_pos[1, 0]) - 143.75) < 1e-5
+    assert abs(float(np.linalg.norm(env.uav_pos[0] - env.uav_pos[1])) - 37.5) < 1e-5
+    assert abs(float(env.last_pairwise_filter_count) - 1.0) < 1e-6
+    assert abs(float(env.last_pairwise_fallback_count) - 0.0) < 1e-6
+    assert abs(float(env.last_pairwise_candidate_infeasible_count) - 0.0) < 1e-6
+
+
+def test_pairwise_ttc_filter_ignores_opening_pair():
+    cfg = SaginConfig(
+        num_uav=2,
+        num_gu=2,
+        num_sat=3,
+        users_obs_max=2,
+        sats_obs_max=3,
+        nbrs_obs_max=1,
+        pairwise_hard_filter_enabled=True,
+        pairwise_hard_distance=25.0,
+        pairwise_hard_trigger_mode="ttc",
+        pairwise_hard_trigger_ttc=2.0,
+        pairwise_hard_trigger_distance=80.0,
+        pairwise_hard_closing_speed=0.0,
+    )
+    env = SaginParallelEnv(cfg)
+    env.reset()
+    env.uav_pos[0] = np.array([100.0, 100.0], dtype=np.float32)
+    env.uav_pos[1] = np.array([150.0, 100.0], dtype=np.float32)
+    env.uav_vel[0] = np.array([-8.0, 0.0], dtype=np.float32)
+    env.uav_vel[1] = np.array([8.0, 0.0], dtype=np.float32)
+    actions = {
+        agent: {
+            "accel": np.zeros(2, dtype=np.float32),
+            "bw_logits": np.zeros(cfg.users_obs_max, dtype=np.float32),
+            "sat_logits": np.zeros(cfg.sats_obs_max, dtype=np.float32),
+        }
+        for agent in env.agents
+    }
+    env._apply_uav_dynamics(actions)
+    assert np.allclose(env.last_exec_accel, 0.0, atol=1e-6)
+    assert abs(float(env.last_pairwise_filter_count) - 0.0) < 1e-6
+    assert abs(float(env.last_pairwise_fallback_count) - 0.0) < 1e-6
+    assert abs(float(env.last_pairwise_candidate_infeasible_count) - 0.0) < 1e-6
+
+
+def test_pairwise_ttc_filter_only_adjusts_most_dangerous_pair_for_three_uavs():
+    cfg = SaginConfig(
+        num_uav=3,
+        num_gu=3,
+        num_sat=3,
+        users_obs_max=3,
+        sats_obs_max=3,
+        nbrs_obs_max=2,
+        pairwise_hard_filter_enabled=True,
+        pairwise_hard_distance=25.0,
+        pairwise_hard_trigger_mode="ttc",
+        pairwise_hard_trigger_ttc=2.0,
+        pairwise_hard_trigger_distance=80.0,
+        pairwise_hard_closing_speed=0.0,
+        pairwise_hard_single_pair_only=True,
+    )
+    env = SaginParallelEnv(cfg)
+    env.reset()
+    env.uav_pos[0] = np.array([100.0, 100.0], dtype=np.float32)
+    env.uav_pos[1] = np.array([132.0, 100.0], dtype=np.float32)
+    env.uav_pos[2] = np.array([170.0, 100.0], dtype=np.float32)
+    env.uav_vel[0] = np.array([8.0, 0.0], dtype=np.float32)
+    env.uav_vel[1] = np.array([0.0, 0.0], dtype=np.float32)
+    env.uav_vel[2] = np.array([-8.0, 0.0], dtype=np.float32)
+    actions = {
+        agent: {
+            "accel": np.zeros(2, dtype=np.float32),
+            "bw_logits": np.zeros(cfg.users_obs_max, dtype=np.float32),
+            "sat_logits": np.zeros(cfg.sats_obs_max, dtype=np.float32),
+        }
+        for agent in env.agents
+    }
+    env._apply_uav_dynamics(actions)
+    assert abs(float(env.last_exec_accel[0, 0]) + 2.25) < 1e-5
+    assert abs(float(env.last_exec_accel[1, 0]) - 2.25) < 1e-5
+    assert np.allclose(env.last_exec_accel[2], 0.0, atol=1e-6)
+    assert abs(float(env.last_pairwise_filter_count) - 1.0) < 1e-6
+    assert abs(float(env.last_pairwise_filter_active_ratio) - (1.0 / 3.0)) < 1e-6
+
+
 def test_centroid_cross_anneal_transfers_weights():
     cfg = SaginConfig(
         num_uav=2,

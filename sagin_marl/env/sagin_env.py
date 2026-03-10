@@ -312,6 +312,15 @@ class SaginParallelEnv(ParallelEnv):
         self.last_bw_align = 0.0
         self.last_sat_score = 0.0
         self.last_arrival_rate = float(getattr(self, "effective_task_arrival_rate", cfg.task_arrival_rate))
+        self.last_filter_active_ratio = 0.0
+        self.last_projected_delta_norm_mean = 0.0
+        self.last_fallback_count = 0.0
+        self.last_boundary_filter_count = 0.0
+        self.last_pairwise_filter_count = 0.0
+        self.last_pairwise_filter_active_ratio = 0.0
+        self.last_pairwise_projected_delta_norm = 0.0
+        self.last_pairwise_fallback_count = 0.0
+        self.last_pairwise_candidate_infeasible_count = 0.0
         self.last_step_profile = self._empty_step_profile()
 
         self.last_association = np.full((cfg.num_gu,), -1, dtype=np.int32)
@@ -353,6 +362,15 @@ class SaginParallelEnv(ParallelEnv):
             "avoidance_eta_exec": float(getattr(self, "last_avoidance_eta_exec", cfg.avoidance_eta)),
             "avoidance_collision_rate_ema": float(getattr(self, "avoidance_collision_rate_ema", 0.0)),
             "avoidance_prev_episode_collision_rate": float(getattr(self, "prev_episode_collision_rate", 0.0)),
+            "filter_active_ratio": 0.0,
+            "projected_delta_norm_mean": 0.0,
+            "fallback_count": 0.0,
+            "boundary_filter_count": 0.0,
+            "pairwise_filter_count": 0.0,
+            "pairwise_filter_active_ratio": 0.0,
+            "pairwise_projected_delta_norm": 0.0,
+            "pairwise_fallback_count": 0.0,
+            "pairwise_candidate_infeasible_count": 0.0,
             "term_service": 0.0,
             "term_drop": 0.0,
             "term_drop_step": 0.0,
@@ -497,6 +515,478 @@ class SaginParallelEnv(ParallelEnv):
         infos = {agent: {} for agent in self.agents}
         return obs, rewards, terminations, truncations, infos
 
+    def _boundary_margin(self) -> float:
+        cfg = self.cfg
+        raw_margin = getattr(cfg, "boundary_margin", None)
+        if raw_margin is None:
+            margin = float(cfg.d_safe)
+        else:
+            margin = max(float(raw_margin), 0.0)
+        return float(min(margin, max(0.0, 0.5 * float(cfg.map_size) - 1e-6)))
+
+    def _project_axis_to_boundary(
+        self,
+        pos: float,
+        vel: float,
+        accel_cmd: float,
+        lower: float,
+        upper: float,
+    ) -> Tuple[float, bool, bool]:
+        cfg = self.cfg
+        tau = max(float(cfg.tau0), 1e-6)
+        a_max = float(cfg.a_max)
+        v_max = float(cfg.v_max)
+        accel_cmd = float(np.clip(accel_cmd, -a_max, a_max))
+        vel_cmd = float(np.clip(vel + accel_cmd * tau, -v_max, v_max))
+        pos_cmd = float(pos + vel_cmd * tau)
+        if lower <= pos_cmd <= upper:
+            return accel_cmd, False, False
+
+        vel_low = max(-v_max, (lower - pos) / tau)
+        vel_high = min(v_max, (upper - pos) / tau)
+        if vel_low <= vel_high:
+            target_vel = float(np.clip(vel_cmd, vel_low, vel_high))
+            accel_proj = float(np.clip((target_vel - vel) / tau, -a_max, a_max))
+            vel_next = float(np.clip(vel + accel_proj * tau, -v_max, v_max))
+            pos_next = float(pos + vel_next * tau)
+            if lower <= pos_next <= upper:
+                return accel_proj, True, False
+
+        if pos_cmd < lower or pos < lower:
+            accel_fallback = a_max
+        elif pos_cmd > upper or pos > upper:
+            accel_fallback = -a_max
+        else:
+            center = 0.5 * (lower + upper)
+            accel_fallback = a_max if pos < center else -a_max
+        return float(np.clip(accel_fallback, -a_max, a_max)), True, True
+
+    def _predict_next_from_accel(self, accel: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+        cfg = self.cfg
+        accel_arr = np.asarray(accel, dtype=np.float32)
+        vel_next = np.clip(self.uav_vel + accel_arr * cfg.tau0, -cfg.v_max, cfg.v_max)
+        pos_next = self.uav_pos + vel_next * cfg.tau0
+        return pos_next.astype(np.float32, copy=False), vel_next.astype(np.float32, copy=False)
+
+    def _pairwise_hard_distance(self) -> float:
+        cfg = self.cfg
+        raw_distance = getattr(cfg, "pairwise_hard_distance", None)
+        if raw_distance is None:
+            return float(cfg.d_safe + 5.0)
+        return max(float(raw_distance), float(cfg.d_safe))
+
+    def _pairwise_trigger_mode(self) -> str:
+        cfg = self.cfg
+        mode = str(getattr(cfg, "pairwise_hard_trigger_mode", "distance") or "distance").strip().lower()
+        if mode not in {"distance", "ttc"}:
+            return "distance"
+        return mode
+
+    def _pairwise_trigger_ttc(self) -> float:
+        cfg = self.cfg
+        return max(float(getattr(cfg, "pairwise_hard_trigger_ttc", 2.0) or 0.0), 0.0)
+
+    def _pairwise_trigger_distance(self, d_hard: float) -> float:
+        cfg = self.cfg
+        raw_distance = getattr(cfg, "pairwise_hard_trigger_distance", None)
+        if raw_distance is not None:
+            return max(float(raw_distance), d_hard)
+        if self._pairwise_trigger_mode() == "ttc":
+            return max(d_hard, d_hard + 2.0 * float(cfg.v_max) * self._pairwise_trigger_ttc())
+        return d_hard
+
+    def _pairwise_closing_speed_threshold(self) -> float:
+        cfg = self.cfg
+        return max(float(getattr(cfg, "pairwise_hard_closing_speed", 0.0) or 0.0), 0.0)
+
+    def _pairwise_correction_direction(
+        self,
+        pair_diff_next: np.ndarray,
+        i: int,
+        j: int,
+    ) -> np.ndarray:
+        direction = np.asarray(pair_diff_next, dtype=np.float32)
+        norm = float(np.linalg.norm(direction))
+        if norm > 1e-6:
+            return direction / norm
+        direction = np.asarray(self.uav_pos[i] - self.uav_pos[j], dtype=np.float32)
+        norm = float(np.linalg.norm(direction))
+        if norm > 1e-6:
+            return direction / norm
+        direction = np.asarray(self.uav_vel[i] - self.uav_vel[j], dtype=np.float32)
+        norm = float(np.linalg.norm(direction))
+        if norm > 1e-6:
+            return direction / norm
+        return np.array([1.0, 0.0], dtype=np.float32)
+
+    def _evaluate_pairwise_ttc_resolution(
+        self,
+        accel: np.ndarray,
+        i: int,
+        j: int,
+        d_hard: float,
+        direction: np.ndarray,
+        dist_cur: float,
+        ttc_limit: float,
+        closing_speed_thresh: float,
+    ) -> Dict[str, float | bool]:
+        pos_next, vel_next = self._predict_next_from_accel(accel)
+        dist_next = float(np.linalg.norm(pos_next[i] - pos_next[j]))
+        rel_vel_next = np.asarray(vel_next[i] - vel_next[j], dtype=np.float32)
+        radial_speed_next = float(np.dot(rel_vel_next, direction))
+        closing_next = max(-radial_speed_next, 0.0)
+        if dist_cur <= d_hard:
+            allowed_closing = 0.0
+        elif ttc_limit > 0.0:
+            allowed_closing = max((dist_cur - d_hard) / ttc_limit, 0.0)
+        else:
+            allowed_closing = 0.0
+        if dist_cur <= d_hard + 1e-6:
+            ttc_safe = closing_next <= max(closing_speed_thresh, 1e-6)
+        elif closing_next <= max(closing_speed_thresh, 1e-6):
+            ttc_safe = True
+        else:
+            ttc_safe = closing_next <= max(allowed_closing, closing_speed_thresh) + 1e-6
+        is_safe = (dist_next >= d_hard - 1e-6) and ttc_safe
+        return {
+            "dist_next": dist_next,
+            "closing_next": closing_next,
+            "allowed_closing": allowed_closing,
+            "is_safe": is_safe,
+        }
+
+    def _select_pairwise_ttc_target(self, accel: np.ndarray, d_hard: float) -> Dict[str, object] | None:
+        cfg = self.cfg
+        trigger_dist = self._pairwise_trigger_distance(d_hard)
+        ttc_limit = self._pairwise_trigger_ttc()
+        closing_speed_thresh = self._pairwise_closing_speed_threshold()
+        pos_next, vel_next = self._predict_next_from_accel(accel)
+        best: Dict[str, object] | None = None
+
+        for i in range(cfg.num_uav):
+            for j in range(i + 1, cfg.num_uav):
+                diff_cur = np.asarray(self.uav_pos[i] - self.uav_pos[j], dtype=np.float32)
+                dist_cur = float(np.linalg.norm(diff_cur))
+                diff_next = np.asarray(pos_next[i] - pos_next[j], dtype=np.float32)
+                dist_next = float(np.linalg.norm(diff_next))
+                direction = self._pairwise_correction_direction(diff_cur, i, j)
+                rel_vel_next = np.asarray(vel_next[i] - vel_next[j], dtype=np.float32)
+                closing_next = max(-float(np.dot(rel_vel_next, direction)), 0.0)
+                immediate = dist_cur < d_hard or dist_next < d_hard
+                ttc_to_hard = float("inf")
+                triggered = immediate
+                if not triggered and dist_cur <= trigger_dist and ttc_limit > 0.0 and closing_next > closing_speed_thresh:
+                    ttc_to_hard = (dist_cur - d_hard) / max(closing_next, 1e-6)
+                    triggered = ttc_to_hard < ttc_limit
+                if not triggered:
+                    continue
+                priority = (0, dist_next, dist_cur) if immediate else (1, ttc_to_hard, dist_cur)
+                candidate = {
+                    "i": i,
+                    "j": j,
+                    "direction": direction,
+                    "dist_cur": dist_cur,
+                    "dist_next": dist_next,
+                    "closing_next": closing_next,
+                    "ttc_to_hard": ttc_to_hard,
+                    "ttc_limit": ttc_limit,
+                    "closing_speed_thresh": closing_speed_thresh,
+                    "priority": priority,
+                }
+                if best is None or priority < best["priority"]:
+                    best = candidate
+
+        return best
+
+    def _apply_boundary_hard_filter(
+        self,
+        accel: np.ndarray,
+        indices: List[int] | None = None,
+    ) -> Tuple[np.ndarray, Dict[str, float]]:
+        cfg = self.cfg
+        zero_stats = {
+            "filter_active_ratio": 0.0,
+            "projected_delta_norm_mean": 0.0,
+            "fallback_count": 0.0,
+            "boundary_filter_count": 0.0,
+            "pairwise_filter_count": 0.0,
+        }
+        if not bool(getattr(cfg, "boundary_hard_filter_enabled", False)):
+            return accel, zero_stats
+
+        margin = self._boundary_margin()
+        lower = margin
+        upper = float(cfg.map_size) - margin
+        accel_safe = np.asarray(accel, dtype=np.float32).copy()
+        if indices is None:
+            target_indices = list(range(cfg.num_uav))
+        else:
+            target_indices = [int(idx) for idx in indices]
+        delta_norms = np.zeros((len(target_indices),), dtype=np.float32)
+        boundary_filter_count = 0
+        fallback_count = 0
+
+        for offset, i in enumerate(target_indices):
+            accel_before = accel_safe[i].copy()
+            adjusted = False
+            fallback_used = False
+            for axis in range(2):
+                accel_axis, axis_adjusted, axis_fallback = self._project_axis_to_boundary(
+                    float(self.uav_pos[i, axis]),
+                    float(self.uav_vel[i, axis]),
+                    float(accel_safe[i, axis]),
+                    lower,
+                    upper,
+                )
+                accel_safe[i, axis] = accel_axis
+                adjusted = adjusted or axis_adjusted
+                fallback_used = fallback_used or axis_fallback
+            delta_norms[offset] = float(np.linalg.norm(accel_safe[i] - accel_before))
+            if adjusted:
+                boundary_filter_count += 1
+            if fallback_used:
+                fallback_count += 1
+
+        stats = {
+            "filter_active_ratio": float(boundary_filter_count) / float(max(len(target_indices), 1)),
+            "projected_delta_norm_mean": float(np.mean(delta_norms)) if delta_norms.size else 0.0,
+            "fallback_count": float(fallback_count),
+            "boundary_filter_count": float(boundary_filter_count),
+            "pairwise_filter_count": 0.0,
+        }
+        return accel_safe, stats
+
+    def _resolve_pairwise_violation(
+        self,
+        accel: np.ndarray,
+        i: int,
+        j: int,
+        d_hard: float,
+    ) -> Tuple[np.ndarray, bool, bool, bool]:
+        cfg = self.cfg
+        pos_next, _ = self._predict_next_from_accel(accel)
+        diff_next = np.asarray(pos_next[i] - pos_next[j], dtype=np.float32)
+        dist_next = float(np.linalg.norm(diff_next))
+        if dist_next >= d_hard:
+            return accel, False, False, False
+
+        direction = self._pairwise_correction_direction(diff_next, i, j)
+        tau = max(float(cfg.tau0), 1e-6)
+        gap = max(d_hard - dist_next, 0.0)
+        required_push = gap / max(2.0 * tau * tau, 1e-6)
+
+        accel_candidate = np.asarray(accel, dtype=np.float32).copy()
+        accel_candidate[i] = np.clip(accel_candidate[i] + required_push * direction, -cfg.a_max, cfg.a_max)
+        accel_candidate[j] = np.clip(accel_candidate[j] - required_push * direction, -cfg.a_max, cfg.a_max)
+        accel_candidate, _ = self._apply_boundary_hard_filter(accel_candidate, indices=[i, j])
+        pos_candidate, _ = self._predict_next_from_accel(accel_candidate)
+        dist_candidate = float(np.linalg.norm(pos_candidate[i] - pos_candidate[j]))
+        if dist_candidate >= d_hard:
+            return accel_candidate, True, False, False
+
+        accel_fallback = np.asarray(accel, dtype=np.float32).copy()
+        accel_fallback[i] = np.clip(direction * cfg.a_max, -cfg.a_max, cfg.a_max)
+        accel_fallback[j] = np.clip(-direction * cfg.a_max, -cfg.a_max, cfg.a_max)
+        accel_fallback, _ = self._apply_boundary_hard_filter(accel_fallback, indices=[i, j])
+        pos_fallback, _ = self._predict_next_from_accel(accel_fallback)
+        dist_fallback = float(np.linalg.norm(pos_fallback[i] - pos_fallback[j]))
+        if dist_fallback + 1e-6 >= dist_candidate:
+            return accel_fallback, True, True, True
+        return accel_candidate, True, True, False
+
+    def _resolve_pairwise_ttc_violation(
+        self,
+        accel: np.ndarray,
+        pair_info: Dict[str, object],
+        d_hard: float,
+    ) -> Tuple[np.ndarray, bool, bool, bool]:
+        cfg = self.cfg
+        i = int(pair_info["i"])
+        j = int(pair_info["j"])
+        direction = np.asarray(pair_info["direction"], dtype=np.float32)
+        dist_cur = float(pair_info["dist_cur"])
+        ttc_limit = float(pair_info["ttc_limit"])
+        closing_speed_thresh = float(pair_info["closing_speed_thresh"])
+        base_eval = self._evaluate_pairwise_ttc_resolution(
+            accel,
+            i,
+            j,
+            d_hard,
+            direction,
+            dist_cur,
+            ttc_limit,
+            closing_speed_thresh,
+        )
+        if bool(base_eval["is_safe"]):
+            return accel, False, False, False
+
+        tau = max(float(cfg.tau0), 1e-6)
+        delta_closing = max(float(base_eval["closing_next"]) - float(base_eval["allowed_closing"]), 0.0)
+        required_push = delta_closing / max(2.0 * tau, 1e-6)
+        if float(base_eval["dist_next"]) < d_hard:
+            gap = max(d_hard - float(base_eval["dist_next"]), 0.0)
+            required_push = max(required_push, gap / max(2.0 * tau * tau, 1e-6))
+
+        accel_candidate = np.asarray(accel, dtype=np.float32).copy()
+        accel_candidate[i] = np.clip(accel_candidate[i] + required_push * direction, -cfg.a_max, cfg.a_max)
+        accel_candidate[j] = np.clip(accel_candidate[j] - required_push * direction, -cfg.a_max, cfg.a_max)
+        accel_candidate, _ = self._apply_boundary_hard_filter(accel_candidate, indices=[i, j])
+        candidate_eval = self._evaluate_pairwise_ttc_resolution(
+            accel_candidate,
+            i,
+            j,
+            d_hard,
+            direction,
+            dist_cur,
+            ttc_limit,
+            closing_speed_thresh,
+        )
+        if bool(candidate_eval["is_safe"]):
+            return accel_candidate, True, False, False
+
+        accel_fallback = np.asarray(accel, dtype=np.float32).copy()
+        accel_fallback[i] = np.clip(direction * cfg.a_max, -cfg.a_max, cfg.a_max)
+        accel_fallback[j] = np.clip(-direction * cfg.a_max, -cfg.a_max, cfg.a_max)
+        accel_fallback, _ = self._apply_boundary_hard_filter(accel_fallback, indices=[i, j])
+        fallback_eval = self._evaluate_pairwise_ttc_resolution(
+            accel_fallback,
+            i,
+            j,
+            d_hard,
+            direction,
+            dist_cur,
+            ttc_limit,
+            closing_speed_thresh,
+        )
+        if bool(fallback_eval["is_safe"]):
+            return accel_fallback, True, True, True
+        if (
+            float(fallback_eval["dist_next"]) > float(candidate_eval["dist_next"]) + 1e-6
+            or (
+                abs(float(fallback_eval["dist_next"]) - float(candidate_eval["dist_next"])) <= 1e-6
+                and float(fallback_eval["closing_next"]) <= float(candidate_eval["closing_next"]) + 1e-6
+            )
+        ):
+            return accel_fallback, True, True, True
+        return accel_candidate, True, True, False
+
+    def _apply_pairwise_hard_filter_distance(self, accel: np.ndarray) -> Tuple[np.ndarray, Dict[str, float]]:
+        cfg = self.cfg
+        accel_in = np.asarray(accel, dtype=np.float32)
+        accel_safe = accel_in.copy()
+        d_hard = self._pairwise_hard_distance()
+        max_passes = max(int(getattr(cfg, "pairwise_hard_max_passes", 2) or 2), 1)
+        total_pairs = max(cfg.num_uav * (cfg.num_uav - 1) // 2, 1)
+        touched_pairs: set[Tuple[int, int]] = set()
+        pairwise_filter_count = 0
+        pairwise_fallback_count = 0
+        pairwise_candidate_infeasible_count = 0
+
+        for _ in range(max_passes):
+            pos_next, _ = self._predict_next_from_accel(accel_safe)
+            pair_order: List[Tuple[float, int, int]] = []
+            for i in range(cfg.num_uav):
+                for j in range(i + 1, cfg.num_uav):
+                    dist_next = float(np.linalg.norm(pos_next[i] - pos_next[j]))
+                    if dist_next < d_hard:
+                        pair_order.append((dist_next, i, j))
+            if not pair_order:
+                break
+            pair_order.sort(key=lambda item: item[0])
+            changed_in_pass = False
+            for _, i, j in pair_order:
+                pos_cur, _ = self._predict_next_from_accel(accel_safe)
+                dist_cur = float(np.linalg.norm(pos_cur[i] - pos_cur[j]))
+                if dist_cur >= d_hard:
+                    continue
+                accel_next, adjusted, candidate_infeasible, used_fallback = self._resolve_pairwise_violation(
+                    accel_safe,
+                    i,
+                    j,
+                    d_hard,
+                )
+                if not adjusted:
+                    continue
+                if np.allclose(accel_next, accel_safe, atol=1e-6):
+                    continue
+                changed_in_pass = True
+                accel_safe = accel_next
+                pairwise_filter_count += 1
+                pairwise_candidate_infeasible_count += int(candidate_infeasible)
+                pairwise_fallback_count += int(used_fallback)
+                touched_pairs.add((i, j))
+            if not changed_in_pass:
+                break
+
+        delta_norm = float(np.mean(np.linalg.norm(accel_safe - accel_in, axis=1))) if cfg.num_uav > 0 else 0.0
+        stats = {
+            "pairwise_filter_count": float(pairwise_filter_count),
+            "pairwise_filter_active_ratio": float(len(touched_pairs)) / float(total_pairs),
+            "pairwise_projected_delta_norm": delta_norm,
+            "pairwise_fallback_count": float(pairwise_fallback_count),
+            "pairwise_candidate_infeasible_count": float(pairwise_candidate_infeasible_count),
+        }
+        return accel_safe, stats
+
+    def _apply_pairwise_hard_filter_ttc(self, accel: np.ndarray) -> Tuple[np.ndarray, Dict[str, float]]:
+        cfg = self.cfg
+        accel_in = np.asarray(accel, dtype=np.float32)
+        accel_safe = accel_in.copy()
+        d_hard = self._pairwise_hard_distance()
+        single_pair_only = bool(getattr(cfg, "pairwise_hard_single_pair_only", True))
+        max_passes = 1 if single_pair_only else max(int(getattr(cfg, "pairwise_hard_max_passes", 2) or 2), 1)
+        total_pairs = max(cfg.num_uav * (cfg.num_uav - 1) // 2, 1)
+        touched_pairs: set[Tuple[int, int]] = set()
+        pairwise_filter_count = 0
+        pairwise_fallback_count = 0
+        pairwise_candidate_infeasible_count = 0
+
+        for _ in range(max_passes):
+            pair_info = self._select_pairwise_ttc_target(accel_safe, d_hard)
+            if pair_info is None:
+                break
+            i = int(pair_info["i"])
+            j = int(pair_info["j"])
+            accel_next, adjusted, candidate_infeasible, used_fallback = self._resolve_pairwise_ttc_violation(
+                accel_safe,
+                pair_info,
+                d_hard,
+            )
+            if not adjusted or np.allclose(accel_next, accel_safe, atol=1e-6):
+                break
+            accel_safe = accel_next
+            pairwise_filter_count += 1
+            pairwise_candidate_infeasible_count += int(candidate_infeasible)
+            pairwise_fallback_count += int(used_fallback)
+            touched_pairs.add((i, j))
+            if single_pair_only:
+                break
+
+        delta_norm = float(np.mean(np.linalg.norm(accel_safe - accel_in, axis=1))) if cfg.num_uav > 0 else 0.0
+        stats = {
+            "pairwise_filter_count": float(pairwise_filter_count),
+            "pairwise_filter_active_ratio": float(len(touched_pairs)) / float(total_pairs),
+            "pairwise_projected_delta_norm": delta_norm,
+            "pairwise_fallback_count": float(pairwise_fallback_count),
+            "pairwise_candidate_infeasible_count": float(pairwise_candidate_infeasible_count),
+        }
+        return accel_safe, stats
+
+    def _apply_pairwise_hard_filter(self, accel: np.ndarray) -> Tuple[np.ndarray, Dict[str, float]]:
+        cfg = self.cfg
+        zero_stats = {
+            "pairwise_filter_count": 0.0,
+            "pairwise_filter_active_ratio": 0.0,
+            "pairwise_projected_delta_norm": 0.0,
+            "pairwise_fallback_count": 0.0,
+            "pairwise_candidate_infeasible_count": 0.0,
+        }
+        if not bool(getattr(cfg, "pairwise_hard_filter_enabled", False)):
+            return accel, zero_stats
+        if self._pairwise_trigger_mode() == "ttc":
+            return self._apply_pairwise_hard_filter_ttc(accel)
+        return self._apply_pairwise_hard_filter_distance(accel)
+
     def _apply_uav_dynamics(self, actions: Dict[str, Dict]) -> None:
         cfg = self.cfg
         accel = np.zeros((cfg.num_uav, 2), dtype=np.float32)
@@ -513,6 +1003,22 @@ class SaginParallelEnv(ParallelEnv):
             default=False,
         )
         d_alert = cfg.avoidance_alert_factor * cfg.d_safe if use_avoidance else 0.0
+        raw_prealert_factor = getattr(cfg, "avoidance_prealert_factor", None)
+        d_prealert = 0.0
+        if use_avoidance and raw_prealert_factor is not None:
+            d_prealert = max(float(raw_prealert_factor) * cfg.d_safe, d_alert)
+        prealert_mode = str(getattr(cfg, "avoidance_prealert_mode", "distance") or "distance").strip().lower()
+        if prealert_mode not in {"distance", "ttc"}:
+            prealert_mode = "distance"
+        closing_speed_thresh = max(float(getattr(cfg, "avoidance_prealert_closing_speed", 0.0) or 0.0), 0.0)
+        prealert_ttc_limit = max(float(getattr(cfg, "avoidance_prealert_ttc", 0.0) or 0.0), 0.0)
+        raw_prealert_dist_cap = getattr(cfg, "avoidance_prealert_dist_cap", None)
+        prealert_trigger_dist = d_prealert
+        if use_avoidance and prealert_mode == "ttc":
+            if raw_prealert_dist_cap is not None:
+                prealert_trigger_dist = max(float(raw_prealert_dist_cap), d_alert)
+            elif d_prealert > 0.0:
+                prealert_trigger_dist = d_prealert
         repulse_mode = str(getattr(cfg, "avoidance_repulse_mode", "inverse") or "inverse").strip().lower()
         eta_avoid = float(getattr(self, "avoidance_eta_eff", cfg.avoidance_eta))
         _, _, centroid_transfer_ratio = self._centroid_anneal_state()
@@ -536,17 +1042,41 @@ class SaginParallelEnv(ParallelEnv):
                         continue
                     diff = self.uav_pos[i] - self.uav_pos[j]
                     dist = float(np.linalg.norm(diff))
-                    if dist < d_alert and dist > 1e-6:
+                    if dist <= 1e-6:
+                        continue
+                    rel_vel = self.uav_vel[i] - self.uav_vel[j]
+                    closing_speed = float(-(np.dot(diff, rel_vel) / dist))
+                    trigger_dist = d_alert
+                    in_core_alert = dist < d_alert
+                    in_prealert = False
+                    if prealert_mode == "ttc":
+                        if (
+                            prealert_trigger_dist > d_alert
+                            and dist < prealert_trigger_dist
+                            and closing_speed > closing_speed_thresh
+                            and prealert_ttc_limit > 0.0
+                        ):
+                            ttc_to_alert = (dist - d_alert) / max(closing_speed, 1e-6)
+                            in_prealert = ttc_to_alert < prealert_ttc_limit
+                    else:
+                        in_prealert = (
+                            d_prealert > d_alert
+                            and dist < d_prealert
+                            and closing_speed > closing_speed_thresh
+                        )
+                    if in_prealert and not in_core_alert:
+                        trigger_dist = prealert_trigger_dist if prealert_mode == "ttc" else d_prealert
+                    if in_core_alert or in_prealert:
                         direction = diff / dist
                         if repulse_mode == "linear":
-                            denom = max(d_alert - cfg.d_safe, 1e-6)
-                            strength = float(np.clip((d_alert - dist) / denom, 0.0, 1.0))
+                            denom = max(trigger_dist - cfg.d_safe, 1e-6)
+                            strength = float(np.clip((trigger_dist - dist) / denom, 0.0, 1.0))
                         elif repulse_mode == "quadratic":
-                            denom = max(d_alert - cfg.d_safe, 1e-6)
-                            base = float(np.clip((d_alert - dist) / denom, 0.0, 1.0))
+                            denom = max(trigger_dist - cfg.d_safe, 1e-6)
+                            base = float(np.clip((trigger_dist - dist) / denom, 0.0, 1.0))
                             strength = base * base
                         else:
-                            strength = (1.0 / dist - 1.0 / d_alert)
+                            strength = (1.0 / dist - 1.0 / trigger_dist)
                         a_rep += eta_avoid * strength * direction
                 if bool(getattr(cfg, "avoidance_repulse_clip", True)):
                     a_rep = np.clip(a_rep, -cfg.a_max, cfg.a_max)
@@ -570,6 +1100,22 @@ class SaginParallelEnv(ParallelEnv):
             a = a + a_rep
             a = np.clip(a, -cfg.a_max, cfg.a_max)
             accel[i] = a
+        accel_before_hard_filter = accel.copy()
+        accel, boundary_stats = self._apply_boundary_hard_filter(accel)
+        accel, pairwise_stats = self._apply_pairwise_hard_filter(accel)
+        hard_delta_norm = (
+            np.linalg.norm(accel - accel_before_hard_filter, axis=1) if cfg.num_uav > 0 else np.zeros((0,), dtype=np.float32)
+        )
+        hard_active_count = int(np.count_nonzero(hard_delta_norm > 1e-6))
+        self.last_filter_active_ratio = float(hard_active_count) / float(max(cfg.num_uav, 1))
+        self.last_projected_delta_norm_mean = float(np.mean(hard_delta_norm)) if hard_delta_norm.size else 0.0
+        self.last_fallback_count = float(boundary_stats["fallback_count"] + pairwise_stats["pairwise_fallback_count"])
+        self.last_boundary_filter_count = float(boundary_stats["boundary_filter_count"])
+        self.last_pairwise_filter_count = float(pairwise_stats["pairwise_filter_count"])
+        self.last_pairwise_filter_active_ratio = float(pairwise_stats["pairwise_filter_active_ratio"])
+        self.last_pairwise_projected_delta_norm = float(pairwise_stats["pairwise_projected_delta_norm"])
+        self.last_pairwise_fallback_count = float(pairwise_stats["pairwise_fallback_count"])
+        self.last_pairwise_candidate_infeasible_count = float(pairwise_stats["pairwise_candidate_infeasible_count"])
         self.last_exec_accel = accel.copy()
         self.uav_vel = np.clip(self.uav_vel + accel * cfg.tau0, -cfg.v_max, cfg.v_max)
         self.uav_pos = self.uav_pos + self.uav_vel * cfg.tau0
@@ -1225,6 +1771,17 @@ class SaginParallelEnv(ParallelEnv):
             "avoidance_eta_exec": float(getattr(self, "last_avoidance_eta_exec", cfg.avoidance_eta)),
             "avoidance_collision_rate_ema": float(getattr(self, "avoidance_collision_rate_ema", 0.0)),
             "avoidance_prev_episode_collision_rate": float(getattr(self, "prev_episode_collision_rate", 0.0)),
+            "filter_active_ratio": float(getattr(self, "last_filter_active_ratio", 0.0)),
+            "projected_delta_norm_mean": float(getattr(self, "last_projected_delta_norm_mean", 0.0)),
+            "fallback_count": float(getattr(self, "last_fallback_count", 0.0)),
+            "boundary_filter_count": float(getattr(self, "last_boundary_filter_count", 0.0)),
+            "pairwise_filter_count": float(getattr(self, "last_pairwise_filter_count", 0.0)),
+            "pairwise_filter_active_ratio": float(getattr(self, "last_pairwise_filter_active_ratio", 0.0)),
+            "pairwise_projected_delta_norm": float(getattr(self, "last_pairwise_projected_delta_norm", 0.0)),
+            "pairwise_fallback_count": float(getattr(self, "last_pairwise_fallback_count", 0.0)),
+            "pairwise_candidate_infeasible_count": float(
+                getattr(self, "last_pairwise_candidate_infeasible_count", 0.0)
+            ),
             "term_service": term_service,
             "term_drop": term_drop,
             "term_drop_step": term_drop_step,

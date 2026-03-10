@@ -85,6 +85,16 @@ class SaginConfig:
     a_max: float = 5.0
     d_safe: float = 20.0
     boundary_mode: str = "clip"  # "clip" or "reflect"
+    boundary_hard_filter_enabled: bool = False
+    boundary_margin: float | None = None
+    pairwise_hard_filter_enabled: bool = False
+    pairwise_hard_distance: float | None = None
+    pairwise_hard_max_passes: int = 2
+    pairwise_hard_trigger_mode: str = "distance"  # "distance" or "ttc"
+    pairwise_hard_trigger_ttc: float = 2.0
+    pairwise_hard_trigger_distance: float | None = None
+    pairwise_hard_closing_speed: float = 0.0
+    pairwise_hard_single_pair_only: bool = True
     uav_spawn_curriculum_enabled: bool = False
     uav_spawn_radius_start: float = 100.0
     uav_spawn_radius_end: float | None = None
@@ -156,6 +166,11 @@ class SaginConfig:
     avoidance_enabled: bool = False
     avoidance_eta: float = 100.0
     avoidance_alert_factor: float = 1.5
+    avoidance_prealert_factor: float | None = None
+    avoidance_prealert_closing_speed: float = 0.0
+    avoidance_prealert_mode: str = "distance"  # "distance" or "ttc"
+    avoidance_prealert_ttc: float | None = None
+    avoidance_prealert_dist_cap: float | None = None
     avoidance_repulse_mode: str = "inverse"  # "inverse", "linear", "quadratic"
     avoidance_repulse_clip: bool = True
     avoidance_adaptive_enabled: bool = False
@@ -287,6 +302,8 @@ class SaginConfig:
     exec_teacher_deterministic: bool = True
 
     actor_hidden: int = 256
+    actor_encoder_type: str = "flat_mlp"  # "flat_mlp" or "set_pool"
+    actor_set_embed_dim: int = 64
     critic_hidden: int = 256
 
     # Early stopping (convergence)

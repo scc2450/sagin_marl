@@ -134,15 +134,25 @@ def _select_exec_values(
     return np.zeros(shape, dtype=np.float32)
 
 
+def _save_checkpoints(log_dir: str, actor, critic, suffix: str | None = None) -> None:
+    os.makedirs(log_dir, exist_ok=True)
+    actor_name = "actor.pt" if suffix is None else f"actor_{suffix}.pt"
+    critic_name = "critic.pt" if suffix is None else f"critic_{suffix}.pt"
+    torch.save(actor.state_dict(), os.path.join(log_dir, actor_name))
+    torch.save(critic.state_dict(), os.path.join(log_dir, critic_name))
+
+
 def train(
     env,
     cfg,
     log_dir: str,
     total_updates: int = 50,
+    save_interval_updates: int = 0,
     init_actor_path: str | None = None,
     init_critic_path: str | None = None,
 ):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    save_interval_updates = max(0, int(save_interval_updates or 0))
 
     num_envs = int(getattr(env, "num_envs", 1))
 
@@ -210,9 +220,8 @@ def train(
     if actor.sat_log_std is not None:
         actor.sat_log_std.requires_grad = train_heads["sat"]
     if not train_shared_backbone:
-        _set_module_requires_grad(actor.obs_norm, False)
-        _set_module_requires_grad(actor.fc1, False)
-        _set_module_requires_grad(actor.fc2, False)
+        for module in actor.backbone_modules():
+            _set_module_requires_grad(module, False)
 
     actor_params = [p for p in actor.parameters() if p.requires_grad]
     if not actor_params:
@@ -319,6 +328,15 @@ def train(
         "avoidance_eta_exec",
         "avoidance_collision_rate_ema",
         "avoidance_prev_episode_collision_rate",
+        "filter_active_ratio",
+        "projected_delta_norm_mean",
+        "fallback_count",
+        "boundary_filter_count",
+        "pairwise_filter_count",
+        "pairwise_filter_active_ratio",
+        "pairwise_projected_delta_norm",
+        "pairwise_fallback_count",
+        "pairwise_candidate_infeasible_count",
         "arrival_rate_eff",
         "gu_queue_mean",
         "uav_queue_mean",
@@ -522,6 +540,15 @@ def train(
         avoidance_eta_exec_sum = 0.0
         avoidance_collision_rate_ema_sum = 0.0
         avoidance_prev_episode_collision_rate_sum = 0.0
+        filter_active_ratio_sum = 0.0
+        projected_delta_norm_mean_sum = 0.0
+        fallback_count_sum = 0.0
+        boundary_filter_count_sum = 0.0
+        pairwise_filter_count_sum = 0.0
+        pairwise_filter_active_ratio_sum = 0.0
+        pairwise_projected_delta_norm_sum = 0.0
+        pairwise_fallback_count_sum = 0.0
+        pairwise_candidate_infeasible_count_sum = 0.0
         arrival_rate_eff_sum = 0.0
         q_norm_active_values: List[float] = []
         queue_total_active_values: List[float] = []
@@ -758,6 +785,17 @@ def train(
                     avoidance_collision_rate_ema_sum += float(parts.get("avoidance_collision_rate_ema", 0.0))
                     avoidance_prev_episode_collision_rate_sum += float(
                         parts.get("avoidance_prev_episode_collision_rate", 0.0)
+                    )
+                    filter_active_ratio_sum += float(parts.get("filter_active_ratio", 0.0))
+                    projected_delta_norm_mean_sum += float(parts.get("projected_delta_norm_mean", 0.0))
+                    fallback_count_sum += float(parts.get("fallback_count", 0.0))
+                    boundary_filter_count_sum += float(parts.get("boundary_filter_count", 0.0))
+                    pairwise_filter_count_sum += float(parts.get("pairwise_filter_count", 0.0))
+                    pairwise_filter_active_ratio_sum += float(parts.get("pairwise_filter_active_ratio", 0.0))
+                    pairwise_projected_delta_norm_sum += float(parts.get("pairwise_projected_delta_norm", 0.0))
+                    pairwise_fallback_count_sum += float(parts.get("pairwise_fallback_count", 0.0))
+                    pairwise_candidate_infeasible_count_sum += float(
+                        parts.get("pairwise_candidate_infeasible_count", 0.0)
                     )
                     arrival_rate_eff_sum += float(parts.get("arrival_rate_eff", 0.0))
                     q_norm_active_values.append(q_norm_active_step)
@@ -1127,6 +1165,15 @@ def train(
             "avoidance_prev_episode_collision_rate": (
                 avoidance_prev_episode_collision_rate_sum / steps_count
             ),
+            "filter_active_ratio": filter_active_ratio_sum / steps_count,
+            "projected_delta_norm_mean": projected_delta_norm_mean_sum / steps_count,
+            "fallback_count": fallback_count_sum / steps_count,
+            "boundary_filter_count": boundary_filter_count_sum / steps_count,
+            "pairwise_filter_count": pairwise_filter_count_sum / steps_count,
+            "pairwise_filter_active_ratio": pairwise_filter_active_ratio_sum / steps_count,
+            "pairwise_projected_delta_norm": pairwise_projected_delta_norm_sum / steps_count,
+            "pairwise_fallback_count": pairwise_fallback_count_sum / steps_count,
+            "pairwise_candidate_infeasible_count": pairwise_candidate_infeasible_count_sum / steps_count,
             "arrival_rate_eff": arrival_rate_eff_sum / steps_count,
             "gu_queue_mean": gu_queue_sum / steps_count,
             "uav_queue_mean": uav_queue_sum / steps_count,
@@ -1170,6 +1217,8 @@ def train(
         if critic_sched is not None:
             critic_sched.step()
         progress.update(update + 1)
+        if save_interval_updates > 0 and (update + 1) % save_interval_updates == 0:
+            _save_checkpoints(log_dir, actor, critic, suffix=f"u{update + 1:04d}")
 
         if cfg.early_stop_enabled:
             reward_history.append(episode_reward)
@@ -1187,10 +1236,7 @@ def train(
                     )
                     break
 
-    # Save checkpoints
-    os.makedirs(log_dir, exist_ok=True)
-    torch.save(actor.state_dict(), os.path.join(log_dir, "actor.pt"))
-    torch.save(critic.state_dict(), os.path.join(log_dir, "critic.pt"))
+    _save_checkpoints(log_dir, actor, critic)
 
     progress.close()
     logger.close()

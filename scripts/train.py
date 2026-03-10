@@ -60,6 +60,12 @@ def main():
     )
     parser.add_argument("--updates", type=int, default=400)
     parser.add_argument(
+        "--save_interval",
+        type=int,
+        default=0,
+        help="Save actor_uXXXX.pt/critic_uXXXX.pt every N updates. <=0 disables periodic saves.",
+    )
+    parser.add_argument(
         "--num_envs",
         type=int,
         default=1,
@@ -109,6 +115,7 @@ def main():
             cfg,
             log_dir,
             total_updates=args.updates,
+            save_interval_updates=args.save_interval,
             init_actor_path=args.init_actor,
             init_critic_path=args.init_critic,
         )

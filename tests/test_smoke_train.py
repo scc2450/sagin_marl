@@ -2,16 +2,21 @@ from __future__ import annotations
 
 import csv
 
+import pytest
+
 from sagin_marl.env.config import SaginConfig
 from sagin_marl.env.sagin_env import SaginParallelEnv
 from sagin_marl.rl.mappo import train
 
 
-def test_smoke_train(tmp_path):
+@pytest.mark.parametrize("actor_encoder_type", ["flat_mlp", "set_pool"])
+def test_smoke_train(tmp_path, actor_encoder_type):
     cfg = SaginConfig(num_uav=2, num_gu=5, num_sat=3, users_obs_max=5, sats_obs_max=3, nbrs_obs_max=1)
     cfg.buffer_size = 5
     cfg.num_mini_batch = 1
     cfg.ppo_epochs = 1
+    cfg.actor_encoder_type = actor_encoder_type
+    cfg.actor_set_embed_dim = 16
     env = SaginParallelEnv(cfg)
     train(env, cfg, str(tmp_path), total_updates=1)
     with (tmp_path / "metrics.csv").open("r", encoding="utf-8", newline="") as f:

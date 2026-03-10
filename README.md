@@ -34,40 +34,40 @@ python -m pip install -r requirements.txt
 ```powershell
 .\.venv\Scripts\Activate.ps1
 ```
-说明：阶段一当前默认使用 `configs/phase1_actions_curriculum_stage1_accel.yaml`，关键条件/开关为：
+说明：阶段一当前默认使用 `configs/phase1_actions_curriculum_stage1_accel_setpool_prealert.yaml`，关键条件/开关为：
 - `enable_bw_action=false`（仅训练加速度）
 - `fixed_satellite_strategy=true`（卫星策略固定）
 - `avoidance_enabled=true`（避障安全层）
 
 可选：吞吐估算（判断到达率是否合理）
 ```powershell
-python scripts/estimate_throughput.py --config configs/phase1_actions_curriculum_stage1_accel.yaml
+python scripts/estimate_throughput.py --config configs/phase1_actions_curriculum_stage1_accel_setpool_prealert.yaml
 ```
 说明：脚本会同时输出 `Arrival raw`（`num_gu * task_arrival_rate * tau0`）与 `Arrival eff`（与环境 `effective_task_arrival_rate` 一致的训练口径）。
 2. 训练（自动生成独立目录，避免多次流程数据堆在一起）
 ```powershell
-python scripts/train.py --config configs/phase1_actions_curriculum_stage1_accel.yaml --log_dir runs/phase1_actions --run_id auto --num_envs 16 --vec_backend subproc --torch_threads 2 --updates 400
+python scripts/train.py --config configs/phase1_actions_curriculum_stage1_accel_setpool_prealert.yaml --log_dir runs/phase1_actions --run_id auto --num_envs 16 --vec_backend subproc --torch_threads 2 --updates 400
 ```
 说明：终端会输出 `Run dir: runs/phase1_actions/20260204_121530`，下文用 `<RUN_DIR>` 指代该目录。
 如需手动指定目录，可用 `--run_dir runs/phase1_actions/exp1`。
 调试时可先用 `--num_envs 2 --vec_backend sync`，确认流程后再切到 `subproc`。
 3. 评估（训练模型）
 ```powershell
-python scripts/evaluate.py --config configs/phase1_actions_curriculum_stage1_accel.yaml --run_dir <RUN_DIR> --episodes 20
+python scripts/evaluate.py --config configs/phase1_actions_curriculum_stage1_accel_setpool_prealert.yaml --run_dir <RUN_DIR> --episodes 20
 ```
 可选：混合策略评估（accel 用训练模型，bw/sat 用 queue_aware）
 ```powershell
-python scripts/evaluate.py --config configs/phase1_actions_curriculum_stage1_accel.yaml --run_dir <RUN_DIR> --episodes 20 --hybrid_bw_sat queue_aware
+python scripts/evaluate.py --config configs/phase1_actions_curriculum_stage1_accel_setpool_prealert.yaml --run_dir <RUN_DIR> --episodes 20 --hybrid_bw_sat queue_aware
 ```
-python scripts/evaluate.py --config configs/phase1_actions_curriculum_stage1_accel.yaml --run_dir runs/ablation\centroid_disabled_200 --episodes 20 --hybrid_bw_sat queue_aware
+python scripts/evaluate.py --config configs/phase1_actions_curriculum_stage1_accel_setpool_prealert.yaml --run_dir runs/ablation\centroid_disabled_200 --episodes 20 --hybrid_bw_sat queue_aware
 
 4. 评估（启发式基线，推荐）
 ```powershell
-python scripts/evaluate.py --config configs/phase1_actions_curriculum_stage1_accel.yaml --run_dir <RUN_DIR> --episodes 20 --baseline queue_aware
+python scripts/evaluate.py --config configs/phase1_actions_curriculum_stage1_accel_setpool_prealert.yaml --run_dir <RUN_DIR> --episodes 20 --baseline queue_aware
 ```
 可选：零加速度基线（更弱，但便于对照）
 ```powershell
-python scripts/evaluate.py --config configs/phase1_actions_curriculum_stage1_accel.yaml --run_dir <RUN_DIR> --episodes 20 --baseline zero_accel
+python scripts/evaluate.py --config configs/phase1_actions_curriculum_stage1_accel_setpool_prealert.yaml --run_dir <RUN_DIR> --episodes 20 --baseline zero_accel
 ```
 5. 查看训练结果
 - 训练指标：`<RUN_DIR>/metrics.csv`
@@ -78,13 +78,13 @@ python scripts/evaluate.py --config configs/phase1_actions_curriculum_stage1_acc
 - 评估 TensorBoard：`<RUN_DIR>/eval_tb`（tags: `eval/trained`, `eval/baseline`）
 
 **当前推荐配置**
-- Stage 1（加速度）：`configs/phase1_actions_curriculum_stage1_accel.yaml`
+- Stage 1（加速度）：`configs/phase1_actions_curriculum_stage1_accel_setpool_prealert.yaml`
 - Stage 2（带宽）：`configs/phase1_actions_curriculum_stage2_bw.yaml`
 - Stage 3（卫星选择）：`configs/phase1_actions_curriculum_stage3_sat.yaml`
 
 **三阶段训练（递进）**
 ```powershell
-python scripts/train.py --config configs/phase1_actions_curriculum_stage1_accel.yaml --updates 400 --log_dir runs/phase1_actions --run_id stage1_accel
+python scripts/train.py --config configs/phase1_actions_curriculum_stage1_accel_setpool_prealert.yaml --updates 400 --log_dir runs/phase1_actions --run_id stage1_accel
 python scripts/train.py --config configs/phase1_actions_curriculum_stage2_bw.yaml --updates 500 --log_dir runs/phase1_actions --run_id stage2_bw --init_actor runs/phase1_actions/stage1_accel/actor.pt --init_critic runs/phase1_actions/stage1_accel/critic.pt
 python scripts/train.py --config configs/phase1_actions_curriculum_stage3_sat.yaml --updates 500 --log_dir runs/phase1_actions --run_id stage3_sat --init_actor runs/phase1_actions/stage2_bw/actor.pt --init_critic runs/phase1_actions/stage2_bw/critic.pt
 ```
@@ -108,31 +108,31 @@ tensorboard --logdir runs/phase1_actions
 
 训练：
 ```powershell
-python scripts/train.py --config configs/phase1_actions_curriculum_stage1_accel.yaml --log_dir runs/phase1_actions --run_id auto --num_envs 16 --vec_backend subproc --torch_threads 2 --updates 400
+python scripts/train.py --config configs/phase1_actions_curriculum_stage1_accel_setpool_prealert.yaml --log_dir runs/phase1_actions --run_id auto --num_envs 16 --vec_backend subproc --torch_threads 2 --updates 400
 ```
 
 评估（输出 CSV）：
 ```powershell
-python scripts/evaluate.py --config configs/phase1_actions_curriculum_stage1_accel.yaml --run_dir <RUN_DIR> --episodes 20
+python scripts/evaluate.py --config configs/phase1_actions_curriculum_stage1_accel_setpool_prealert.yaml --run_dir <RUN_DIR> --episodes 20
 ```
 评估（混合策略：accel=训练模型，bw/sat=queue_aware）：
 ```powershell
-python scripts/evaluate.py --config configs/phase1_actions_curriculum_stage1_accel.yaml --run_dir <RUN_DIR> --episodes 20 --hybrid_bw_sat queue_aware
+python scripts/evaluate.py --config configs/phase1_actions_curriculum_stage1_accel_setpool_prealert.yaml --run_dir <RUN_DIR> --episodes 20 --hybrid_bw_sat queue_aware
 ```
 
 评估（启发式基线，推荐）：
 ```powershell
-python scripts/evaluate.py --config configs/phase1_actions_curriculum_stage1_accel.yaml --run_dir <RUN_DIR> --episodes 20 --baseline queue_aware
+python scripts/evaluate.py --config configs/phase1_actions_curriculum_stage1_accel_setpool_prealert.yaml --run_dir <RUN_DIR> --episodes 20 --baseline queue_aware
 ```
 
 评估（零加速度基线）：
 ```powershell
-python scripts/evaluate.py --config configs/phase1_actions_curriculum_stage1_accel.yaml --run_dir <RUN_DIR> --episodes 20 --baseline zero_accel
+python scripts/evaluate.py --config configs/phase1_actions_curriculum_stage1_accel_setpool_prealert.yaml --run_dir <RUN_DIR> --episodes 20 --baseline zero_accel
 ```
 
 渲染一条轨迹（输出 GIF）：
 ```powershell
-python scripts/render_episode.py --config configs/phase1_actions_curriculum_stage1_accel.yaml --run_dir <RUN_DIR>
+python scripts/render_episode.py --config configs/phase1_actions_curriculum_stage1_accel_setpool_prealert.yaml --run_dir <RUN_DIR>
 ```
 
 TensorBoard：
@@ -159,7 +159,7 @@ python scripts/export_tb_scalars.py --logdir runs/phase1_actions --run stage1_* 
 
 吞吐估算（判断到达率是否合理）：
 ```powershell
-python scripts/estimate_throughput.py --config configs/phase1_actions_curriculum_stage1_accel.yaml
+python scripts/estimate_throughput.py --config configs/phase1_actions_curriculum_stage1_accel_setpool_prealert.yaml
 ```
 说明：优先使用 `Arrival eff` / `Util eff` 与训练日志（`arrival_sum`、`service_norm`）对照。
 
@@ -215,7 +215,7 @@ python scripts/estimate_throughput.py --config configs/phase1_actions_curriculum
 - `candidate_k`：控制候选数量上限（不改变 `users_obs_max`，网络输入维度保持不变，超出部分由 mask 置零）。
 
 **配置说明**
-默认配置见 `sagin_marl/env/config.py`，课程阶段建议从 `configs/phase1_actions_curriculum_stage1_accel.yaml` 开始。常用参数：
+默认配置见 `sagin_marl/env/config.py`，课程阶段建议从 `configs/phase1_actions_curriculum_stage1_accel_setpool_prealert.yaml` 开始。常用参数：
 - 规模：`num_uav`、`num_gu`、`num_sat`
 - 时域：`tau0`、`T_steps`
 - 观测截断：`users_obs_max`、`sats_obs_max`、`nbrs_obs_max`
@@ -240,7 +240,7 @@ python -m pytest -q
 from sagin_marl.env.config import load_config
 from sagin_marl.env.sagin_env import SaginParallelEnv
 
-cfg = load_config("configs/phase1_actions_curriculum_stage1_accel.yaml")
+cfg = load_config("configs/phase1_actions_curriculum_stage1_accel_setpool_prealert.yaml")
 env = SaginParallelEnv(cfg)
 obs, infos = env.reset()
 ```
@@ -256,9 +256,9 @@ obs, infos = env.reset()
 
 2. 在同一配置、同一 episode 种子序列下分别评估三种策略（示例 `N=20`）
 ```powershell
-python scripts/evaluate.py --config configs/phase1_actions_curriculum_stage1_accel.yaml --episodes 20 --baseline fixed --episode_seed_base 42000 --out runs/stage1_accel/eval_fixed_n20.csv
-python scripts/evaluate.py --config configs/phase1_actions_curriculum_stage1_accel.yaml --episodes 20 --baseline random_accel --episode_seed_base 42000 --out runs/stage1_accel/eval_random_accel_n20.csv
-python scripts/evaluate.py --config configs/phase1_actions_curriculum_stage1_accel.yaml --episodes 20 --baseline centroid --episode_seed_base 42000 --out runs/stage1_accel/eval_centroid_n20.csv
+python scripts/evaluate.py --config configs/phase1_actions_curriculum_stage1_accel_setpool_prealert.yaml --episodes 20 --baseline fixed --episode_seed_base 42000 --out runs/stage1_accel/eval_fixed_n20.csv
+python scripts/evaluate.py --config configs/phase1_actions_curriculum_stage1_accel_setpool_prealert.yaml --episodes 20 --baseline random_accel --episode_seed_base 42000 --out runs/stage1_accel/eval_random_accel_n20.csv
+python scripts/evaluate.py --config configs/phase1_actions_curriculum_stage1_accel_setpool_prealert.yaml --episodes 20 --baseline centroid --episode_seed_base 42000 --out runs/stage1_accel/eval_centroid_n20.csv
 ```
 
 3. 汇总对照指标（`queue_total_active` 的 mean/P95/P99，`outflow_arrival_ratio` 的 mean/P05，`drop_ratio` 的 mean）

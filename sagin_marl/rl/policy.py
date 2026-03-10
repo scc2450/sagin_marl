@@ -10,6 +10,11 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.distributions import Normal
 
+OWN_OBS_DIM = 7
+USER_OBS_DIM = 5
+SAT_OBS_DIM = 9
+NBR_OBS_DIM = 4
+
 
 @dataclass
 class PolicyOutput:
@@ -19,6 +24,18 @@ class PolicyOutput:
     bw_logits: torch.Tensor | None = None
     sat_logits: torch.Tensor | None = None
     dist_out: Dict[str, torch.Tensor] | None = None
+
+
+def flat_obs_dim(cfg) -> int:
+    return (
+        OWN_OBS_DIM
+        + cfg.users_obs_max * USER_OBS_DIM
+        + cfg.users_obs_max
+        + cfg.sats_obs_max * SAT_OBS_DIM
+        + cfg.sats_obs_max
+        + cfg.nbrs_obs_max * NBR_OBS_DIM
+        + cfg.nbrs_obs_max
+    )
 
 
 def flatten_obs(obs: Dict[str, np.ndarray], cfg) -> np.ndarray:
@@ -34,7 +51,7 @@ def flatten_obs(obs: Dict[str, np.ndarray], cfg) -> np.ndarray:
     return np.concatenate(parts).astype(np.float32)
 
 
-def batch_flatten_obs(obs_batch: Dict[str, np.ndarray], cfg) -> np.ndarray:
+def batch_flatten_obs(obs_batch: list[Dict[str, np.ndarray]], cfg) -> np.ndarray:
     # obs_batch is a list/dict of per-agent observations
     obs_list = [flatten_obs(obs, cfg) for obs in obs_batch]
     return np.stack(obs_list, axis=0)
@@ -61,6 +78,21 @@ def _logprob_from_squashed(dist: Normal, action: torch.Tensor, scale: float = 1.
     return logprob.sum(-1)
 
 
+def _make_encoder(in_dim: int, hidden_dim: int, use_input_norm: bool) -> nn.Sequential:
+    layers: list[nn.Module] = []
+    if use_input_norm:
+        layers.append(nn.LayerNorm(in_dim))
+    layers.extend(
+        [
+            nn.Linear(in_dim, hidden_dim),
+            nn.ReLU(),
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.ReLU(),
+        ]
+    )
+    return nn.Sequential(*layers)
+
+
 class ActorNet(nn.Module):
     def __init__(self, obs_dim: int, cfg):
         super().__init__()
@@ -69,10 +101,64 @@ class ActorNet(nn.Module):
         self.enable_sat = not cfg.fixed_satellite_strategy
         self.bw_scale = float(cfg.bw_logit_scale)
         self.sat_scale = float(cfg.sat_logit_scale)
+        self.obs_dim = int(obs_dim)
+        self.expected_obs_dim = flat_obs_dim(cfg)
+        if self.obs_dim != self.expected_obs_dim:
+            raise ValueError(f"Actor obs_dim={self.obs_dim} does not match expected flat obs dim={self.expected_obs_dim}")
+        self.users_obs_max = int(cfg.users_obs_max)
+        self.sats_obs_max = int(cfg.sats_obs_max)
+        self.nbrs_obs_max = int(cfg.nbrs_obs_max)
+        self._users_obs_size = self.users_obs_max * USER_OBS_DIM
+        self._sats_obs_size = self.sats_obs_max * SAT_OBS_DIM
+        self._nbrs_obs_size = self.nbrs_obs_max * NBR_OBS_DIM
 
-        self.obs_norm = nn.LayerNorm(obs_dim) if getattr(cfg, "input_norm_enabled", False) else nn.Identity()
-        self.fc1 = nn.Linear(obs_dim, cfg.actor_hidden)
-        self.fc2 = nn.Linear(cfg.actor_hidden, cfg.actor_hidden)
+        idx = 0
+        self._own_slice = slice(idx, idx + OWN_OBS_DIM)
+        idx += OWN_OBS_DIM
+        self._users_slice = slice(idx, idx + self._users_obs_size)
+        idx += self._users_obs_size
+        self._users_mask_slice = slice(idx, idx + self.users_obs_max)
+        idx += self.users_obs_max
+        self._sats_slice = slice(idx, idx + self._sats_obs_size)
+        idx += self._sats_obs_size
+        self._sats_mask_slice = slice(idx, idx + self.sats_obs_max)
+        idx += self.sats_obs_max
+        self._nbrs_slice = slice(idx, idx + self._nbrs_obs_size)
+        idx += self._nbrs_obs_size
+        self._nbrs_mask_slice = slice(idx, idx + self.nbrs_obs_max)
+        idx += self.nbrs_obs_max
+        if idx != self.expected_obs_dim:
+            raise ValueError(f"Cached obs slices end at {idx}, expected {self.expected_obs_dim}")
+
+        self.encoder_type = str(getattr(cfg, "actor_encoder_type", "flat_mlp")).strip().lower()
+        if self.encoder_type not in {"flat_mlp", "set_pool"}:
+            raise ValueError(f"Unsupported actor_encoder_type='{self.encoder_type}'")
+
+        if self.encoder_type == "flat_mlp":
+            self.obs_norm = nn.LayerNorm(obs_dim) if getattr(cfg, "input_norm_enabled", False) else nn.Identity()
+            self.fc1 = nn.Linear(obs_dim, cfg.actor_hidden)
+            self.fc2 = nn.Linear(cfg.actor_hidden, cfg.actor_hidden)
+            self.own_encoder = None
+            self.users_encoder = None
+            self.sats_encoder = None
+            self.nbrs_encoder = None
+            self.fusion_fc1 = None
+            self.fusion_fc2 = None
+        else:
+            embed_dim = int(getattr(cfg, "actor_set_embed_dim", 64))
+            if embed_dim <= 0:
+                raise ValueError("actor_set_embed_dim must be positive")
+            use_input_norm = bool(getattr(cfg, "input_norm_enabled", False))
+            self.obs_norm = nn.Identity()
+            self.fc1 = None
+            self.fc2 = None
+            self.own_encoder = _make_encoder(OWN_OBS_DIM, embed_dim, use_input_norm)
+            self.users_encoder = _make_encoder(USER_OBS_DIM, embed_dim, use_input_norm)
+            self.sats_encoder = _make_encoder(SAT_OBS_DIM, embed_dim, use_input_norm)
+            self.nbrs_encoder = _make_encoder(NBR_OBS_DIM, embed_dim, use_input_norm)
+            fusion_in_dim = embed_dim + 3 * (2 * embed_dim)
+            self.fusion_fc1 = nn.Linear(fusion_in_dim, cfg.actor_hidden)
+            self.fusion_fc2 = nn.Linear(cfg.actor_hidden, cfg.actor_hidden)
 
         self.mu_head = nn.Linear(cfg.actor_hidden, 2)
         self.log_std = nn.Parameter(torch.zeros(2))
@@ -91,10 +177,64 @@ class ActorNet(nn.Module):
             self.sat_head = None
             self.sat_log_std = None
 
+    def backbone_modules(self) -> Tuple[nn.Module, ...]:
+        if self.encoder_type == "flat_mlp":
+            return (self.obs_norm, self.fc1, self.fc2)
+        return (
+            self.own_encoder,
+            self.users_encoder,
+            self.sats_encoder,
+            self.nbrs_encoder,
+            self.fusion_fc1,
+            self.fusion_fc2,
+        )
+
+    def _split_flat_obs(
+        self, obs: torch.Tensor
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        if obs.ndim != 2:
+            raise ValueError(f"Expected obs tensor with shape [B, D], got {tuple(obs.shape)}")
+        if obs.shape[1] != self.expected_obs_dim:
+            raise ValueError(f"Expected obs dim {self.expected_obs_dim}, got {obs.shape[1]}")
+
+        batch_size = obs.shape[0]
+        own = obs[:, self._own_slice]
+        users = obs[:, self._users_slice].reshape(batch_size, self.users_obs_max, USER_OBS_DIM)
+        users_mask = obs[:, self._users_mask_slice]
+        sats = obs[:, self._sats_slice].reshape(batch_size, self.sats_obs_max, SAT_OBS_DIM)
+        sats_mask = obs[:, self._sats_mask_slice]
+        nbrs = obs[:, self._nbrs_slice].reshape(batch_size, self.nbrs_obs_max, NBR_OBS_DIM)
+        nbrs_mask = obs[:, self._nbrs_mask_slice]
+        return own, users, users_mask, sats, sats_mask, nbrs, nbrs_mask
+
+    def _masked_pool(self, encoded: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
+        mask_bool = (mask > 0.0).unsqueeze(-1)
+        mask_float = mask_bool.to(encoded.dtype)
+        mask_sum = mask_float.sum(dim=1)
+        mean_feat = (encoded * mask_float).sum(dim=1) / mask_sum.clamp_min(1.0)
+
+        max_feat = encoded.masked_fill(~mask_bool, float("-inf")).amax(dim=1)
+        has_any = mask_sum.squeeze(-1) > 0.0
+        max_feat = torch.where(has_any.unsqueeze(-1), max_feat, torch.zeros_like(max_feat))
+        return torch.cat([mean_feat, max_feat], dim=-1)
+
+    def _encode_obs(self, obs: torch.Tensor) -> torch.Tensor:
+        if self.encoder_type == "flat_mlp":
+            x = self.obs_norm(obs)
+            x = F.relu(self.fc1(x))
+            return F.relu(self.fc2(x))
+
+        own, users, users_mask, sats, sats_mask, nbrs, nbrs_mask = self._split_flat_obs(obs)
+        own_feat = self.own_encoder(own)
+        users_feat = self._masked_pool(self.users_encoder(users), users_mask)
+        sats_feat = self._masked_pool(self.sats_encoder(sats), sats_mask)
+        nbrs_feat = self._masked_pool(self.nbrs_encoder(nbrs), nbrs_mask)
+        fused = torch.cat([own_feat, users_feat, sats_feat, nbrs_feat], dim=-1)
+        fused = F.relu(self.fusion_fc1(fused))
+        return F.relu(self.fusion_fc2(fused))
+
     def forward(self, obs: torch.Tensor) -> Dict[str, torch.Tensor]:
-        x = self.obs_norm(obs)
-        x = F.relu(self.fc1(x))
-        x = F.relu(self.fc2(x))
+        x = self._encode_obs(obs)
         mu = self.mu_head(x)
         out = {"mu": mu}
         if self.bw_head is not None:
