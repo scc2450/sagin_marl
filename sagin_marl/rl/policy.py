@@ -14,6 +14,7 @@ OWN_OBS_DIM = 7
 USER_OBS_DIM = 5
 SAT_OBS_DIM = 9
 NBR_OBS_DIM = 4
+DANGER_NBR_OBS_DIM = 5
 
 
 @dataclass
@@ -27,7 +28,7 @@ class PolicyOutput:
 
 
 def flat_obs_dim(cfg) -> int:
-    return (
+    dim = (
         OWN_OBS_DIM
         + cfg.users_obs_max * USER_OBS_DIM
         + cfg.users_obs_max
@@ -36,18 +37,27 @@ def flat_obs_dim(cfg) -> int:
         + cfg.nbrs_obs_max * NBR_OBS_DIM
         + cfg.nbrs_obs_max
     )
+    if bool(getattr(cfg, "danger_nbr_enabled", False)):
+        dim += DANGER_NBR_OBS_DIM
+    return dim
 
 
 def flatten_obs(obs: Dict[str, np.ndarray], cfg) -> np.ndarray:
     parts = [
         obs["own"].ravel(),
-        obs["users"].ravel(),
-        obs["users_mask"].ravel(),
-        obs["sats"].ravel(),
-        obs["sats_mask"].ravel(),
-        obs["nbrs"].ravel(),
-        obs["nbrs_mask"].ravel(),
     ]
+    if bool(getattr(cfg, "danger_nbr_enabled", False)):
+        parts.append(obs["danger_nbr"].ravel())
+    parts.extend(
+        [
+            obs["users"].ravel(),
+            obs["users_mask"].ravel(),
+            obs["sats"].ravel(),
+            obs["sats_mask"].ravel(),
+            obs["nbrs"].ravel(),
+            obs["nbrs_mask"].ravel(),
+        ]
+    )
     return np.concatenate(parts).astype(np.float32)
 
 
@@ -101,6 +111,7 @@ class ActorNet(nn.Module):
         self.enable_sat = not cfg.fixed_satellite_strategy
         self.bw_scale = float(cfg.bw_logit_scale)
         self.sat_scale = float(cfg.sat_logit_scale)
+        self.danger_nbr_enabled = bool(getattr(cfg, "danger_nbr_enabled", False))
         self.obs_dim = int(obs_dim)
         self.expected_obs_dim = flat_obs_dim(cfg)
         if self.obs_dim != self.expected_obs_dim:
@@ -115,6 +126,10 @@ class ActorNet(nn.Module):
         idx = 0
         self._own_slice = slice(idx, idx + OWN_OBS_DIM)
         idx += OWN_OBS_DIM
+        self._danger_nbr_slice = None
+        if self.danger_nbr_enabled:
+            self._danger_nbr_slice = slice(idx, idx + DANGER_NBR_OBS_DIM)
+            idx += DANGER_NBR_OBS_DIM
         self._users_slice = slice(idx, idx + self._users_obs_size)
         idx += self._users_obs_size
         self._users_mask_slice = slice(idx, idx + self.users_obs_max)
@@ -139,6 +154,7 @@ class ActorNet(nn.Module):
             self.fc1 = nn.Linear(obs_dim, cfg.actor_hidden)
             self.fc2 = nn.Linear(cfg.actor_hidden, cfg.actor_hidden)
             self.own_encoder = None
+            self.danger_nbr_encoder = None
             self.users_encoder = None
             self.sats_encoder = None
             self.nbrs_encoder = None
@@ -153,10 +169,13 @@ class ActorNet(nn.Module):
             self.fc1 = None
             self.fc2 = None
             self.own_encoder = _make_encoder(OWN_OBS_DIM, embed_dim, use_input_norm)
+            self.danger_nbr_encoder = (
+                _make_encoder(DANGER_NBR_OBS_DIM, embed_dim, use_input_norm) if self.danger_nbr_enabled else None
+            )
             self.users_encoder = _make_encoder(USER_OBS_DIM, embed_dim, use_input_norm)
             self.sats_encoder = _make_encoder(SAT_OBS_DIM, embed_dim, use_input_norm)
             self.nbrs_encoder = _make_encoder(NBR_OBS_DIM, embed_dim, use_input_norm)
-            fusion_in_dim = embed_dim + 3 * (2 * embed_dim)
+            fusion_in_dim = 2 * embed_dim + 3 * (2 * embed_dim) if self.danger_nbr_enabled else embed_dim + 3 * (2 * embed_dim)
             self.fusion_fc1 = nn.Linear(fusion_in_dim, cfg.actor_hidden)
             self.fusion_fc2 = nn.Linear(cfg.actor_hidden, cfg.actor_hidden)
 
@@ -180,18 +199,34 @@ class ActorNet(nn.Module):
     def backbone_modules(self) -> Tuple[nn.Module, ...]:
         if self.encoder_type == "flat_mlp":
             return (self.obs_norm, self.fc1, self.fc2)
-        return (
+        modules: list[nn.Module] = [
             self.own_encoder,
-            self.users_encoder,
-            self.sats_encoder,
-            self.nbrs_encoder,
-            self.fusion_fc1,
-            self.fusion_fc2,
+        ]
+        if self.danger_nbr_encoder is not None:
+            modules.append(self.danger_nbr_encoder)
+        modules.extend(
+            [
+                self.users_encoder,
+                self.sats_encoder,
+                self.nbrs_encoder,
+                self.fusion_fc1,
+                self.fusion_fc2,
+            ]
         )
+        return tuple(modules)
 
     def _split_flat_obs(
         self, obs: torch.Tensor
-    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    ) -> Tuple[
+        torch.Tensor,
+        torch.Tensor | None,
+        torch.Tensor,
+        torch.Tensor,
+        torch.Tensor,
+        torch.Tensor,
+        torch.Tensor,
+        torch.Tensor,
+    ]:
         if obs.ndim != 2:
             raise ValueError(f"Expected obs tensor with shape [B, D], got {tuple(obs.shape)}")
         if obs.shape[1] != self.expected_obs_dim:
@@ -199,13 +234,14 @@ class ActorNet(nn.Module):
 
         batch_size = obs.shape[0]
         own = obs[:, self._own_slice]
+        danger_nbr = obs[:, self._danger_nbr_slice] if self._danger_nbr_slice is not None else None
         users = obs[:, self._users_slice].reshape(batch_size, self.users_obs_max, USER_OBS_DIM)
         users_mask = obs[:, self._users_mask_slice]
         sats = obs[:, self._sats_slice].reshape(batch_size, self.sats_obs_max, SAT_OBS_DIM)
         sats_mask = obs[:, self._sats_mask_slice]
         nbrs = obs[:, self._nbrs_slice].reshape(batch_size, self.nbrs_obs_max, NBR_OBS_DIM)
         nbrs_mask = obs[:, self._nbrs_mask_slice]
-        return own, users, users_mask, sats, sats_mask, nbrs, nbrs_mask
+        return own, danger_nbr, users, users_mask, sats, sats_mask, nbrs, nbrs_mask
 
     def _masked_pool(self, encoded: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
         mask_bool = (mask > 0.0).unsqueeze(-1)
@@ -224,12 +260,17 @@ class ActorNet(nn.Module):
             x = F.relu(self.fc1(x))
             return F.relu(self.fc2(x))
 
-        own, users, users_mask, sats, sats_mask, nbrs, nbrs_mask = self._split_flat_obs(obs)
+        own, danger_nbr, users, users_mask, sats, sats_mask, nbrs, nbrs_mask = self._split_flat_obs(obs)
         own_feat = self.own_encoder(own)
+        fused_parts = [own_feat]
+        if self.danger_nbr_encoder is not None:
+            if danger_nbr is None:
+                raise ValueError("danger_nbr slice is missing while danger_nbr_enabled=True")
+            fused_parts.append(self.danger_nbr_encoder(danger_nbr))
         users_feat = self._masked_pool(self.users_encoder(users), users_mask)
         sats_feat = self._masked_pool(self.sats_encoder(sats), sats_mask)
         nbrs_feat = self._masked_pool(self.nbrs_encoder(nbrs), nbrs_mask)
-        fused = torch.cat([own_feat, users_feat, sats_feat, nbrs_feat], dim=-1)
+        fused = torch.cat([*fused_parts, users_feat, sats_feat, nbrs_feat], dim=-1)
         fused = F.relu(self.fusion_fc1(fused))
         return F.relu(self.fusion_fc2(fused))
 

@@ -1,5 +1,9 @@
-# Stage 1 accel-only baseline (current recommended).
-# Keeps the set-pool actor and the proven distance-prealert safety layer.
+# Stage 1 accel-only baseline (previous recommended set-pool prealert variant).
+# Effective values match runs/line3_short/setpool30_prealert/config.yaml.
+# Current recommended baseline:
+#   configs/phase1_actions_curriculum_stage1_accel_setpool_prealert_top1gain_close_risk.yaml
+# This file omits many loader defaults, so it is shorter than the expanded
+# run snapshot but should resolve to the same non-TTC prealert settings.
 # Train:
 #   python scripts/train.py --config configs/phase1_actions_curriculum_stage1_accel_setpool_prealert.yaml --updates 400 --log_dir runs/phase1_actions --run_id stage1_accel
 seed: 42

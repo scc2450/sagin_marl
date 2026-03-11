@@ -32,7 +32,9 @@ def test_smoke_train(tmp_path, actor_encoder_type):
     assert "reward_rms_sigma" in header
     assert "reward_clip_frac" in header
     assert "drop_sum" in header
+    assert "r_close_risk" in header
     assert "r_term_accel" in header
+    assert "r_term_close_risk" in header
     assert "r_collision_penalty" in header
     assert "r_battery_penalty" in header
     assert "q_norm_tail_hit_rate" in header

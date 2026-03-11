@@ -50,6 +50,7 @@ class SaginParallelEnv(ParallelEnv):
         self.user_dim = 5
         self.sat_dim = 9
         self.nbr_dim = 4
+        self.danger_nbr_dim = 5
 
         self._build_spaces()
         self.effective_task_arrival_rate = float(cfg.task_arrival_rate)
@@ -217,17 +218,23 @@ class SaginParallelEnv(ParallelEnv):
 
     def _build_spaces(self) -> None:
         cfg = self.cfg
-        self._obs_space = gym.spaces.Dict(
-            {
-                "own": gym.spaces.Box(-np.inf, np.inf, shape=(self.own_dim,), dtype=np.float32),
-                "users": gym.spaces.Box(-np.inf, np.inf, shape=(cfg.users_obs_max, self.user_dim), dtype=np.float32),
-                "users_mask": gym.spaces.Box(0.0, 1.0, shape=(cfg.users_obs_max,), dtype=np.float32),
-                "sats": gym.spaces.Box(-np.inf, np.inf, shape=(cfg.sats_obs_max, self.sat_dim), dtype=np.float32),
-                "sats_mask": gym.spaces.Box(0.0, 1.0, shape=(cfg.sats_obs_max,), dtype=np.float32),
-                "nbrs": gym.spaces.Box(-np.inf, np.inf, shape=(cfg.nbrs_obs_max, self.nbr_dim), dtype=np.float32),
-                "nbrs_mask": gym.spaces.Box(0.0, 1.0, shape=(cfg.nbrs_obs_max,), dtype=np.float32),
-            }
-        )
+        obs_space = {
+            "own": gym.spaces.Box(-np.inf, np.inf, shape=(self.own_dim,), dtype=np.float32),
+            "users": gym.spaces.Box(-np.inf, np.inf, shape=(cfg.users_obs_max, self.user_dim), dtype=np.float32),
+            "users_mask": gym.spaces.Box(0.0, 1.0, shape=(cfg.users_obs_max,), dtype=np.float32),
+            "sats": gym.spaces.Box(-np.inf, np.inf, shape=(cfg.sats_obs_max, self.sat_dim), dtype=np.float32),
+            "sats_mask": gym.spaces.Box(0.0, 1.0, shape=(cfg.sats_obs_max,), dtype=np.float32),
+            "nbrs": gym.spaces.Box(-np.inf, np.inf, shape=(cfg.nbrs_obs_max, self.nbr_dim), dtype=np.float32),
+            "nbrs_mask": gym.spaces.Box(0.0, 1.0, shape=(cfg.nbrs_obs_max,), dtype=np.float32),
+        }
+        if bool(getattr(cfg, "danger_nbr_enabled", False)):
+            obs_space["danger_nbr"] = gym.spaces.Box(
+                -np.inf,
+                np.inf,
+                shape=(self.danger_nbr_dim,),
+                dtype=np.float32,
+            )
+        self._obs_space = gym.spaces.Dict(obs_space)
 
         self._act_space = gym.spaces.Dict(
             {
@@ -259,6 +266,72 @@ class SaginParallelEnv(ParallelEnv):
     def action_space(self, agent):
         return self._act_space
 
+    def _dummy_actions(self) -> Dict[str, Dict[str, np.ndarray]]:
+        return {
+            agent: {
+                "accel": np.zeros(2, dtype=np.float32),
+                "bw_logits": np.zeros(self.cfg.users_obs_max, dtype=np.float32),
+                "sat_logits": np.zeros(self.cfg.sats_obs_max, dtype=np.float32),
+            }
+            for agent in self.agents
+        }
+
+    def _queue_init_arrival_ref(self) -> float:
+        cfg = self.cfg
+        return (
+            float(getattr(self, "effective_task_arrival_rate", cfg.task_arrival_rate))
+            * float(cfg.num_gu)
+            * float(cfg.tau0)
+        )
+
+    def _resolve_queue_init_total(
+        self,
+        abs_attr: str,
+        steps_attr: str,
+        frac_attr: str,
+        total_cap: float,
+    ) -> float:
+        cfg = self.cfg
+        abs_value = getattr(cfg, abs_attr, None)
+        if abs_value is not None:
+            return min(max(float(abs_value), 0.0), total_cap)
+
+        steps_value = getattr(cfg, steps_attr, None)
+        if steps_value is not None:
+            total = max(float(steps_value), 0.0) * self._queue_init_arrival_ref()
+            return min(total, total_cap)
+
+        frac_value = max(float(getattr(cfg, frac_attr, 0.0) or 0.0), 0.0)
+        return min(float(np.clip(frac_value, 0.0, 1.0)) * total_cap, total_cap)
+
+    def _init_queues(self) -> None:
+        cfg = self.cfg
+        gu_total = self._resolve_queue_init_total(
+            "queue_init_gu_abs",
+            "queue_init_gu_steps",
+            "queue_init_frac",
+            float(cfg.num_gu) * float(cfg.queue_max_gu),
+        )
+        uav_total = self._resolve_queue_init_total(
+            "queue_init_uav_abs",
+            "queue_init_uav_steps",
+            "queue_init_uav_frac",
+            float(cfg.num_uav) * float(cfg.queue_max_uav),
+        )
+        sat_total = self._resolve_queue_init_total(
+            "queue_init_sat_abs",
+            "queue_init_sat_steps",
+            "queue_init_sat_frac",
+            float(cfg.num_sat) * float(cfg.queue_max_sat),
+        )
+
+        if cfg.num_gu > 0 and gu_total > 0.0:
+            self.gu_queue = np.full((cfg.num_gu,), gu_total / float(cfg.num_gu), dtype=np.float32)
+        if cfg.num_uav > 0 and uav_total > 0.0:
+            self.uav_queue = np.full((cfg.num_uav,), uav_total / float(cfg.num_uav), dtype=np.float32)
+        if cfg.num_sat > 0 and sat_total > 0.0:
+            self.sat_queue = np.full((cfg.num_sat,), sat_total / float(cfg.num_sat), dtype=np.float32)
+
     def _init_state(self) -> None:
         cfg = self.cfg
         self.t = 0
@@ -279,18 +352,9 @@ class SaginParallelEnv(ParallelEnv):
         self.gu_queue = np.zeros((cfg.num_gu,), dtype=np.float32)
         self.uav_queue = np.zeros((cfg.num_uav,), dtype=np.float32)
         self.sat_queue = np.zeros((cfg.num_sat,), dtype=np.float32)
-        init_gu_frac = float(getattr(cfg, "queue_init_frac", 0.0) or 0.0)
-        init_uav_frac = float(getattr(cfg, "queue_init_uav_frac", 0.0) or 0.0)
-        init_sat_frac = float(getattr(cfg, "queue_init_sat_frac", 0.0) or 0.0)
-        if init_gu_frac > 0.0 and cfg.num_gu > 0:
-            init_gu_frac = float(np.clip(init_gu_frac, 0.0, 1.0))
-            self.gu_queue = np.full((cfg.num_gu,), cfg.queue_max_gu * init_gu_frac, dtype=np.float32)
-        if init_uav_frac > 0.0 and cfg.num_uav > 0:
-            init_uav_frac = float(np.clip(init_uav_frac, 0.0, 1.0))
-            self.uav_queue = np.full((cfg.num_uav,), cfg.queue_max_uav * init_uav_frac, dtype=np.float32)
-        if init_sat_frac > 0.0 and cfg.num_sat > 0:
-            init_sat_frac = float(np.clip(init_sat_frac, 0.0, 1.0))
-            self.sat_queue = np.full((cfg.num_sat,), cfg.queue_max_sat * init_sat_frac, dtype=np.float32)
+        self.last_association = np.full((cfg.num_gu,), -1, dtype=np.int32)
+        self.prev_association = self.last_association.copy()
+        self._init_queues()
         self.prev_queue_sum = 0.0
         self.prev_queue_sum_active = 0.0
         arrival_ref = (
@@ -306,6 +370,7 @@ class SaginParallelEnv(ParallelEnv):
         self.last_gu_arrival = np.zeros((cfg.num_gu,), dtype=np.float32)
         self.gu_drop = np.zeros((cfg.num_gu,), dtype=np.float32)
         self.uav_drop = np.zeros((cfg.num_uav,), dtype=np.float32)
+        self.sat_drop = np.zeros((cfg.num_sat,), dtype=np.float32)
         self.last_energy_cost = np.zeros((cfg.num_uav,), dtype=np.float32)
         self.last_sat_processed = np.zeros((cfg.num_sat,), dtype=np.float32)
         self.last_sat_incoming = np.zeros((cfg.num_sat,), dtype=np.float32)
@@ -322,13 +387,14 @@ class SaginParallelEnv(ParallelEnv):
         self.last_pairwise_fallback_count = 0.0
         self.last_pairwise_candidate_infeasible_count = 0.0
         self.last_step_profile = self._empty_step_profile()
-
-        self.last_association = np.full((cfg.num_gu,), -1, dtype=np.int32)
-        self.prev_association = self.last_association.copy()
         self.last_reward_parts = {
             "service_ratio": 0.0,
             "drop_ratio": 0.0,
             "drop_sum": 0.0,
+            "drop_sum_active": 0.0,
+            "gu_drop_sum": 0.0,
+            "uav_drop_sum": 0.0,
+            "sat_drop_sum": 0.0,
             "drop_event": 0.0,
             "queue_pen": 0.0,
             "queue_pen_gu": 0.0,
@@ -385,6 +451,8 @@ class SaginParallelEnv(ParallelEnv):
             "term_dist_delta": 0.0,
             "term_energy": 0.0,
             "term_accel": 0.0,
+            "close_risk": 0.0,
+            "term_close_risk": 0.0,
             "reward_raw": 0.0,
         }
         self._cached_candidates: List[List[int]] = [[] for _ in range(cfg.num_uav)]
@@ -405,14 +473,7 @@ class SaginParallelEnv(ParallelEnv):
         # Prime candidates and eta for initial observations
         assoc = self._associate_users()
         self._cached_candidates = self._build_candidate_users(assoc)
-        dummy_actions = {
-            agent: {
-                "accel": np.zeros(2, dtype=np.float32),
-                "bw_logits": np.zeros(self.cfg.users_obs_max, dtype=np.float32),
-                "sat_logits": np.zeros(self.cfg.sats_obs_max, dtype=np.float32),
-            }
-            for agent in self.agents
-        }
+        dummy_actions = self._dummy_actions()
         _, self._cached_eta = self._compute_access_rates(assoc, self._cached_candidates, dummy_actions)
         sat_pos, sat_vel = self._get_orbit_states()
         visible = self._visible_sats_sorted(sat_pos)
@@ -1020,6 +1081,9 @@ class SaginParallelEnv(ParallelEnv):
             elif d_prealert > 0.0:
                 prealert_trigger_dist = d_prealert
         repulse_mode = str(getattr(cfg, "avoidance_repulse_mode", "inverse") or "inverse").strip().lower()
+        closing_gain_enabled = bool(getattr(cfg, "avoidance_closing_gain_enabled", False))
+        closing_gain_cap = max(float(getattr(cfg, "avoidance_closing_gain_cap", 2.0) or 2.0), 1.0)
+        closing_gain_top1_only = bool(getattr(cfg, "avoidance_closing_gain_top1_only", False))
         eta_avoid = float(getattr(self, "avoidance_eta_eff", cfg.avoidance_eta))
         _, _, centroid_transfer_ratio = self._centroid_anneal_state()
         cross_enabled = bool(getattr(cfg, "centroid_cross_anneal_enabled", False))
@@ -1037,6 +1101,7 @@ class SaginParallelEnv(ParallelEnv):
             a = np.clip(a, -1.0, 1.0) * cfg.a_max
             a_rep = np.zeros(2, dtype=np.float32)
             if use_avoidance and d_alert > 0.0:
+                pair_terms = []
                 for j in range(cfg.num_uav):
                     if i == j:
                         continue
@@ -1049,6 +1114,7 @@ class SaginParallelEnv(ParallelEnv):
                     trigger_dist = d_alert
                     in_core_alert = dist < d_alert
                     in_prealert = False
+                    ttc_to_alert = float("inf")
                     if prealert_mode == "ttc":
                         if (
                             prealert_trigger_dist > d_alert
@@ -1077,7 +1143,44 @@ class SaginParallelEnv(ParallelEnv):
                             strength = base * base
                         else:
                             strength = (1.0 / dist - 1.0 / trigger_dist)
-                        a_rep += eta_avoid * strength * direction
+                        closing_ratio_raw = 1.0
+                        closing_gain = 1.0
+                        if closing_gain_enabled and closing_speed_thresh > 1e-6 and closing_speed > closing_speed_thresh:
+                            closing_ratio_raw = closing_speed / closing_speed_thresh
+                            closing_gain = float(np.clip(closing_ratio_raw, 1.0, closing_gain_cap))
+                        pair_terms.append(
+                            {
+                                "direction": direction,
+                                "strength": strength,
+                                "closing_gain": closing_gain,
+                                "closing_ratio_raw": closing_ratio_raw,
+                                "closing_bonus_score": strength * max(closing_ratio_raw - 1.0, 0.0),
+                                "in_core_alert": in_core_alert,
+                                "ttc_urgency": (1.0 / max(ttc_to_alert, 1e-6)) if np.isfinite(ttc_to_alert) else 0.0,
+                                "dist": dist,
+                            }
+                        )
+                top1_gain_idx = None
+                if closing_gain_enabled and closing_gain_top1_only and pair_terms:
+                    best_key = None
+                    for idx, term in enumerate(pair_terms):
+                        if float(term["closing_gain"]) <= 1.0:
+                            continue
+                        key = (
+                            1 if bool(term["in_core_alert"]) else 0,
+                            float(term["closing_bonus_score"]),
+                            float(term["ttc_urgency"]),
+                            float(term["strength"]),
+                            -float(term["dist"]),
+                        )
+                        if best_key is None or key > best_key:
+                            best_key = key
+                            top1_gain_idx = idx
+                for idx, term in enumerate(pair_terms):
+                    closing_gain = float(term["closing_gain"])
+                    if closing_gain_top1_only and top1_gain_idx is not None and idx != top1_gain_idx:
+                        closing_gain = 1.0
+                    a_rep += eta_avoid * float(term["strength"]) * closing_gain * np.asarray(term["direction"], dtype=np.float32)
                 if bool(getattr(cfg, "avoidance_repulse_clip", True)):
                     a_rep = np.clip(a_rep, -cfg.a_max, cfg.a_max)
             if cfg.energy_enabled and use_energy_safety:
@@ -1524,10 +1627,14 @@ class SaginParallelEnv(ParallelEnv):
         incoming = np.sum(outflow_matrix, axis=0)
         compute_rate = cfg.sat_cpu_freq / cfg.task_cycles_per_bit
         before = self.sat_queue.copy()
-        processed = np.minimum(before + incoming, compute_rate * cfg.tau0)
-        self.last_sat_processed = processed
-        self.last_sat_incoming = incoming
-        self.sat_queue = np.maximum(before + incoming - compute_rate * cfg.tau0, 0.0)
+        q_before = before + incoming
+        processed = np.minimum(q_before, compute_rate * cfg.tau0)
+        q_after = q_before - processed
+        self.sat_drop = np.maximum(q_after - cfg.queue_max_sat, 0.0).astype(np.float32)
+        q_after = np.minimum(q_after, cfg.queue_max_sat)
+        self.last_sat_processed = processed.astype(np.float32)
+        self.last_sat_incoming = incoming.astype(np.float32)
+        self.sat_queue = q_after.astype(np.float32)
 
     def _update_energy(self, selections: List[List[int]]) -> None:
         cfg = self.cfg
@@ -1592,7 +1699,11 @@ class SaginParallelEnv(ParallelEnv):
         arrival_sum = float(np.sum(self.last_gu_arrival))
         outflow_sum = float(np.sum(self.last_gu_outflow))
         backhaul_sum = float(np.sum(getattr(self, "last_sat_incoming", 0.0)))
-        drop_sum = float(np.sum(self.gu_drop)) + float(np.sum(self.uav_drop))
+        gu_drop_sum = float(np.sum(self.gu_drop))
+        uav_drop_sum = float(np.sum(self.uav_drop))
+        sat_drop_sum = float(np.sum(getattr(self, "sat_drop", 0.0)))
+        drop_sum_active = gu_drop_sum + uav_drop_sum
+        drop_sum = drop_sum_active + sat_drop_sum
         service_ratio = outflow_sum / (arrival_sum + 1e-9)
         drop_ratio = drop_sum / (arrival_sum + 1e-9)
         service_ratio = float(np.clip(service_ratio, 0.0, 1.0))
@@ -1684,13 +1795,21 @@ class SaginParallelEnv(ParallelEnv):
         queue_topk = 0.0
         bw_align = float(getattr(self, "last_bw_align", 0.0))
         sat_score = float(getattr(self, "last_sat_score", 0.0))
+        tail_eta_accel = float(cfg.eta_accel)
+        close_risk = self._compute_close_risk()
+        q_small = max(float(getattr(cfg, "tail_q_small", 0.0) or 0.0), 0.0)
+        tail_eta_accel_gain = max(float(getattr(cfg, "tail_eta_accel_gain", 1.0) or 0.0), 0.0)
+        if q_total_active <= q_small:
+            tail_eta_accel = tail_eta_accel * tail_eta_accel_gain
+
         term_service = cfg.eta_service * service_norm
         term_drop_step = -float(getattr(cfg, "eta_drop_step", 0.0) or 0.0) * drop_event
         term_drop = -cfg.eta_drop * drop_norm + term_drop_step
         term_queue = -queue_weight * queue_term
         term_q_delta = q_delta_weight * queue_delta
         term_centroid = centroid_eta * centroid_reward
-        term_accel = -cfg.eta_accel * accel_norm2
+        term_accel = -tail_eta_accel * accel_norm2
+        term_close_risk = -max(float(getattr(cfg, "eta_close_risk", 0.0) or 0.0), 0.0) * close_risk
         term_energy = cfg.omega_e * r_energy if use_energy_reward else 0.0
         raw_reward = (
             term_service
@@ -1699,6 +1818,7 @@ class SaginParallelEnv(ParallelEnv):
             + term_q_delta
             + term_centroid
             + term_accel
+            + term_close_risk
             + term_energy
         )
 
@@ -1728,6 +1848,10 @@ class SaginParallelEnv(ParallelEnv):
             "service_ratio": service_ratio,
             "drop_ratio": drop_ratio,
             "drop_sum": drop_sum,
+            "drop_sum_active": drop_sum_active,
+            "gu_drop_sum": gu_drop_sum,
+            "uav_drop_sum": uav_drop_sum,
+            "sat_drop_sum": sat_drop_sum,
             "drop_event": drop_event,
             "arrival_sum": arrival_sum,
             "outflow_sum": outflow_sum,
@@ -1798,9 +1922,64 @@ class SaginParallelEnv(ParallelEnv):
             "term_sat_score": term_sat_score,
             "term_energy": float(term_energy),
             "term_accel": term_accel,
+            "close_risk": close_risk,
+            "term_close_risk": term_close_risk,
             "reward_raw": raw_reward,
         }
         return float(reward)
+
+    def _compute_close_risk(self) -> float:
+        cfg = self.cfg
+        if cfg.num_uav < 2 or not bool(getattr(cfg, "close_risk_enabled", False)):
+            return 0.0
+
+        d_alert = float(cfg.avoidance_alert_factor) * float(cfg.d_safe)
+        raw_prealert_factor = getattr(cfg, "avoidance_prealert_factor", None)
+        trigger_dist = d_alert
+        if raw_prealert_factor is not None:
+            trigger_dist = max(float(raw_prealert_factor) * float(cfg.d_safe), d_alert)
+
+        prealert_mode = str(getattr(cfg, "avoidance_prealert_mode", "distance") or "distance").strip().lower()
+        if prealert_mode not in {"distance", "ttc"}:
+            prealert_mode = "distance"
+        if prealert_mode == "ttc":
+            raw_prealert_dist_cap = getattr(cfg, "avoidance_prealert_dist_cap", None)
+            if raw_prealert_dist_cap is not None:
+                trigger_dist = max(float(raw_prealert_dist_cap), d_alert)
+
+        closing_speed_thresh = max(float(getattr(cfg, "avoidance_prealert_closing_speed", 0.0) or 0.0), 0.0)
+        prealert_ttc_limit = max(float(getattr(cfg, "avoidance_prealert_ttc", 0.0) or 0.0), 0.0)
+        close_risk_cap = max(float(getattr(cfg, "close_risk_cap", 2.0) or 0.0), 0.0)
+        dist_denom = max(trigger_dist - d_alert, 1e-6)
+        close_scale = max(closing_speed_thresh, 1e-6)
+
+        close_risk = 0.0
+        pair_count = 0
+        for i in range(cfg.num_uav):
+            for j in range(i + 1, cfg.num_uav):
+                diff = self.uav_pos[i] - self.uav_pos[j]
+                dist = float(np.linalg.norm(diff))
+                if dist <= 1e-6:
+                    continue
+                pair_count += 1
+                rel_vel = self.uav_vel[i] - self.uav_vel[j]
+                closing_speed = max(float(-(np.dot(diff, rel_vel) / dist)), 0.0)
+                if closing_speed <= closing_speed_thresh or dist >= trigger_dist:
+                    continue
+                if prealert_mode == "ttc" and dist >= d_alert:
+                    if prealert_ttc_limit <= 0.0:
+                        continue
+                    ttc_to_alert = (dist - d_alert) / max(closing_speed, 1e-6)
+                    if ttc_to_alert >= prealert_ttc_limit:
+                        continue
+
+                dist_ratio = float(np.clip((trigger_dist - dist) / dist_denom, 0.0, 1.0))
+                close_ratio = float(np.clip((closing_speed - closing_speed_thresh) / close_scale, 0.0, close_risk_cap))
+                close_risk += dist_ratio * close_ratio
+
+        if pair_count <= 0:
+            return 0.0
+        return close_risk / float(pair_count)
 
     def _check_collision(self) -> bool:
         cfg = self.cfg
@@ -1976,6 +2155,94 @@ class SaginParallelEnv(ParallelEnv):
         self._cached_sat_obs = sat_obs
         self._cached_sat_mask = sat_mask
 
+    def _danger_neighbor_obs(self, u: int) -> np.ndarray:
+        cfg = self.cfg
+        feat = np.zeros((self.danger_nbr_dim,), dtype=np.float32)
+        if cfg.num_uav <= 1:
+            return feat
+
+        d_alert = float(cfg.avoidance_alert_factor) * float(cfg.d_safe) if bool(cfg.avoidance_enabled) else 0.0
+        raw_prealert_factor = getattr(cfg, "avoidance_prealert_factor", None)
+        trigger_dist = d_alert
+        if raw_prealert_factor is not None:
+            trigger_dist = max(float(raw_prealert_factor) * float(cfg.d_safe), d_alert)
+
+        prealert_mode = str(getattr(cfg, "avoidance_prealert_mode", "distance") or "distance").strip().lower()
+        if prealert_mode not in {"distance", "ttc"}:
+            prealert_mode = "distance"
+        if prealert_mode == "ttc":
+            raw_prealert_dist_cap = getattr(cfg, "avoidance_prealert_dist_cap", None)
+            if raw_prealert_dist_cap is not None:
+                trigger_dist = max(float(raw_prealert_dist_cap), d_alert)
+
+        closing_speed_thresh = max(float(getattr(cfg, "avoidance_prealert_closing_speed", 0.0) or 0.0), 0.0)
+        prealert_ttc_limit = max(float(getattr(cfg, "avoidance_prealert_ttc", 0.0) or 0.0), 0.0)
+
+        best = None
+        best_key = None
+        for j in range(cfg.num_uav):
+            if j == u:
+                continue
+            rel_pos = self.uav_pos[j] - self.uav_pos[u]
+            dist = float(np.linalg.norm(rel_pos))
+            if dist <= 1e-6:
+                continue
+
+            rel_vel = self.uav_vel[j] - self.uav_vel[u]
+            closing_speed = float(-(np.dot(rel_pos, rel_vel) / dist))
+            closing_pos = max(closing_speed, 0.0)
+            ttc_to_alert = float("inf")
+            if d_alert > 0.0:
+                if dist <= d_alert:
+                    ttc_to_alert = 0.0
+                elif closing_pos > 1e-6:
+                    ttc_to_alert = (dist - d_alert) / closing_pos
+
+            in_core_alert = bool(d_alert > 0.0 and dist < d_alert)
+            if prealert_mode == "ttc":
+                in_prealert = bool(
+                    trigger_dist > d_alert
+                    and dist < trigger_dist
+                    and closing_speed > closing_speed_thresh
+                    and prealert_ttc_limit > 0.0
+                    and np.isfinite(ttc_to_alert)
+                    and ttc_to_alert < prealert_ttc_limit
+                )
+            else:
+                in_prealert = bool(
+                    trigger_dist > d_alert
+                    and dist < trigger_dist
+                    and closing_speed > closing_speed_thresh
+                )
+
+            key = (
+                1 if in_core_alert else 0,
+                1 if in_prealert else 0,
+                1 if closing_pos > 0.0 else 0,
+                closing_pos,
+                -dist,
+            )
+            if best_key is None or key > best_key:
+                best_key = key
+                best = (rel_pos, dist, closing_pos, in_prealert, in_core_alert)
+
+        if best is None:
+            return feat
+
+        rel_pos, dist, closing_pos, in_prealert, in_core_alert = best
+        direction = rel_pos / max(dist, 1e-6)
+        feat[:] = np.array(
+            [
+                dist / max(cfg.map_size, 1e-6),
+                np.clip(closing_pos / max(cfg.v_max, 1e-6), 0.0, 1.0),
+                direction[0],
+                direction[1],
+                1.0,
+            ],
+            dtype=np.float32,
+        )
+        return feat
+
     def _get_obs(self, u: int) -> Dict[str, np.ndarray]:
         cfg = self.cfg
         # own features
@@ -2026,7 +2293,7 @@ class SaginParallelEnv(ParallelEnv):
             if count >= cfg.nbrs_obs_max:
                 break
 
-        return {
+        obs = {
             "own": own,
             "users": users,
             "users_mask": users_mask,
@@ -2035,6 +2302,9 @@ class SaginParallelEnv(ParallelEnv):
             "nbrs": nbrs,
             "nbrs_mask": nbrs_mask,
         }
+        if bool(getattr(cfg, "danger_nbr_enabled", False)):
+            obs["danger_nbr"] = self._danger_neighbor_obs(u)
+        return obs
 
     def _build_global_state(self) -> np.ndarray:
         cfg = self.cfg

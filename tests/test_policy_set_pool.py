@@ -17,6 +17,8 @@ def _make_obs(cfg: SaginConfig) -> dict[str, np.ndarray]:
         "nbrs": np.zeros((cfg.nbrs_obs_max, 4), dtype=np.float32),
         "nbrs_mask": np.zeros((cfg.nbrs_obs_max,), dtype=np.float32),
     }
+    if cfg.danger_nbr_enabled:
+        obs["danger_nbr"] = np.array([0.3, 0.4, -1.0, 0.0, 1.0], dtype=np.float32)
     obs["users"][0] = np.array([0.2, -0.1, 0.6, 1.2, 1.0], dtype=np.float32)
     obs["users_mask"][0] = 1.0
     obs["sats"][0] = np.array([0.1, 0.2, 0.3, 0.0, 0.1, -0.2, 0.4, 3.0, 0.5], dtype=np.float32)
@@ -135,3 +137,23 @@ def test_actor_encoder_types_have_compatible_output_shapes():
     assert act_flat.action.shape == act_set.action.shape == (3, 2)
     assert act_flat.accel.shape == act_set.accel.shape == (3, 2)
     assert act_flat.logprob.shape == act_set.logprob.shape == (3,)
+
+
+def test_set_pool_actor_supports_danger_neighbor_obs():
+    torch.manual_seed(0)
+    cfg = SaginConfig(users_obs_max=3, sats_obs_max=2, nbrs_obs_max=2, danger_nbr_enabled=True)
+    cfg.actor_encoder_type = "set_pool"
+    cfg.actor_set_embed_dim = 16
+
+    actor = _make_actor(cfg)
+    obs_tensor = torch.tensor(batch_flatten_obs([_make_obs(cfg), _make_obs(cfg)], cfg), dtype=torch.float32)
+
+    with torch.no_grad():
+        out = actor.forward(obs_tensor)
+        act = actor.act(obs_tensor, deterministic=True)
+
+    assert out["mu"].shape == (2, 2)
+    assert torch.isfinite(out["mu"]).all()
+    assert act.action.shape == (2, 2)
+    assert torch.isfinite(act.action).all()
+    assert torch.isfinite(act.logprob).all()

@@ -24,6 +24,102 @@ def test_env_step_invariants():
         assert np.isfinite(env.sat_queue).all()
 
 
+def test_queue_init_steps_use_arrival_reference():
+    cfg = SaginConfig(
+        num_uav=2,
+        num_gu=4,
+        num_sat=3,
+        users_obs_max=4,
+        sats_obs_max=3,
+        nbrs_obs_max=1,
+        task_arrival_rate=10.0,
+        traffic_level=2,
+        queue_init_gu_steps=3.0,
+        queue_init_uav_steps=1.0,
+        queue_init_sat_steps=2.0,
+    )
+    env = SaginParallelEnv(cfg)
+    env._init_state()
+
+    arrival_ref = cfg.task_arrival_rate * cfg.num_gu * cfg.tau0
+    np.testing.assert_allclose(float(np.sum(env.gu_queue)), 3.0 * arrival_ref, atol=1e-6)
+    np.testing.assert_allclose(float(np.sum(env.uav_queue)), 1.0 * arrival_ref, atol=1e-6)
+    np.testing.assert_allclose(float(np.sum(env.sat_queue)), 2.0 * arrival_ref, atol=1e-6)
+
+
+def test_queue_init_abs_overrides_fraction_and_clips_to_cap():
+    cfg = SaginConfig(
+        num_uav=2,
+        num_gu=4,
+        num_sat=3,
+        users_obs_max=4,
+        sats_obs_max=3,
+        nbrs_obs_max=1,
+        queue_max_gu=100.0,
+        queue_max_uav=50.0,
+        queue_init_frac=0.1,
+        queue_init_uav_frac=0.1,
+        queue_init_gu_abs=1000.0,
+        queue_init_uav_abs=500.0,
+    )
+    env = SaginParallelEnv(cfg)
+    env._init_state()
+
+    np.testing.assert_allclose(float(np.sum(env.gu_queue)), 400.0, atol=1e-6)
+    np.testing.assert_allclose(float(np.sum(env.uav_queue)), 100.0, atol=1e-6)
+
+
+def test_sat_queue_clips_to_capacity_and_records_drop():
+    cfg = SaginConfig(
+        num_uav=1,
+        num_gu=1,
+        num_sat=1,
+        users_obs_max=1,
+        sats_obs_max=1,
+        nbrs_obs_max=1,
+        queue_max_sat=100.0,
+        sat_cpu_freq=0.0,
+    )
+    env = SaginParallelEnv(cfg)
+    env.reset()
+
+    outflow_matrix = np.array([[250.0]], dtype=np.float32)
+    env._update_sat_queues(outflow_matrix)
+
+    np.testing.assert_allclose(float(np.sum(env.last_sat_incoming)), 250.0, atol=1e-6)
+    np.testing.assert_allclose(float(np.sum(env.last_sat_processed)), 0.0, atol=1e-6)
+    np.testing.assert_allclose(float(np.sum(env.sat_drop)), 150.0, atol=1e-6)
+    np.testing.assert_allclose(float(np.sum(env.sat_queue)), 100.0, atol=1e-6)
+
+
+def test_reward_drop_sum_includes_sat_drop():
+    cfg = SaginConfig(
+        num_uav=1,
+        num_gu=1,
+        num_sat=1,
+        users_obs_max=1,
+        sats_obs_max=1,
+        nbrs_obs_max=1,
+    )
+    env = SaginParallelEnv(cfg)
+    env.reset()
+    env.last_gu_arrival = np.array([200.0], dtype=np.float32)
+    env.last_gu_outflow = np.zeros((1,), dtype=np.float32)
+    env.gu_drop = np.zeros((1,), dtype=np.float32)
+    env.uav_drop = np.zeros((1,), dtype=np.float32)
+    env.sat_drop = np.array([20.0], dtype=np.float32)
+    env.last_sat_incoming = np.array([40.0], dtype=np.float32)
+    env.last_sat_processed = np.array([10.0], dtype=np.float32)
+
+    env._compute_reward()
+    parts = env.last_reward_parts
+
+    assert abs(float(parts["drop_sum_active"])) < 1e-9
+    assert abs(float(parts["sat_drop_sum"]) - 20.0) < 1e-9
+    assert abs(float(parts["drop_sum"]) - 20.0) < 1e-9
+    assert abs(float(parts["drop_ratio"]) - 0.1) < 1e-9
+
+
 def test_tail_queue_penalty_active_branch():
     cfg = SaginConfig(
         num_uav=2,
@@ -161,6 +257,202 @@ def test_avoidance_prealert_does_not_trigger_for_non_closing_pair():
     env._apply_uav_dynamics(actions)
     accel = env.last_exec_accel
     assert np.allclose(accel, 0.0, atol=1e-6)
+
+
+def test_close_risk_reward_penalizes_fast_closing_pair():
+    cfg = SaginConfig(
+        num_uav=2,
+        num_gu=2,
+        num_sat=3,
+        users_obs_max=2,
+        sats_obs_max=3,
+        nbrs_obs_max=1,
+        avoidance_alert_factor=2.0,
+        avoidance_prealert_factor=6.0,
+        avoidance_prealert_closing_speed=5.0,
+        avoidance_prealert_mode="distance",
+        close_risk_enabled=True,
+        eta_close_risk=0.02,
+        close_risk_cap=2.0,
+    )
+    env = SaginParallelEnv(cfg)
+    env.reset()
+    env.uav_pos[0] = np.array([100.0, 100.0], dtype=np.float32)
+    env.uav_pos[1] = np.array([200.0, 100.0], dtype=np.float32)
+    env.uav_vel[0] = np.array([15.0, 0.0], dtype=np.float32)
+    env.uav_vel[1] = np.array([-15.0, 0.0], dtype=np.float32)
+
+    env._compute_reward()
+    parts = env.last_reward_parts
+    assert abs(float(parts["close_risk"]) - 0.5) < 1e-6
+    assert abs(float(parts["term_close_risk"]) + 0.01) < 1e-6
+
+
+def test_close_risk_reward_requires_closing_motion():
+    cfg = SaginConfig(
+        num_uav=2,
+        num_gu=2,
+        num_sat=3,
+        users_obs_max=2,
+        sats_obs_max=3,
+        nbrs_obs_max=1,
+        avoidance_alert_factor=2.0,
+        avoidance_prealert_factor=6.0,
+        avoidance_prealert_closing_speed=5.0,
+        avoidance_prealert_mode="distance",
+        close_risk_enabled=True,
+        eta_close_risk=0.02,
+        close_risk_cap=2.0,
+    )
+    env = SaginParallelEnv(cfg)
+    env.reset()
+    env.uav_pos[0] = np.array([100.0, 100.0], dtype=np.float32)
+    env.uav_pos[1] = np.array([200.0, 100.0], dtype=np.float32)
+    env.uav_vel[0] = np.array([-15.0, 0.0], dtype=np.float32)
+    env.uav_vel[1] = np.array([15.0, 0.0], dtype=np.float32)
+
+    env._compute_reward()
+    parts = env.last_reward_parts
+    assert abs(float(parts["close_risk"])) < 1e-9
+    assert abs(float(parts["term_close_risk"])) < 1e-9
+
+
+def test_danger_neighbor_obs_prefers_fast_closing_prealert_pair():
+    cfg = SaginConfig(
+        num_uav=3,
+        num_gu=2,
+        num_sat=3,
+        users_obs_max=2,
+        sats_obs_max=3,
+        nbrs_obs_max=2,
+        danger_nbr_enabled=True,
+        avoidance_enabled=True,
+        avoidance_alert_factor=2.0,
+        avoidance_prealert_factor=6.0,
+        avoidance_prealert_closing_speed=5.0,
+    )
+    env = SaginParallelEnv(cfg)
+    env.reset()
+    env.uav_pos[0] = np.array([100.0, 100.0], dtype=np.float32)
+    env.uav_pos[1] = np.array([200.0, 100.0], dtype=np.float32)
+    env.uav_pos[2] = np.array([130.0, 180.0], dtype=np.float32)
+    env.uav_vel[0] = np.array([15.0, 0.0], dtype=np.float32)
+    env.uav_vel[1] = np.array([-15.0, 0.0], dtype=np.float32)
+    env.uav_vel[2] = np.array([0.0, 0.0], dtype=np.float32)
+
+    feat = env._danger_neighbor_obs(0)
+
+    expected_dist = 100.0 / cfg.map_size
+    expected_closing = 30.0 / cfg.v_max
+    np.testing.assert_allclose(feat[0], expected_dist, atol=1e-6)
+    np.testing.assert_allclose(feat[1], expected_closing, atol=1e-6)
+    np.testing.assert_allclose(feat[2:4], np.array([1.0, 0.0], dtype=np.float32), atol=1e-6)
+    assert feat[4] == 1.0
+
+
+def test_avoidance_closing_gain_strengthens_faster_prealert_repulsion():
+    cfg = SaginConfig(
+        num_uav=2,
+        num_gu=2,
+        num_sat=3,
+        users_obs_max=2,
+        sats_obs_max=3,
+        nbrs_obs_max=1,
+        avoidance_enabled=True,
+        avoidance_eta=3.0,
+        avoidance_alert_factor=2.0,
+        avoidance_prealert_factor=6.0,
+        avoidance_prealert_closing_speed=5.0,
+        avoidance_repulse_mode="linear",
+        avoidance_repulse_clip=True,
+        avoidance_closing_gain_enabled=True,
+        avoidance_closing_gain_cap=3.0,
+    )
+    actions = {
+        f"uav_{idx}": {
+            "accel": np.zeros(2, dtype=np.float32),
+            "bw_logits": np.zeros(cfg.users_obs_max, dtype=np.float32),
+            "sat_logits": np.zeros(cfg.sats_obs_max, dtype=np.float32),
+        }
+        for idx in range(cfg.num_uav)
+    }
+
+    env_slow = SaginParallelEnv(cfg)
+    env_slow.reset()
+    env_slow.uav_pos[0] = np.array([100.0, 100.0], dtype=np.float32)
+    env_slow.uav_pos[1] = np.array([200.0, 100.0], dtype=np.float32)
+    env_slow.uav_vel[0] = np.array([4.0, 0.0], dtype=np.float32)
+    env_slow.uav_vel[1] = np.array([-4.0, 0.0], dtype=np.float32)
+    env_slow._apply_uav_dynamics(actions)
+
+    env_fast = SaginParallelEnv(cfg)
+    env_fast.reset()
+    env_fast.uav_pos[0] = np.array([100.0, 100.0], dtype=np.float32)
+    env_fast.uav_pos[1] = np.array([200.0, 100.0], dtype=np.float32)
+    env_fast.uav_vel[0] = np.array([6.0, 0.0], dtype=np.float32)
+    env_fast.uav_vel[1] = np.array([-6.0, 0.0], dtype=np.float32)
+    env_fast._apply_uav_dynamics(actions)
+
+    slow_mag = abs(float(env_slow.last_exec_accel[0, 0]))
+    fast_mag = abs(float(env_fast.last_exec_accel[0, 0]))
+    assert abs(slow_mag - 0.96) < 1e-5
+    assert abs(fast_mag - 1.44) < 1e-5
+    assert fast_mag > slow_mag
+
+
+def test_avoidance_closing_gain_top1_only_limits_extra_boost_to_single_neighbor():
+    cfg_all = SaginConfig(
+        num_uav=3,
+        num_gu=3,
+        num_sat=3,
+        users_obs_max=3,
+        sats_obs_max=3,
+        nbrs_obs_max=2,
+        avoidance_enabled=True,
+        avoidance_eta=3.0,
+        avoidance_alert_factor=2.0,
+        avoidance_prealert_factor=6.0,
+        avoidance_prealert_closing_speed=5.0,
+        avoidance_repulse_mode="linear",
+        avoidance_repulse_clip=True,
+        avoidance_closing_gain_enabled=True,
+        avoidance_closing_gain_cap=3.0,
+        avoidance_closing_gain_top1_only=False,
+    )
+    cfg_top1 = SaginConfig(**{**cfg_all.__dict__, "avoidance_closing_gain_top1_only": True})
+    actions = {
+        f"uav_{idx}": {
+            "accel": np.zeros(2, dtype=np.float32),
+            "bw_logits": np.zeros(cfg_all.users_obs_max, dtype=np.float32),
+            "sat_logits": np.zeros(cfg_all.sats_obs_max, dtype=np.float32),
+        }
+        for idx in range(cfg_all.num_uav)
+    }
+
+    env_all = SaginParallelEnv(cfg_all)
+    env_all.reset()
+    env_all.uav_pos[0] = np.array([100.0, 100.0], dtype=np.float32)
+    env_all.uav_pos[1] = np.array([200.0, 100.0], dtype=np.float32)
+    env_all.uav_pos[2] = np.array([180.0, 100.0], dtype=np.float32)
+    env_all.uav_vel[0] = np.array([6.0, 0.0], dtype=np.float32)
+    env_all.uav_vel[1] = np.array([-6.0, 0.0], dtype=np.float32)
+    env_all.uav_vel[2] = np.array([-2.0, 0.0], dtype=np.float32)
+    env_all._apply_uav_dynamics(actions)
+
+    env_top1 = SaginParallelEnv(cfg_top1)
+    env_top1.reset()
+    env_top1.uav_pos[0] = np.array([100.0, 100.0], dtype=np.float32)
+    env_top1.uav_pos[1] = np.array([200.0, 100.0], dtype=np.float32)
+    env_top1.uav_pos[2] = np.array([180.0, 100.0], dtype=np.float32)
+    env_top1.uav_vel[0] = np.array([6.0, 0.0], dtype=np.float32)
+    env_top1.uav_vel[1] = np.array([-6.0, 0.0], dtype=np.float32)
+    env_top1.uav_vel[2] = np.array([-2.0, 0.0], dtype=np.float32)
+    env_top1._apply_uav_dynamics(actions)
+
+    assert abs(float(env_all.last_exec_accel[0, 0]) + 3.36) < 1e-5
+    assert abs(float(env_top1.last_exec_accel[0, 0]) + 2.64) < 1e-5
+    assert abs(float(env_top1.last_exec_accel[0, 0])) < abs(float(env_all.last_exec_accel[0, 0]))
+    assert abs(float(env_top1.last_exec_accel[0, 0])) > 1.8
 
 
 def test_avoidance_ttc_prealert_triggers_before_legacy_distance_threshold():

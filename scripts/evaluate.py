@@ -258,6 +258,7 @@ def main():
         "service_norm",
         "drop_norm",
         "queue_total_active",
+        "queue_total_active_excl_step0",
         "queue_total_active_max",
         "queue_total_active_p95_step",
         "arrival_sum",
@@ -281,6 +282,7 @@ def main():
         "sat_queue_max",
         "gu_drop_sum",
         "uav_drop_sum",
+        "sat_drop_sum",
         "sat_processed_sum",
         "sat_incoming_sum",
         "energy_mean",
@@ -307,6 +309,7 @@ def main():
             sat_queue_max = 0.0
             gu_drop_sum = 0.0
             uav_drop_sum = 0.0
+            sat_drop_sum = 0.0
             sat_processed_sum = 0.0
             sat_incoming_sum = 0.0
             energy_mean_sum = 0.0
@@ -359,6 +362,8 @@ def main():
                 sat_queue_max = max(sat_queue_max, float(np.max(env.sat_queue)))
                 gu_drop_sum += float(np.sum(env.gu_drop))
                 uav_drop_sum += float(np.sum(env.uav_drop))
+                if hasattr(env, "sat_drop"):
+                    sat_drop_sum += float(np.sum(env.sat_drop))
                 if hasattr(env, "last_sat_processed"):
                     sat_processed_sum += float(np.sum(env.last_sat_processed))
                 if hasattr(env, "last_sat_incoming"):
@@ -419,6 +424,11 @@ def main():
                 "service_norm": service_norm_sum / steps,
                 "drop_norm": drop_norm_sum / steps,
                 "queue_total_active": queue_total_active_sum / steps,
+                "queue_total_active_excl_step0": (
+                    sum(queue_total_active_steps[1:]) / len(queue_total_active_steps[1:])
+                    if len(queue_total_active_steps) > 1
+                    else 0.0
+                ),
                 "queue_total_active_max": max(queue_total_active_steps) if queue_total_active_steps else 0.0,
                 "queue_total_active_p95_step": (
                     float(np.percentile(queue_total_active_steps, 95)) if queue_total_active_steps else 0.0
@@ -443,6 +453,7 @@ def main():
                 "sat_queue_max": sat_queue_max,
                 "gu_drop_sum": gu_drop_sum,
                 "uav_drop_sum": uav_drop_sum,
+                "sat_drop_sum": sat_drop_sum,
                 "sat_processed_sum": sat_processed_sum,
                 "sat_incoming_sum": sat_incoming_sum,
                 "energy_mean": (energy_mean_sum / steps) if cfg.energy_enabled else 0.0,
@@ -460,6 +471,7 @@ def main():
                     metrics["service_norm"],
                     metrics["drop_norm"],
                     metrics["queue_total_active"],
+                    metrics["queue_total_active_excl_step0"],
                     metrics["queue_total_active_max"],
                     metrics["queue_total_active_p95_step"],
                     metrics["arrival_sum"],
@@ -483,6 +495,7 @@ def main():
                     metrics["sat_queue_max"],
                     metrics["gu_drop_sum"],
                     metrics["uav_drop_sum"],
+                    metrics["sat_drop_sum"],
                     metrics["sat_processed_sum"],
                     metrics["sat_incoming_sum"],
                     metrics["energy_mean"],

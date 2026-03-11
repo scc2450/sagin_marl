@@ -1,8 +1,8 @@
-# Legacy Stage 1 accel-only curriculum (historical flat-MLP baseline).
-# Current recommended accel-only baseline:
-#   configs/phase1_actions_curriculum_stage1_accel_setpool_prealert_top1gain_close_risk.yaml
-# Legacy train command:
-#   python scripts/train.py --config configs/phase1_actions_curriculum_stage1_accel.yaml --updates 400 --log_dir runs/phase1_actions --run_id stage1_accel
+# Line 3 safety baseline plus a minimal reward-only closing-risk penalty.
+# This variant keeps all settings fixed except eta_close_risk=0.05.
+# This starts from configs/stage1_safety_followup/s1_safe_static_v3_prealert_close_risk.yaml.
+# Recommended short validation:
+#   python scripts/train.py --config configs/stage1_safety_followup/s1_safe_static_v3_prealert_close_risk_eta005.yaml --updates 30 --run_dir <RUN_DIR> --num_envs 12 --vec_backend subproc --torch_threads 2
 seed: 42
 map_size: 1500.0
 tau0: 1.0
@@ -82,11 +82,17 @@ exec_teacher_actor_path: null
 exec_teacher_deterministic: true
 
 avoidance_enabled: true
-avoidance_eta: 3.0
-avoidance_alert_factor: 1.5
+avoidance_eta: 3.5
+avoidance_alert_factor: 2.0
+avoidance_prealert_factor: 6.0
+avoidance_prealert_closing_speed: 20.0
+avoidance_prealert_mode: distance
 avoidance_repulse_mode: linear
 avoidance_repulse_clip: true
-avoidance_adaptive_enabled: true
+avoidance_closing_gain_enabled: true
+avoidance_closing_gain_cap: 2.0
+avoidance_closing_gain_top1_only: true
+avoidance_adaptive_enabled: false
 avoidance_collision_target: 0.05
 avoidance_adaptive_gain: 1.0
 avoidance_adaptive_ema_beta: 0.9
@@ -106,6 +112,9 @@ eta_q_delta: 2.0
 eta_throughput_access: 0.0
 eta_throughput_backhaul: 0.0
 eta_accel: 0.02
+close_risk_enabled: true
+eta_close_risk: 0.05
+close_risk_cap: 2.0
 eta_centroid: 0.0
 eta_centroid_final: 0.0
 eta_centroid_decay_steps: 0
@@ -133,6 +142,8 @@ lr_decay_enabled: false
 lr_final_factor: 0.1
 critic_lr: 1.0e-4
 actor_hidden: 256
+actor_encoder_type: set_pool
+actor_set_embed_dim: 64
 critic_hidden: 256
 
 imitation_enabled: false

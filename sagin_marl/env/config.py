@@ -63,6 +63,7 @@ class SaginConfig:
     users_obs_max: int = 20
     sats_obs_max: int = 6
     nbrs_obs_max: int = 4
+    danger_nbr_enabled: bool = False
     visible_sats_max: int | None = None
     visible_sats_min: int | None = None
 
@@ -108,6 +109,12 @@ class SaginConfig:
     queue_init_frac: float = 0.0
     queue_init_uav_frac: float = 0.0
     queue_init_sat_frac: float = 0.0
+    queue_init_gu_abs: float | None = None
+    queue_init_uav_abs: float | None = None
+    queue_init_sat_abs: float | None = None
+    queue_init_gu_steps: float | None = None
+    queue_init_uav_steps: float | None = None
+    queue_init_sat_steps: float | None = None
 
     # Task arrivals
     task_arrival_rate: float = 2e5  # bits per slot (mean)
@@ -173,6 +180,9 @@ class SaginConfig:
     avoidance_prealert_dist_cap: float | None = None
     avoidance_repulse_mode: str = "inverse"  # "inverse", "linear", "quadratic"
     avoidance_repulse_clip: bool = True
+    avoidance_closing_gain_enabled: bool = False
+    avoidance_closing_gain_cap: float = 2.0
+    avoidance_closing_gain_top1_only: bool = False
     avoidance_adaptive_enabled: bool = False
     avoidance_collision_target: float = 0.05
     avoidance_adaptive_gain: float = 1.0
@@ -231,6 +241,11 @@ class SaginConfig:
     eta_throughput_access: float = 1.0
     eta_throughput_backhaul: float = 1.0
     eta_accel: float = 0.02
+    close_risk_enabled: bool = False
+    eta_close_risk: float = 0.0
+    close_risk_cap: float = 2.0
+    tail_q_small: float = 0.0
+    tail_eta_accel_gain: float = 1.0
     eta_centroid: float = 0.6
     eta_centroid_final: float | None = None
     eta_centroid_decay_steps: int = 0

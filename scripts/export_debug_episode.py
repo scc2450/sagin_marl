@@ -14,7 +14,7 @@ if ROOT not in sys.path:
 import numpy as np
 import torch
 
-from sagin_marl.env.config import load_config
+from sagin_marl.env.config import ablation_flag, load_config
 from sagin_marl.env.sagin_env import SaginParallelEnv
 from sagin_marl.rl.action_assembler import assemble_actions
 from sagin_marl.rl.policy import ActorNet, batch_flatten_obs
@@ -69,6 +69,124 @@ def _pairwise_stats(pos: np.ndarray, d_alert: float) -> Dict[str, float]:
     return out
 
 
+def _prealert_context(cfg) -> Dict[str, float | str | bool]:
+    use_avoidance = ablation_flag(
+        cfg,
+        "use_avoidance_layer",
+        fallback_attr="avoidance_enabled",
+        default=False,
+    )
+    d_alert = float(cfg.avoidance_alert_factor) * float(cfg.d_safe) if use_avoidance else 0.0
+    raw_prealert_factor = getattr(cfg, "avoidance_prealert_factor", None)
+    d_prealert = 0.0
+    if use_avoidance and raw_prealert_factor is not None:
+        d_prealert = max(float(raw_prealert_factor) * float(cfg.d_safe), d_alert)
+    prealert_mode = str(getattr(cfg, "avoidance_prealert_mode", "distance") or "distance").strip().lower()
+    if prealert_mode not in {"distance", "ttc"}:
+        prealert_mode = "distance"
+    closing_speed_thresh = max(float(getattr(cfg, "avoidance_prealert_closing_speed", 0.0) or 0.0), 0.0)
+    prealert_ttc_limit = max(float(getattr(cfg, "avoidance_prealert_ttc", 0.0) or 0.0), 0.0)
+    raw_prealert_dist_cap = getattr(cfg, "avoidance_prealert_dist_cap", None)
+    prealert_trigger_dist = d_prealert
+    if use_avoidance and prealert_mode == "ttc":
+        if raw_prealert_dist_cap is not None:
+            prealert_trigger_dist = max(float(raw_prealert_dist_cap), d_alert)
+        elif d_prealert > 0.0:
+            prealert_trigger_dist = d_prealert
+    return {
+        "use_avoidance": bool(use_avoidance),
+        "d_alert": d_alert,
+        "d_prealert": d_prealert,
+        "prealert_mode": prealert_mode,
+        "closing_speed_thresh": closing_speed_thresh,
+        "prealert_ttc_limit": prealert_ttc_limit,
+        "prealert_trigger_dist": prealert_trigger_dist,
+    }
+
+
+def _focus_pair_metrics(
+    pos: np.ndarray,
+    vel: np.ndarray,
+    i: int,
+    j: int,
+    ctx: Dict[str, float | str | bool],
+) -> Dict[str, float]:
+    if i < 0 or j < 0 or i >= pos.shape[0] or j >= pos.shape[0] or i == j:
+        return {
+            "dist": 0.0,
+            "rel_vel_x": 0.0,
+            "rel_vel_y": 0.0,
+            "radial_speed": 0.0,
+            "closing_speed": 0.0,
+            "closing_speed_pos": 0.0,
+            "ttc_to_alert": float("inf"),
+            "in_core_alert": 0.0,
+            "in_prealert": 0.0,
+            "prealert_active": 0.0,
+        }
+
+    diff = np.asarray(pos[i] - pos[j], dtype=np.float32)
+    dist = float(np.linalg.norm(diff))
+    rel_vel = np.asarray(vel[i] - vel[j], dtype=np.float32)
+    if dist > 1e-6:
+        direction = diff / dist
+        radial_speed = float(np.dot(rel_vel, direction))
+    else:
+        radial_speed = 0.0
+    closing_speed = -radial_speed
+    closing_speed_pos = max(closing_speed, 0.0)
+
+    d_alert = float(ctx["d_alert"])
+    d_prealert = float(ctx["d_prealert"])
+    prealert_mode = str(ctx["prealert_mode"])
+    closing_speed_thresh = float(ctx["closing_speed_thresh"])
+    prealert_ttc_limit = float(ctx["prealert_ttc_limit"])
+    prealert_trigger_dist = float(ctx["prealert_trigger_dist"])
+    use_avoidance = bool(ctx["use_avoidance"])
+
+    if d_alert > 0.0:
+        if dist <= d_alert:
+            ttc_to_alert = 0.0
+        elif closing_speed_pos > 1e-6:
+            ttc_to_alert = (dist - d_alert) / closing_speed_pos
+        else:
+            ttc_to_alert = float("inf")
+    else:
+        ttc_to_alert = float("inf")
+
+    in_core_alert = bool(d_alert > 0.0 and dist < d_alert)
+    in_prealert = False
+    if use_avoidance and d_alert > 0.0:
+        if prealert_mode == "ttc":
+            in_prealert = (
+                prealert_trigger_dist > d_alert
+                and dist < prealert_trigger_dist
+                and closing_speed > closing_speed_thresh
+                and prealert_ttc_limit > 0.0
+                and ttc_to_alert < prealert_ttc_limit
+            )
+        else:
+            in_prealert = (
+                d_prealert > d_alert
+                and dist < d_prealert
+                and closing_speed > closing_speed_thresh
+            )
+    prealert_active = bool(in_core_alert or in_prealert)
+
+    return {
+        "dist": dist,
+        "rel_vel_x": float(rel_vel[0]),
+        "rel_vel_y": float(rel_vel[1]),
+        "radial_speed": radial_speed,
+        "closing_speed": closing_speed,
+        "closing_speed_pos": closing_speed_pos,
+        "ttc_to_alert": float(ttc_to_alert),
+        "in_core_alert": float(in_core_alert),
+        "in_prealert": float(in_prealert),
+        "prealert_active": float(prealert_active),
+    }
+
+
 def _termination_reason(cfg, collision_any: bool, steps: int, energy_depleted: bool) -> str:
     if collision_any:
         return "collision"
@@ -93,6 +211,7 @@ def _policy_actions(actor: ActorNet, obs, device: torch.device):
 
 def _run_episode(env: SaginParallelEnv, actor: ActorNet, device: torch.device, record: bool) -> tuple[list[dict], dict]:
     cfg = env.cfg
+    prealert_ctx = _prealert_context(cfg)
     rows: list[dict] = []
     done = False
     step_idx = 0
@@ -109,7 +228,7 @@ def _run_episode(env: SaginParallelEnv, actor: ActorNet, device: torch.device, r
     while not done:
         pos_before = env.uav_pos.copy()
         vel_before = env.uav_vel.copy()
-        pair_before = _pairwise_stats(pos_before, float(cfg.avoidance_alert_factor) * float(cfg.d_safe))
+        pair_before = _pairwise_stats(pos_before, float(prealert_ctx["d_alert"]))
 
         actions, accel_norm = _policy_actions(actor, obs, device)
         accel_cmd = np.clip(accel_norm, -1.0, 1.0) * float(cfg.a_max)
@@ -121,7 +240,11 @@ def _run_episode(env: SaginParallelEnv, actor: ActorNet, device: torch.device, r
         exec_accel = np.asarray(env.last_exec_accel, dtype=np.float32)
         correction = exec_accel - accel_cmd
         correction_norms = np.linalg.norm(correction, axis=1)
-        pair_after = _pairwise_stats(pos_after, float(cfg.avoidance_alert_factor) * float(cfg.d_safe))
+        pair_after = _pairwise_stats(pos_after, float(prealert_ctx["d_alert"]))
+        focus_i = int(pair_after["min_pair_i"])
+        focus_j = int(pair_after["min_pair_j"])
+        focus_before = _focus_pair_metrics(pos_before, vel_before, focus_i, focus_j, prealert_ctx)
+        focus_after = _focus_pair_metrics(pos_after, vel_after, focus_i, focus_j, prealert_ctx)
         min_dist_after = float(pair_after["min_inter_uav_dist"])
         if min_dist_after < min_dist_overall:
             min_dist_overall = min_dist_after
@@ -156,6 +279,12 @@ def _run_episode(env: SaginParallelEnv, actor: ActorNet, device: torch.device, r
                 "min_pair_i_after": int(pair_after["min_pair_i"]),
                 "min_pair_j_after": int(pair_after["min_pair_j"]),
                 "pairs_below_alert_after": int(pair_after["pairs_below_alert"]),
+                "focus_pair_i": int(focus_i),
+                "focus_pair_j": int(focus_j),
+                "focus_pair_prealert_mode": str(prealert_ctx["prealert_mode"]),
+                "focus_pair_prealert_trigger_dist": float(prealert_ctx["prealert_trigger_dist"]),
+                "focus_pair_closing_speed_thresh": float(prealert_ctx["closing_speed_thresh"]),
+                "focus_pair_prealert_ttc_limit": float(prealert_ctx["prealert_ttc_limit"]),
             }
             for key, value in pair_before.items():
                 if key.startswith("d_"):
@@ -163,6 +292,10 @@ def _run_episode(env: SaginParallelEnv, actor: ActorNet, device: torch.device, r
             for key, value in pair_after.items():
                 if key.startswith("d_"):
                     row[f"{key}_after"] = float(value)
+            for key, value in focus_before.items():
+                row[f"focus_pair_{key}_before"] = float(value)
+            for key, value in focus_after.items():
+                row[f"focus_pair_{key}_after"] = float(value)
             for i in range(cfg.num_uav):
                 row[f"uav{i}_pos_x_before"] = float(pos_before[i, 0])
                 row[f"uav{i}_pos_y_before"] = float(pos_before[i, 1])
@@ -274,6 +407,20 @@ def _write_summary_md(
     late_collision = bool(summary["collision"] and collision_step is not None and collision_step >= int(0.75 * cfg.T_steps))
     correction_trend = _correction_trend(rows, collision_step if collision_step is not None else last_step)
     seed = _episode_seed(seed_base, episode_index)
+    focus_closing_before_min = float(min_row["focus_pair_closing_speed_before"]) if min_row is not None else float("nan")
+    focus_closing_at_min = float(min_row["focus_pair_closing_speed_after"]) if min_row is not None else float("nan")
+    focus_closing_pos_before_min = (
+        float(min_row["focus_pair_closing_speed_pos_before"]) if min_row is not None else float("nan")
+    )
+    focus_closing_pos_at_min = float(min_row["focus_pair_closing_speed_pos_after"]) if min_row is not None else float("nan")
+    focus_radial_before_min = float(min_row["focus_pair_radial_speed_before"]) if min_row is not None else float("nan")
+    focus_radial_at_min = float(min_row["focus_pair_radial_speed_after"]) if min_row is not None else float("nan")
+    focus_ttc_before_min = float(min_row["focus_pair_ttc_to_alert_before"]) if min_row is not None else float("nan")
+    focus_ttc_at_min = float(min_row["focus_pair_ttc_to_alert_after"]) if min_row is not None else float("nan")
+    focus_prealert_before_min = int(float(min_row["focus_pair_prealert_active_before"]) > 0.5) if min_row is not None else 0
+    focus_prealert_at_min = int(float(min_row["focus_pair_prealert_active_after"]) > 0.5) if min_row is not None else 0
+    focus_core_alert_at_min = int(float(min_row["focus_pair_in_core_alert_after"]) > 0.5) if min_row is not None else 0
+    focus_pair_label = f"{int(min_row['focus_pair_i'])}-{int(min_row['focus_pair_j'])}" if min_row is not None else "unknown"
 
     lines = [
         f"# Debug Episode Summary",
@@ -292,8 +439,20 @@ def _write_summary_md(
         f"- min_inter_uav_dist: `{float(summary['min_inter_uav_dist']):.6f}`",
         f"- min_dist_step: `{summary['min_dist_step']}`",
         f"- min_dist_pair: `{summary['min_dist_pair'][0]}-{summary['min_dist_pair'][1]}`",
+        f"- focus_pair_at_min_dist: `{focus_pair_label}`",
         f"- queue_total_active_at_min_dist: `{q_at_min:.6f}`",
         f"- final_queue_total_active: `{float(summary['final_queue_total_active']):.6f}`",
+        f"- focus_pair_closing_speed_before_min_dist: `{focus_closing_before_min:.6f}`",
+        f"- focus_pair_closing_speed_at_min_dist: `{focus_closing_at_min:.6f}`",
+        f"- focus_pair_closing_speed_pos_before_min_dist: `{focus_closing_pos_before_min:.6f}`",
+        f"- focus_pair_closing_speed_pos_at_min_dist: `{focus_closing_pos_at_min:.6f}`",
+        f"- focus_pair_radial_speed_before_min_dist: `{focus_radial_before_min:.6f}`",
+        f"- focus_pair_radial_speed_at_min_dist: `{focus_radial_at_min:.6f}`",
+        f"- focus_pair_ttc_to_alert_before_min_dist: `{focus_ttc_before_min:.6f}`",
+        f"- focus_pair_ttc_to_alert_at_min_dist: `{focus_ttc_at_min:.6f}`",
+        f"- focus_pair_prealert_active_before_min_dist: `{focus_prealert_before_min}`",
+        f"- focus_pair_prealert_active_at_min_dist: `{focus_prealert_at_min}`",
+        f"- focus_pair_in_core_alert_at_min_dist: `{focus_core_alert_at_min}`",
         f"- max_correction_norm: `{float(summary['max_correction_norm']):.6f}`",
         f"- correction_trend_last_50_before_end_or_collision: `{correction_trend}`",
         f"- crowding_pattern_at_min_dist: `{_crowding_type(min_row, d_alert)}`",

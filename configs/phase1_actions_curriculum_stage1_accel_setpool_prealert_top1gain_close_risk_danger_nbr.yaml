@@ -1,8 +1,8 @@
-# Legacy Stage 1 accel-only curriculum (historical flat-MLP baseline).
-# Current recommended accel-only baseline:
-#   configs/phase1_actions_curriculum_stage1_accel_setpool_prealert_top1gain_close_risk.yaml
-# Legacy train command:
-#   python scripts/train.py --config configs/phase1_actions_curriculum_stage1_accel.yaml --updates 400 --log_dir runs/phase1_actions --run_id stage1_accel
+# Stage 1 accel-only danger-neighbor observation trial.
+# This keeps the current best-balanced Stage 1 setup and adds a direct
+# most-dangerous-neighbor summary block to the actor observation.
+# Train:
+#   python scripts/train.py --config configs/phase1_actions_curriculum_stage1_accel_setpool_prealert_top1gain_close_risk_danger_nbr.yaml --updates 400 --log_dir runs/phase1_actions --run_id stage1_accel_danger_nbr
 seed: 42
 map_size: 1500.0
 tau0: 1.0
@@ -19,6 +19,7 @@ sats_obs_max: 6
 visible_sats_max: 6
 visible_sats_min: null
 nbrs_obs_max: 4
+danger_nbr_enabled: true
 
 uav_height: 100.0
 sat_height: 500000.0
@@ -37,25 +38,31 @@ uav_spawn_radius_end: 900.0
 uav_spawn_curriculum_steps: 100
 uav_spawn_full_random_final: true
 
-task_arrival_rate: 1.0e5
+task_arrival_rate: 1.3e5
 task_arrival_poisson: true
-traffic_level: 1
+traffic_level: 2
 traffic_level_nav_ratio: 0.08
 traffic_level_easy_ratio: 0.5
 traffic_level_hard_ratio: 1.0
 arrival_ramp_steps: 0
 arrival_ramp_start: 0.0
 arrival_ramp_use_global: false
-queue_init_frac: 0.1
-queue_init_uav_frac: 0.02
-queue_init_sat_frac: 0.01
+queue_max_gu: 3.0e7
+queue_max_uav: 1.0e9
+queue_max_sat: 2.0e8
+queue_init_frac: 0.0
+queue_init_uav_frac: 0.0
+queue_init_sat_frac: 0.0
+queue_init_gu_steps: 16.0
+queue_init_uav_steps: 40.0
+queue_init_sat_steps: 32.0
 
 gu_tx_power: 0.18
 uav_tx_gain: 300.0
 sat_rx_gain: 300.0
-b_acc: 1.0e7
-b_sat_total: 2.0e7
-sat_cpu_freq: 1.0e10
+b_acc: 2.2e6
+b_sat_total: 8.75e5
+sat_cpu_freq: 1.8e9
 noise_density: 4.0e-21
 pathloss_mode: prob_los
 pl_threshold_db: 140.0
@@ -82,11 +89,17 @@ exec_teacher_actor_path: null
 exec_teacher_deterministic: true
 
 avoidance_enabled: true
-avoidance_eta: 3.0
-avoidance_alert_factor: 1.5
+avoidance_eta: 3.5
+avoidance_alert_factor: 2.0
+avoidance_prealert_factor: 6.0
+avoidance_prealert_closing_speed: 20.0
+avoidance_prealert_mode: distance
 avoidance_repulse_mode: linear
 avoidance_repulse_clip: true
-avoidance_adaptive_enabled: true
+avoidance_closing_gain_enabled: true
+avoidance_closing_gain_cap: 2.0
+avoidance_closing_gain_top1_only: true
+avoidance_adaptive_enabled: false
 avoidance_collision_target: 0.05
 avoidance_adaptive_gain: 1.0
 avoidance_adaptive_ema_beta: 0.9
@@ -106,6 +119,9 @@ eta_q_delta: 2.0
 eta_throughput_access: 0.0
 eta_throughput_backhaul: 0.0
 eta_accel: 0.02
+close_risk_enabled: true
+eta_close_risk: 0.02
+close_risk_cap: 2.0
 eta_centroid: 0.0
 eta_centroid_final: 0.0
 eta_centroid_decay_steps: 0
@@ -133,6 +149,8 @@ lr_decay_enabled: false
 lr_final_factor: 0.1
 critic_lr: 1.0e-4
 actor_hidden: 256
+actor_encoder_type: set_pool
+actor_set_embed_dim: 64
 critic_hidden: 256
 
 imitation_enabled: false

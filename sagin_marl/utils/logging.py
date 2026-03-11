@@ -54,6 +54,7 @@ class MetricLogger:
                     "Multiline",
                     [
                         "r_queue_pen",
+                        "r_close_risk",
                         "r_collision_penalty",
                         "r_battery_penalty",
                         "r_fail_penalty",
@@ -83,6 +84,7 @@ class MetricLogger:
                         "r_term_sat_score",
                         "r_term_energy",
                         "r_term_accel",
+                        "r_term_close_risk",
                     ],
                 ],
             },

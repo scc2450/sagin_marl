@@ -45,3 +45,17 @@ def test_ablation_flag_false_when_both_disabled():
     cfg.imitation_enabled = False
     cfg.ablation.use_imitation_loss = False
     assert ablation_flag(cfg, "use_imitation_loss", fallback_attr="imitation_enabled", default=False) is False
+
+
+def test_load_config_queue_init_abs_and_steps(tmp_path):
+    cfg_path = tmp_path / "cfg_queue_init.yaml"
+    cfg_path.write_text(
+        "queue_init_gu_abs: 1234\n"
+        "queue_init_uav_steps: 0.5\n"
+        "queue_init_sat_steps: 2\n",
+        encoding="utf-8",
+    )
+    cfg = load_config(str(cfg_path))
+    assert cfg.queue_init_gu_abs == 1234
+    assert cfg.queue_init_uav_steps == 0.5
+    assert cfg.queue_init_sat_steps == 2

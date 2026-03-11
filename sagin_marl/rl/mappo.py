@@ -282,6 +282,7 @@ def train(
         "r_dist",
         "r_dist_delta",
         "r_energy",
+        "r_close_risk",
         "r_collision_penalty",
         "r_battery_penalty",
         "r_fail_penalty",
@@ -298,6 +299,7 @@ def train(
         "r_term_sat_score",
         "r_term_energy",
         "r_term_accel",
+        "r_term_close_risk",
         "reward_raw",
         "arrival_sum",
         "outflow_sum",
@@ -501,6 +503,7 @@ def train(
         r_dist_sum = 0.0
         r_dist_delta_sum = 0.0
         r_energy_sum = 0.0
+        r_close_risk_sum = 0.0
         r_collision_penalty_sum = 0.0
         r_battery_penalty_sum = 0.0
         r_fail_penalty_sum = 0.0
@@ -517,6 +520,7 @@ def train(
         r_term_sat_score_sum = 0.0
         r_term_energy_sum = 0.0
         r_term_accel_sum = 0.0
+        r_term_close_risk_sum = 0.0
         imitation_loss_sum = 0.0
         reward_raw_sum = 0.0
         arrival_sum_sum = 0.0
@@ -817,6 +821,7 @@ def train(
                     r_dist_sum += float(parts.get("dist_reward", 0.0))
                     r_dist_delta_sum += float(parts.get("dist_delta", 0.0))
                     r_energy_sum += float(parts.get("energy_reward", 0.0))
+                    r_close_risk_sum += float(parts.get("close_risk", 0.0))
                     r_collision_penalty_sum += float(parts.get("collision_penalty", 0.0))
                     r_battery_penalty_sum += float(parts.get("battery_penalty", 0.0))
                     r_fail_penalty_sum += float(parts.get("fail_penalty", 0.0))
@@ -833,6 +838,7 @@ def train(
                     r_term_sat_score_sum += float(parts.get("term_sat_score", 0.0))
                     r_term_energy_sum += float(parts.get("term_energy", 0.0))
                     r_term_accel_sum += float(parts.get("term_accel", 0.0))
+                    r_term_close_risk_sum += float(parts.get("term_close_risk", 0.0))
                     reward_raw_sum += float(parts.get("reward_raw", 0.0))
 
                 buffers[env_idx].add(
@@ -1113,6 +1119,7 @@ def train(
             "r_dist": r_dist_sum / steps_count,
             "r_dist_delta": r_dist_delta_sum / steps_count,
             "r_energy": r_energy_sum / steps_count,
+            "r_close_risk": r_close_risk_sum / steps_count,
             "r_collision_penalty": r_collision_penalty_sum / steps_count,
             "r_battery_penalty": r_battery_penalty_sum / steps_count,
             "r_fail_penalty": r_fail_penalty_sum / steps_count,
@@ -1129,6 +1136,7 @@ def train(
             "r_term_sat_score": r_term_sat_score_sum / steps_count,
             "r_term_energy": r_term_energy_sum / steps_count,
             "r_term_accel": r_term_accel_sum / steps_count,
+            "r_term_close_risk": r_term_close_risk_sum / steps_count,
             "reward_raw": reward_raw_sum / steps_count,
             "arrival_sum": arrival_sum_sum / steps_count,
             "outflow_sum": outflow_sum_sum / steps_count,

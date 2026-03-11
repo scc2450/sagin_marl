@@ -1,5 +1,9 @@
-# Line 3 next step: keep the set-pool actor, but trigger avoidance earlier
-# for fast-closing pairs before they enter the core alert distance.
+# Line 3 mainline safety baseline: keep the set-pool actor and the proven
+# distance-prealert safety layer, plus a bounded closing-aware gain so fast
+# closing pairs get stronger correction earlier than slow ones. The extra gain
+# is restricted to each UAV's single most dangerous neighbor to avoid
+# multi-neighbor overreaction.
+# This starts from runs/line3_short/setpool30_prealert/config.yaml.
 # Recommended short validation:
 #   python scripts/train.py --config configs/stage1_safety_followup/s1_safe_static_v3_prealert.yaml --updates 30 --run_dir <RUN_DIR> --num_envs 12 --vec_backend subproc --torch_threads 2
 seed: 42
@@ -81,15 +85,16 @@ exec_teacher_actor_path: null
 exec_teacher_deterministic: true
 
 avoidance_enabled: true
-avoidance_eta: 4.0
+avoidance_eta: 3.5
 avoidance_alert_factor: 2.0
 avoidance_prealert_factor: 6.0
-avoidance_prealert_closing_speed: 0.0
-avoidance_prealert_mode: ttc
-avoidance_prealert_ttc: 2.0
-avoidance_prealert_dist_cap: 200.0
+avoidance_prealert_closing_speed: 20.0
+avoidance_prealert_mode: distance
 avoidance_repulse_mode: linear
 avoidance_repulse_clip: true
+avoidance_closing_gain_enabled: true
+avoidance_closing_gain_cap: 2.0
+avoidance_closing_gain_top1_only: true
 avoidance_adaptive_enabled: false
 avoidance_collision_target: 0.05
 avoidance_adaptive_gain: 1.0

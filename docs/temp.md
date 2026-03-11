@@ -1,223 +1,81 @@
-可以，给你一个直接可执行的版本。
-
-## 先说总判断
-
-你现在最该做的，不是继续在防撞补丁上深挖，也不是急着上 `bw` 和 `sat`。
-
-因为现状已经很清楚：
-
-* `accel` 这条最基础的动作都还没学稳
-* `set_pool` 证明“观测表达”有帮助，但只解决了一部分
-* `prealert` 是目前防撞侧最能用的局部方案
-* `boundary hard filter` 基本没打中主因
-* `pairwise hard filter` 在线训练里明显把系统搞坏了
-
-所以你接下来的目标应该收成一句话：
-
-## **先把“只训练 accel”这件事做成一个稳定、可信、能明显优于当前 learned 的版本，再谈往上叠 `bw` 和 `sat`。**
-
----
-
-# 你接下来该干什么
-
-## 第一阶段：先收口，别再开新坑
-
-先把当前结论正式定下来：
-
-### 保留
-
-* `set_pool` 作为当前 line3 的 actor 表达版本
-* `prealert` 作为当前安全侧的最佳可用底座
-
-### 停止
-
-* 停止继续调 `boundary hard filter`
-* 停止继续调 `pairwise hard filter`
-* 停止继续扫 TTC / pairwise 小参数
-* 停止继续在防撞执行器分支上投入主力
-
-这一步很重要，因为你现在最大的问题不是“还差一个安全补丁”，而是：
-
-**policy 本身没有稳定学会后半段几何行为。**
-
----
-
-## 第二阶段：回到“只训 accel”的主线
-
-你的主线现在应该非常干净：
-
-### 固定设置
-
-* actor：`set_pool`
-* safety：`prealert`
-* 只训练：`accel`
-* 不开 `bw`
-* 不开 `sat`
-
-也就是把当前最好的 line3 组合当成 **accel 主线 baseline**。
-
-### 这一阶段的目标
-
-不是立刻超过 `fixed` 全部指标，而是先达到：
-
-* 碰撞率明显低于你现在那些坏的 learned run
-* 不再频繁出现后半段离谱崩溃
-* 队列和 reward 不要被安全补丁拖得太夸张
-* 行为模式可解释，不是“玄学好一阵坏一阵”
-
----
-
-## 第三阶段：别再优先改防撞，改“accel 本身怎么学”
-
-这才是现在最值得你花时间的地方。
-
-你现在真正该查的，不是“还能不能再发明一个更硬过滤器”，而是：
-
-### 1. accel 动作本身是不是太难学
-
-重点查这几个问题：
-
-* accel 的尺度是不是过大
-* policy 是否在 backlog 清空后仍持续输出不必要的大 accel
-* accel head 的输出分布是不是太发散
-* 后半段是不是缺少“自然收敛到平稳运动”的倾向
-
-这一步比继续修防撞层更关键。
-
-### 2. 训练目标是不是没有鼓励“后半段稳定”
-
-你前面已经看到很多坏例子都是：
-
-* 队列已经清空
-* 然后后半段撞了
-
-这说明现在的学习信号里，**“任务结束后保持安全、平稳”** 这件事是不够强的。
-
-所以你接下来更值得试的，是很轻量地往 `accel` 主线里加一点“后半段稳定化倾向”，而不是大改 reward。
-
-优先考虑这种非常小的改动：
-
-* backlog 很低时，鼓励更小 accel
-* 或鼓励更小 closing tendency
-* 或鼓励更平稳速度
-
-注意，是**轻量**，不是重写 reward。
-
----
-
-## 第四阶段：只有当 accel 稳了，才谈 bw 和 sat
-
-你后面当然可以做：
-
-* 先在训好的 `accel` 基础上加 `bw`
-* 再加 `sat`
-
-但前提必须是：
-
-## `accel` 这一层已经是“稳定可依赖”的
-
-否则会发生最糟糕的事：
-
-* 几何控制本来就不稳
-* 你再叠加 `bw` 和 `sat`
-* 问题来源彻底混在一起
-* 最后根本不知道是 motion、资源分配，还是卫星选择出了问题
-
-所以现在千万别急着开第二层动作。
-
----
-
-# 你接下来最合理的具体顺序
-
-## 现在立刻做
-
-### 1. 定一个“accel 主线基线”
-
-就用：
-
-* `set_pool`
-* `prealert`
-* 只训 `accel`
-
-把它当成你后面所有比较的唯一底座。
-
-### 2. 写一页收口结论
-
-把防撞分支结论写下来：
-
-* `prealert` 是当前最可用安全底座
-* hard boundary filter 无法明显降碰撞
-* pairwise hard filter 在线训练下显著恶化表现
-* 防撞补丁路线边际收益下降，暂时停止
-
-这一步是为了防止你后面又反复回去试。
-
-### 3. 接下来只做“accel 主线”的小改动
-
-优先方向：
-
-* 降低后半段无任务时的不必要 accel
-* 让 policy 更容易学到平稳几何行为
-* 不同时改很多东西
-
----
-
-# 我建议你下一轮实验只做这两类
-
-## 方案 A：后半段稳定化
-
-只在 backlog 很低时，加一个很轻的稳定化项或动作抑制。
-
-目的：
-
-* 看后半段碰撞能不能下降
-* 看 learned 是否更接近 fixed 的“清完队列后不乱跑”
-
-## 方案 B：accel 动作尺度/输出约束
-
-不是改动作语义，而是让训练出的 accel 更不容易发散。
-
-目的：
-
-* 看是否减少高 closing-speed 的坏接近
-* 看是否减少“后半段还在大机动”
-
-这两类比继续调防撞层更值得。
-
----
-
-# 关于你后面想训练 bw 和 sat
-
-给你一个很明确的标准：
-
-## 只有在下面这些条件基本满足后，才进入 `bw`
-
-* `accel` 训练结果稳定
-* learned 不再经常大幅输给 `fixed`
-* 碰撞率已经压到一个你能接受的水平
-* 后半段崩溃不再是主导失败模式
-
-## 只有在 `bw` 也稳住后，才进 `sat`
-
-因为 `sat` 选择又会引入新的离散决策复杂度，比 `bw` 更容易把系统搅乱。
-
-所以顺序必须是：
-
-**先稳住 accel → 再加 bw → 最后加 sat**
-
-不是反过来。
-
----
-
-# 最后给你一句最重要的话
-
-你现在不是“第一个都做不好所以没希望”，而是：
-
-**你已经证明了很多“不该继续做的路”，现在该把资源集中到真正更上游的 accel 学习问题上。**
-
-这其实是在变清楚，不是在变糟。
-
-你下一步就按这个走：
-
-**收口防撞补丁线，固定 `set_pool + prealert + accel-only`，然后只做 accel 主线的轻量稳定化实验。**
-
+我的目标不是让每层队列在 400 步里单调下降，而是让系统在持续到达业务下，三层队列长期维持在一个非零、非满的稳态工作区间；总出流大致匹配总到达，链路各层都持续有业务通过，从而体现系统持续通信能力。
+
+
+思路我已经按你这次的修正改了，而且落到工具里了。现在不是只靠固定顺序判断，而是同时区分：
+- 哪层 backlog 最重
+- 哪层最接近自身 `max`
+- 哪层先开始 drop
+- 当前层该联调哪一对参数
+
+这些都在 [diagnose_queue_regime.py#L428](/d:/研三上/毕设/sagin_marl/scripts/diagnose_queue_regime.py#L428) 之后加进去了；阈值和 CLI 参数在 [diagnose_queue_regime.py#L721](/d:/研三上/毕设/sagin_marl/scripts/diagnose_queue_regime.py#L721)。
+
+现在三层各自都有对应你目标的指标了，不再只看 `active_queue_empty_step_fraction_mean`：
+- 空载：`gu/uav/sat_empty_step_fraction_mean`
+- 全程非空占比：`gu/uav/sat_nonempty_all_episode_share`
+- 压力接近上限：`gu/uav/sat_buffer_fill_fraction_mean/p95`
+- 丢弃：`gu/uav/sat_drop_ratio_mean`
+- 持续有货：`gu/uav/sat_backlog_equiv_steps_mean/p95`
+
+`active_queue_empty_step_fraction_mean` 我保留了，因为它是系统级护栏，回答的是“前两层这条在途链有没有被抽空”；更严格的三层联合指标现在是 `all_layers_nonempty_step_fraction_mean`，见 [diagnose_queue_regime.py#L327](/d:/研三上/毕设/sagin_marl/scripts/diagnose_queue_regime.py#L327)。
+
+“目标阈值 + 打分函数”也已经做了。默认是：
+- 全局：`active_empty <= 0.25`，`all_layers_nonempty >= 0.20`，`total_drop <= 0.05`，`outflow/arrival in [0.90, 1.10]`
+- 每层：`empty <= 0.25`，`backlog >= 0.25` 步，`fill_p95 <= 0.20`，`drop <= 0.02`
+
+这些都能按层单独覆盖。脚本现在会输出：
+- `passes_thresholds`
+- `failed_thresholds`
+- `score_total`
+- `recommended_tuning_pair`
+
+当前主线 3-episode 验证在 [tmp_score_current_n3_summary.csv](/d:/研三上/毕设/sagin_marl/runs/queue_diag/tmp_score_current_n3_summary.csv)：
+- `passes_thresholds = 0`
+- `failed_thresholds = active_queue_empty_step_fraction, all_layers_nonempty_step_fraction, total_drop_fraction, gu_empty_step_fraction, uav_empty_step_fraction, uav_drop_fraction, sat_empty_step_fraction`
+- `recommended_tuning_pair = b_acc + b_sat_total`
+
+这直接回答了你的问题：`GU` 现在当然有自己的指标，而且阈值也是按层分开的。
+
+我还按你的新思路做了一个把 `sat_cpu_freq` 纳入的候选验证：
+[`tmp_score_uavpair_satcpu_n3_summary.csv`](/d:/研三上/毕设/sagin_marl/runs/queue_diag/tmp_score_uavpair_satcpu_n3_summary.csv)
+参数是 `b_sat_total=1.30e6, b_acc=3.0e6, sat_cpu_freq=2.8e9`。结果没有更好：
+- `score_total` 从 `27.499` 变成 `28.292`
+- `sat_backlog_equiv_steps_mean` 掉到 `0.129`
+
+这说明在这个点上，单纯把 `sat_cpu_freq` 往上提，会把末端抽得过轻，不是当前最优方向。
+
+这次我没有回写主线配置，因为新工具已经能稳定告诉我们“哪个点过线、没过哪条、该调哪一对参数”，但我还没找到一个比当前主线明显更平衡的点。下一步最合理的是直接用这套阈值和分数去跑一个小网格：
+- 固定 `task_arrival_rate=1.30e5`
+- 扫 `b_acc x b_sat_total`
+- 每个网格只补 2 个 `sat_cpu_freq` 近邻
+- 用 `passes_thresholds + score_total + tuning_priority_layer` 排序
+
+验证我已经跑过：
+- `python -m py_compile scripts\diagnose_queue_regime.py`
+
+
+
+**三层串联系统调参准则**
+
+1. 先调**能力匹配**，后调**队列参数**。
+2. 能力匹配按相邻两端看，不把三层完全独立拆开：
+
+   * GU：`task_arrival_rate ↔ b_acc`
+   * UAV：`b_acc ↔ b_sat_total`
+   * SAT：`b_sat_total ↔ sat_cpu_freq`
+3. 先把该层队列调到**长期不持续上升、也不持续衰减到空**，只在目标区间内波动。
+4. 这一阶段优先看：`backlog_equiv_steps`、`empty_step_fraction`、`buffer_fill_fraction`、`drop_ratio`。
+5. 当前问题在 **GU/SAT** 时，通常先改单边；问题在 **UAV** 时，通常要联调两边。
+6. 当队列变化趋势已经合理后，再调 `queue_init_*`，作用是修正**开局太空、早期断流**。
+7. 当能力匹配已基本合理、但仍因短时波动溢出时，再调 `queue_max_*`，作用是增加**缓冲容忍度**，不是替代能力提升。
+8. 最后用系统级护栏收口：总 `drop` 不过高，`active/all_layers_nonempty` 不过差，三层都保持“非零、非满、可流动”。
+
+你这句“**每一层变化量数值合适之后，才调初始化值和 max**”是合理的，应该保留。
+
+按顺序是不是应该：
+1.固定task_arrival_rate，调b_acc GU初始化队列量 和 GU队列max
+1.1优先考虑队列变化量，让队列在400步内保持稳定，不一直增，更间接的是看空不空、到没到上限那些。
+1.2 队列变化量合适之后，如果空的多，加初始化队列量，如果drop多，加队列max
+2.固定task_arrival_rate b_acc和GU队列相关，调b_sat_total UAV初始化队列量和MAX
+2.1 2.2类似
+3.固定前面的，调sat_cpu_freq SAT初始化队列量 和 GU队列max
+3.1 3.2类似
