@@ -311,6 +311,7 @@ class SaginConfig:
     entropy_coef: float = 0.01
     value_coef: float = 0.5
     max_grad_norm: float = 0.5
+    train_episode_stat_window: int = 100
     reward_norm_enabled: bool = True
     reward_norm_clip: float = 10.0
     reward_tanh_enabled: bool = False

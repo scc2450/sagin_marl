@@ -8,13 +8,21 @@ from torch.utils.tensorboard import SummaryWriter
 
 
 class MetricLogger:
-    def __init__(self, log_dir: str, fieldnames: Optional[Iterable[str]] = None):
+    def __init__(
+        self,
+        log_dir: str,
+        fieldnames: Optional[Iterable[str]] = None,
+        tb_fields: Optional[Iterable[str]] = None,
+        env_step_fields: Optional[Iterable[str]] = None,
+    ):
         os.makedirs(log_dir, exist_ok=True)
         self.log_dir = log_dir
         self.writer = SummaryWriter(log_dir)
         self._init_tb_layout()
         self.csv_path = os.path.join(log_dir, "metrics.csv")
         self.fieldnames: Optional[List[str]] = list(fieldnames) if fieldnames is not None else None
+        self.tb_fields = set(tb_fields) if tb_fields is not None else None
+        self.env_step_fields = set(env_step_fields) if env_step_fields is not None else set()
         self._header_written = False
         self._init_csv()
 
@@ -35,88 +43,29 @@ class MetricLogger:
 
     def _init_tb_layout(self) -> None:
         layout = {
-            "Training/Reward": {
-                "EpisodeReward": ["Multiline", ["episode_reward"]],
+            "Training/Main": {
+                "EpisodeReturn": ["Multiline", ["episode_reward", "rollout_reward_per_step"]],
+                "EpisodeThroughputTerms": [
+                    "Multiline",
+                    ["episode_term_throughput_access", "episode_term_throughput_backhaul"],
+                ],
+                "Throughput": ["Multiline", ["throughput_access_norm", "throughput_backhaul_norm"]],
+                "Queues": ["Multiline", ["gu_queue_mean", "uav_queue_mean", "queue_total_active"]],
+                "Safety": ["Multiline", ["collision_rate"]],
             },
-            "Training/RewardParts": {
-                "Ratios": [
+            "Training/PPO": {
+                "Losses": ["Multiline", ["policy_loss", "value_loss"]],
+                "Stability": [
                     "Multiline",
                     [
-                        "r_service_ratio",
-                        "r_drop_ratio",
-                        "r_assoc_ratio",
-                        "r_queue_delta",
-                        "r_dist",
-                        "r_dist_delta",
-                    ],
-                ],
-                "Penalties": [
-                    "Multiline",
-                    [
-                        "r_queue_pen",
-                        "r_close_risk",
-                        "r_collision_penalty",
-                        "r_battery_penalty",
-                        "r_fail_penalty",
-                    ],
-                ],
-                "Guidance": [
-                    "Multiline",
-                    [
-                        "r_centroid",
-                        "centroid_dist_mean",
-                        "r_bw_align",
-                        "r_sat_score",
-                    ],
-                ],
-                "Terms": [
-                    "Multiline",
-                    [
-                        "r_term_service",
-                        "r_term_throughput_access",
-                        "r_term_throughput_backhaul",
-                        "r_term_drop",
-                        "r_term_drop_gu",
-                        "r_term_drop_uav",
-                        "r_term_drop_sat",
-                        "r_term_drop_step",
-                        "r_term_queue",
-                        "r_term_assoc",
-                        "r_term_q_delta",
-                        "r_term_dist",
-                        "r_term_dist_delta",
-                        "r_term_centroid",
-                        "r_term_bw_align",
-                        "r_term_sat_score",
-                        "r_term_energy",
-                        "r_term_accel",
-                        "r_term_close_risk",
+                        "entropy",
+                        "approx_kl",
+                        "clip_frac",
+                        "explained_variance",
                     ],
                 ],
             },
-            "Training/Losses": {
-                "Losses": [
-                    "Multiline",
-                    ["policy_loss", "value_loss", "explained_variance", "entropy", "imitation_loss"],
-                ],
-            },
-            "Training/Diagnostics": {
-                "PPO": ["Multiline", ["approx_kl", "clip_frac"]],
-                "PolicyStd": ["Multiline", ["log_std_mean", "action_std_mean", "entropy"]],
-                "Advantage": [
-                    "Multiline",
-                    [
-                        "adv_raw_mean",
-                        "adv_raw_std",
-                        "adv_preclip_mean",
-                        "adv_preclip_std",
-                        "adv_postclip_mean",
-                        "adv_postclip_std",
-                        "adv_norm_mean",
-                        "adv_norm_std",
-                        "adv_clip_frac",
-                    ],
-                ],
+            "Training/Imitation": {
                 "DangerImitation": [
                     "Multiline",
                     [
@@ -125,157 +74,6 @@ class MetricLogger:
                         "danger_imitation_active_rate",
                     ],
                 ],
-                "RewardNorm": ["Multiline", ["reward_rms_sigma", "reward_clip_frac"]],
-            },
-            "Training/Queues": {
-                "QueueMean": ["Multiline", ["gu_queue_mean", "uav_queue_mean", "sat_queue_mean"]],
-                "QueueMax": ["Multiline", ["gu_queue_max", "uav_queue_max", "sat_queue_max"]],
-                "QueueFill": [
-                    "Multiline",
-                    [
-                        "gu_queue_fill_fraction",
-                        "uav_queue_fill_fraction",
-                        "sat_queue_fill_fraction",
-                    ],
-                ],
-                "QueueArrivalSteps": [
-                    "Multiline",
-                    [
-                        "gu_queue_arrival_steps",
-                        "uav_queue_arrival_steps",
-                        "sat_queue_arrival_steps",
-                    ],
-                ],
-                "QueueLayerDelta": [
-                    "Multiline",
-                    [
-                        "queue_delta_gu",
-                        "queue_delta_uav",
-                        "queue_delta_sat",
-                    ],
-                ],
-                "QueueNorm": [
-                    "Multiline",
-                    [
-                        "q_norm_active",
-                        "q_norm_active_p95",
-                        "q_norm_active_p99",
-                        "q_norm_active_max",
-                        "q_norm_active_nonzero_rate",
-                        "q_norm_tail_hit_rate",
-                        "prev_q_norm_active",
-                        "q_norm_delta",
-                    ],
-                ],
-                "QueueActiveTail": [
-                    "Multiline",
-                    [
-                        "queue_total_active",
-                        "queue_total_active_p95",
-                        "queue_total_active_p99",
-                        "queue_total_active_max",
-                        "q_norm_tail_excess",
-                        "queue_weight",
-                        "q_delta_weight",
-                    ],
-                ],
-            },
-            "Training/Drops": {
-                "Drops": ["Multiline", ["drop_sum", "gu_drop_sum", "uav_drop_sum", "sat_drop_sum"]],
-                "DropSplit": [
-                    "Multiline",
-                    [
-                        "drop_sum",
-                        "drop_sum_active",
-                        "sat_drop_sum_step",
-                        "drop_event_rate",
-                        "r_term_drop_step",
-                    ],
-                ],
-                "DropNorms": [
-                    "Multiline",
-                    [
-                        "gu_drop_norm",
-                        "uav_drop_norm",
-                        "sat_drop_norm",
-                    ],
-                ],
-                "DropRatios": [
-                    "Multiline",
-                    [
-                        "gu_drop_ratio_step",
-                        "uav_drop_ratio_step",
-                        "sat_drop_ratio_step",
-                    ],
-                ],
-            },
-            "Training/Safety": {
-                "Collision": ["Multiline", ["collision_rate", "r_collision_penalty"]],
-                "Avoidance": [
-                    "Multiline",
-                    [
-                        "danger_imitation_active_rate",
-                        "intervention_norm",
-                        "intervention_rate",
-                        "intervention_norm_top1",
-                        "avoidance_eta_eff",
-                        "avoidance_eta_exec",
-                        "avoidance_collision_rate_ema",
-                        "avoidance_prev_episode_collision_rate",
-                        "crash_weight",
-                        "centroid_transfer_ratio",
-                    ],
-                ],
-                "AssociationFairness": [
-                    "Multiline",
-                    [
-                        "assoc_unfair_step_rate",
-                        "assoc_unfair_max_gu_count",
-                        "assoc_unfair_episode_frac_mean",
-                        "assoc_unfair_episode_frac_p95",
-                        "assoc_unfair_episode_frac_max",
-                    ],
-                ],
-            },
-            "Training/Satellite": {
-                "SatFlow": ["Multiline", ["sat_incoming_sum", "sat_processed_sum"]],
-                "ThroughputNorm": [
-                    "Multiline",
-                    [
-                        "throughput_access_norm",
-                        "throughput_backhaul_norm",
-                        "sat_processed_norm",
-                    ],
-                ],
-                "LinkGeometry": [
-                    "Multiline",
-                    [
-                        "connected_sat_count",
-                        "connected_sat_dist_mean",
-                        "connected_sat_dist_p95",
-                        "connected_sat_elevation_deg_mean",
-                        "connected_sat_elevation_deg_min",
-                    ],
-                ],
-                "LinkRatios": [
-                    "Multiline",
-                    [
-                        "outflow_arrival_ratio_step",
-                        "sat_incoming_arrival_ratio_step",
-                        "sat_processed_arrival_ratio_step",
-                        "sat_processed_incoming_ratio_step",
-                    ],
-                ],
-            },
-            "Training/Performance": {
-                "Throughput": ["Multiline", ["env_steps_per_sec", "update_steps_per_sec"]],
-                "UpdateTime": ["Multiline", ["rollout_time_sec", "optim_time_sec", "update_time_sec"]],
-            },
-            "Training/Totals": {
-                "Totals": ["Multiline", ["total_env_steps", "total_time_sec"]],
-            },
-            "Training/Energy": {
-                "EnergyMean": ["Multiline", ["energy_mean"]],
             },
         }
         self.writer.add_custom_scalars(layout)
@@ -291,8 +89,13 @@ class MetricLogger:
         with open(self.csv_path, "a", newline="", encoding="utf-8") as f:
             writer = csv.writer(f)
             writer.writerow([step] + [metrics.get(name, 0.0) for name in fieldnames])
+        tb_fields = self.tb_fields if self.tb_fields is not None else set(fieldnames)
+        env_step = int(metrics.get("total_env_steps", step))
         for key, val in metrics.items():
-            self.writer.add_scalar(key, val, step)
+            if key not in tb_fields:
+                continue
+            scalar_step = env_step if key in self.env_step_fields else step
+            self.writer.add_scalar(key, val, scalar_step)
 
     def close(self) -> None:
         self.writer.close()

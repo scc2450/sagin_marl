@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections import deque
 import csv
 import os
 import time
@@ -730,185 +731,75 @@ def train(
 
     metric_fields = [
         "episode_reward",
+        "episode_length_mean",
+        "completed_episode_count",
+        "rollout_reward_per_step",
+        "episode_term_throughput_access",
+        "episode_term_throughput_backhaul",
+        "throughput_access_norm",
+        "throughput_backhaul_norm",
+        "gu_queue_mean",
+        "uav_queue_mean",
+        "queue_total_active",
+        "collision_rate",
         "policy_loss",
         "value_loss",
         "explained_variance",
         "entropy",
-        "reward_rms_sigma",
-        "reward_clip_frac",
         "approx_kl",
         "clip_frac",
-        "adv_raw_mean",
-        "adv_raw_std",
-        "adv_preclip_mean",
-        "adv_preclip_std",
-        "adv_postclip_mean",
-        "adv_postclip_std",
-        "adv_clip_frac",
-        "adv_norm_mean",
-        "adv_norm_std",
-        "imitation_loss",
-        "imitation_coef",
-        "actor_lr",
-        "critic_lr",
-        "log_std_mean",
-        "action_std_mean",
-        "r_service_ratio",
-        "r_drop_ratio",
-        "r_queue_pen",
-        "r_queue_topk",
-        "r_centroid",
-        "centroid_dist_mean",
-        "r_bw_align",
-        "r_sat_score",
-        "r_assoc_ratio",
-        "assoc_unfair_step_rate",
-        "assoc_unfair_max_gu_count",
-        "assoc_unfair_episode_frac_mean",
-        "assoc_unfair_episode_frac_p95",
-        "assoc_unfair_episode_frac_max",
-        "assoc_unfair_episode_count",
-        "r_queue_delta",
-        "r_dist",
-        "r_dist_delta",
-        "r_energy",
-        "r_close_risk",
-        "r_collision_penalty",
-        "r_battery_penalty",
-        "r_fail_penalty",
-        "r_term_service",
-        "r_term_throughput_access",
-        "r_term_throughput_backhaul",
-        "r_term_drop",
-        "r_term_drop_gu",
-        "r_term_drop_uav",
-        "r_term_drop_sat",
-        "r_term_drop_step",
-        "r_term_queue",
-        "r_term_topk",
-        "r_term_assoc",
-        "r_term_q_delta",
-        "r_term_dist",
-        "r_term_dist_delta",
-        "r_term_centroid",
-        "r_term_bw_align",
-        "r_term_sat_score",
-        "r_term_energy",
-        "r_term_accel",
-        "r_term_close_risk",
-        "reward_raw",
-        "arrival_sum",
-        "outflow_sum",
-        "service_norm",
-        "throughput_access_norm",
-        "throughput_backhaul_norm",
-        "sat_processed_norm",
-        "drop_norm",
-        "gu_drop_norm",
-        "uav_drop_norm",
-        "sat_drop_norm",
-        "outflow_arrival_ratio_step",
-        "sat_incoming_arrival_ratio_step",
-        "sat_processed_arrival_ratio_step",
-        "sat_processed_incoming_ratio_step",
-        "gu_drop_ratio_step",
-        "uav_drop_ratio_step",
-        "sat_drop_ratio_step",
-        "drop_sum",
-        "drop_sum_active",
-        "sat_drop_sum_step",
-        "drop_event_rate",
-        "queue_pen_gu",
-        "queue_pen_uav",
-        "queue_pen_sat",
-        "gu_queue_fill_fraction",
-        "uav_queue_fill_fraction",
-        "sat_queue_fill_fraction",
-        "gu_queue_arrival_steps",
-        "uav_queue_arrival_steps",
-        "sat_queue_arrival_steps",
-        "queue_total",
-        "queue_total_active",
-        "queue_total_active_p95",
-        "queue_total_active_p99",
-        "queue_total_active_max",
-        "q_norm_active",
-        "q_norm_active_p95",
-        "q_norm_active_p99",
-        "q_norm_active_max",
-        "q_norm_active_nonzero_rate",
-        "q_norm_tail_hit_rate",
-        "prev_q_norm_active",
-        "q_norm_delta",
-        "queue_delta_gu",
-        "queue_delta_uav",
-        "queue_delta_sat",
-        "q_norm_tail_q0",
-        "q_norm_tail_excess",
-        "queue_weight",
-        "q_delta_weight",
-        "crash_weight",
-        "centroid_transfer_ratio",
         "danger_imitation_loss",
         "danger_imitation_coef",
         "danger_imitation_active_rate",
-        "intervention_norm",
-        "intervention_rate",
-        "intervention_norm_top1",
-        "collision_rate",
-        "avoidance_eta_eff",
-        "avoidance_eta_exec",
-        "avoidance_collision_rate_ema",
-        "avoidance_prev_episode_collision_rate",
-        "filter_active_ratio",
-        "projected_delta_norm_mean",
-        "fallback_count",
-        "boundary_filter_count",
-        "pairwise_filter_count",
-        "pairwise_filter_active_ratio",
-        "pairwise_projected_delta_norm",
-        "pairwise_fallback_count",
-        "pairwise_candidate_infeasible_count",
-        "arrival_rate_eff",
-        "gu_queue_mean",
-        "uav_queue_mean",
-        "sat_queue_mean",
-        "gu_queue_max",
-        "uav_queue_max",
-        "sat_queue_max",
-        "gu_drop_sum",
-        "uav_drop_sum",
-        "sat_drop_sum",
-        "sat_processed_sum",
-        "sat_incoming_sum",
-        "connected_sat_count",
-        "connected_sat_dist_mean",
-        "connected_sat_dist_p95",
-        "connected_sat_elevation_deg_mean",
-        "connected_sat_elevation_deg_min",
-        "energy_mean",
-        "env_dynamics_time_sec",
-        "env_orbit_visible_time_sec",
-        "env_assoc_access_time_sec",
-        "env_backhaul_queue_time_sec",
-        "env_reward_time_sec",
-        "env_obs_time_sec",
-        "env_state_time_sec",
-        "env_step_total_time_sec",
-        "state_fetch_time_sec",
-        "policy_forward_time_sec",
-        "action_pack_time_sec",
-        "env_step_time_sec",
+        "actor_lr",
+        "critic_lr",
         "update_time_sec",
         "rollout_time_sec",
         "optim_time_sec",
-        "env_steps",
         "env_steps_per_sec",
         "update_steps_per_sec",
         "total_env_steps",
         "total_time_sec",
     ]
-    logger = MetricLogger(log_dir, fieldnames=metric_fields)
+    tb_fields = [
+        "episode_reward",
+        "rollout_reward_per_step",
+        "episode_term_throughput_access",
+        "episode_term_throughput_backhaul",
+        "throughput_access_norm",
+        "throughput_backhaul_norm",
+        "gu_queue_mean",
+        "uav_queue_mean",
+        "queue_total_active",
+        "collision_rate",
+        "policy_loss",
+        "value_loss",
+        "explained_variance",
+        "entropy",
+        "approx_kl",
+        "clip_frac",
+        "danger_imitation_loss",
+        "danger_imitation_coef",
+        "danger_imitation_active_rate",
+    ]
+    env_step_fields = [
+        "episode_reward",
+        "rollout_reward_per_step",
+        "episode_term_throughput_access",
+        "episode_term_throughput_backhaul",
+        "throughput_access_norm",
+        "throughput_backhaul_norm",
+        "gu_queue_mean",
+        "uav_queue_mean",
+        "queue_total_active",
+        "collision_rate",
+    ]
+    logger = MetricLogger(
+        log_dir,
+        fieldnames=metric_fields,
+        tb_fields=tb_fields,
+        env_step_fields=env_step_fields,
+    )
     progress = Progress(total_updates, desc="Train")
     training_start = time.perf_counter() - resumed_total_time_sec
     imitation_coef_start = float(getattr(cfg, "imitation_coef", 0.0) or 0.0)
@@ -1065,6 +956,16 @@ def train(
     completed_updates = resume_update
     episode_step_counts_env = np.zeros((num_envs,), dtype=np.int64)
     episode_assoc_unfair_step_counts_env = np.zeros((num_envs,), dtype=np.int64)
+    episode_return_env = np.zeros((num_envs,), dtype=np.float64)
+    episode_term_throughput_access_env = np.zeros((num_envs,), dtype=np.float64)
+    episode_term_throughput_backhaul_env = np.zeros((num_envs,), dtype=np.float64)
+    episode_collision_env = np.zeros((num_envs,), dtype=np.float32)
+    episode_stat_window = max(1, int(getattr(cfg, "train_episode_stat_window", 100) or 100))
+    recent_episode_returns: deque[float] = deque(maxlen=episode_stat_window)
+    recent_episode_lengths: deque[float] = deque(maxlen=episode_stat_window)
+    recent_episode_term_throughput_access: deque[float] = deque(maxlen=episode_stat_window)
+    recent_episode_term_throughput_backhaul: deque[float] = deque(maxlen=episode_stat_window)
+    recent_episode_collisions: deque[float] = deque(maxlen=episode_stat_window)
     for local_update in range(total_updates):
         update = resume_update + local_update
         imitation_coef_curr = _imitation_coef_at(update)
@@ -1073,6 +974,7 @@ def train(
         buffers = [RolloutBuffer(capacity=cfg.buffer_size) for _ in range(num_envs)]
         ep_reward = 0.0
         steps_count = 0
+        completed_episode_count = 0
         gu_queue_sum = 0.0
         uav_queue_sum = 0.0
         sat_queue_sum = 0.0
@@ -1388,6 +1290,7 @@ def train(
                 truncated_scalar = bool(list(truncs.values())[0])
                 done_scalar = terminated_scalar or truncated_scalar
                 ep_reward += reward_scalar
+                episode_return_env[env_idx] += float(reward_scalar)
                 steps_count += 1
                 total_env_steps += 1
                 episode_step_counts_env[env_idx] += 1
@@ -1520,8 +1423,12 @@ def train(
                     r_battery_penalty_sum += float(parts.get("battery_penalty", 0.0))
                     r_fail_penalty_sum += float(parts.get("fail_penalty", 0.0))
                     r_term_service_sum += float(parts.get("term_service", 0.0))
-                    r_term_throughput_access_sum += float(parts.get("term_throughput_access", 0.0))
-                    r_term_throughput_backhaul_sum += float(parts.get("term_throughput_backhaul", 0.0))
+                    term_throughput_access = float(parts.get("term_throughput_access", 0.0))
+                    term_throughput_backhaul = float(parts.get("term_throughput_backhaul", 0.0))
+                    r_term_throughput_access_sum += term_throughput_access
+                    r_term_throughput_backhaul_sum += term_throughput_backhaul
+                    episode_term_throughput_access_env[env_idx] += term_throughput_access
+                    episode_term_throughput_backhaul_env[env_idx] += term_throughput_backhaul
                     r_term_drop_sum += float(parts.get("term_drop", 0.0))
                     r_term_drop_gu_sum += float(parts.get("term_drop_gu", 0.0))
                     r_term_drop_uav_sum += float(parts.get("term_drop_uav", 0.0))
@@ -1544,6 +1451,10 @@ def train(
                     intervention_norm_sum += float(parts.get("intervention_norm", 0.0))
                     intervention_rate_sum += float(parts.get("intervention_rate", 0.0))
                     intervention_norm_top1_sum += float(parts.get("intervention_norm_top1", 0.0))
+                    episode_collision_env[env_idx] = max(
+                        episode_collision_env[env_idx],
+                        1.0 if float(parts.get("collision_event", 0.0)) > 0.5 else 0.0,
+                    )
                     assoc_unfair_step_value = float(parts.get("assoc_unfair_step", 0.0))
                     assoc_unfair_step_sum += assoc_unfair_step_value
                     assoc_unfair_max_gu_count_sum += float(parts.get("assoc_unfair_max_gu_count", 0.0))
@@ -1558,7 +1469,21 @@ def train(
                         if episode_steps_curr > 0
                         else 0.0
                     )
+                    recent_episode_returns.append(float(episode_return_env[env_idx]))
+                    recent_episode_lengths.append(float(episode_steps_curr))
+                    recent_episode_term_throughput_access.append(
+                        float(episode_term_throughput_access_env[env_idx])
+                    )
+                    recent_episode_term_throughput_backhaul.append(
+                        float(episode_term_throughput_backhaul_env[env_idx])
+                    )
+                    recent_episode_collisions.append(float(episode_collision_env[env_idx]))
+                    completed_episode_count += 1
                     assoc_unfair_episode_fracs.append(unfair_frac)
+                    episode_return_env[env_idx] = 0.0
+                    episode_term_throughput_access_env[env_idx] = 0.0
+                    episode_term_throughput_backhaul_env[env_idx] = 0.0
+                    episode_collision_env[env_idx] = 0.0
                     episode_step_counts_env[env_idx] = 0
                     episode_assoc_unfair_step_counts_env[env_idx] = 0
 
@@ -1843,17 +1768,20 @@ def train(
 
         update_time = time.perf_counter() - update_start
         steps_count = max(1, steps_count)
-        episode_reward = ep_reward / steps_count
-        reward_rms_sigma = (
-            float(np.sqrt(reward_rms.var))
-            if getattr(cfg, "reward_norm_enabled", False) and reward_rms is not None
+        rollout_reward_per_step = ep_reward / steps_count
+        episode_reward = float(np.mean(recent_episode_returns)) if recent_episode_returns else 0.0
+        episode_length_mean = float(np.mean(recent_episode_lengths)) if recent_episode_lengths else 0.0
+        episode_term_throughput_access = (
+            float(np.mean(recent_episode_term_throughput_access))
+            if recent_episode_term_throughput_access
             else 0.0
         )
-        reward_clip_frac = (
-            float(reward_clip_hits) / float(reward_clip_total)
-            if reward_clip_total > 0
+        episode_term_throughput_backhaul = (
+            float(np.mean(recent_episode_term_throughput_backhaul))
+            if recent_episode_term_throughput_backhaul
             else 0.0
         )
+        collision_rate = float(np.mean(recent_episode_collisions)) if recent_episode_collisions else 0.0
         log_std_terms: List[np.ndarray] = []
         if train_heads["accel"]:
             log_std_terms.append(torch.clamp(actor.log_std.detach(), -5.0, 2.0).cpu().numpy().reshape(-1))
@@ -1885,185 +1813,31 @@ def train(
         )
         metrics = {
             "episode_reward": episode_reward,
+            "episode_length_mean": episode_length_mean,
+            "completed_episode_count": float(completed_episode_count),
+            "rollout_reward_per_step": rollout_reward_per_step,
+            "episode_term_throughput_access": episode_term_throughput_access,
+            "episode_term_throughput_backhaul": episode_term_throughput_backhaul,
+            "throughput_access_norm": throughput_access_norm_sum / steps_count,
+            "throughput_backhaul_norm": throughput_backhaul_norm_sum / steps_count,
+            "gu_queue_mean": gu_queue_sum / steps_count,
+            "uav_queue_mean": uav_queue_sum / steps_count,
+            "queue_total_active": queue_total_active_sum / steps_count,
+            "collision_rate": collision_rate,
             "policy_loss": float(np.mean(policy_losses)),
             "value_loss": float(np.mean(value_losses)),
             "explained_variance": explained_variance,
             "entropy": float(np.mean(entropies)),
-            "reward_rms_sigma": reward_rms_sigma,
-            "reward_clip_frac": reward_clip_frac,
             "approx_kl": float(np.mean(approx_kls)) if approx_kls else 0.0,
             "clip_frac": float(np.mean(clip_fracs)) if clip_fracs else 0.0,
-            "adv_raw_mean": adv_raw_mean,
-            "adv_raw_std": adv_raw_std,
-            "adv_preclip_mean": adv_preclip_mean,
-            "adv_preclip_std": adv_preclip_std,
-            "adv_postclip_mean": adv_postclip_mean,
-            "adv_postclip_std": adv_postclip_std,
-            "adv_clip_frac": adv_clip_frac,
-            "adv_norm_mean": adv_norm_mean,
-            "adv_norm_std": adv_norm_std,
-            "imitation_loss": imitation_loss_sum / max(1, len(policy_losses)),
-            "imitation_coef": imitation_coef_curr,
-            "actor_lr": float(actor_optim.param_groups[0]["lr"]),
-            "critic_lr": float(critic_optim.param_groups[0]["lr"]),
-            "log_std_mean": float(np.mean(log_std_vec)),
-            "action_std_mean": float(np.mean(action_std_vec)),
-            "r_service_ratio": r_service_ratio_sum / steps_count,
-            "r_drop_ratio": r_drop_ratio_sum / steps_count,
-            "r_queue_pen": r_queue_pen_sum / steps_count,
-            "r_queue_topk": r_queue_topk_sum / steps_count,
-            "r_centroid": r_centroid_sum / steps_count,
-            "centroid_dist_mean": centroid_dist_mean_sum / steps_count,
-            "r_bw_align": r_bw_align_sum / steps_count,
-            "r_sat_score": r_sat_score_sum / steps_count,
-            "r_assoc_ratio": r_assoc_ratio_sum / steps_count,
-            "assoc_unfair_step_rate": assoc_unfair_step_sum / steps_count,
-            "assoc_unfair_max_gu_count": assoc_unfair_max_gu_count_sum / steps_count,
-            "assoc_unfair_episode_frac_mean": assoc_unfair_episode_frac_mean,
-            "assoc_unfair_episode_frac_p95": assoc_unfair_episode_frac_p95,
-            "assoc_unfair_episode_frac_max": assoc_unfair_episode_frac_max,
-            "assoc_unfair_episode_count": float(len(assoc_unfair_episode_fracs)),
-            "r_queue_delta": r_queue_delta_sum / steps_count,
-            "r_dist": r_dist_sum / steps_count,
-            "r_dist_delta": r_dist_delta_sum / steps_count,
-            "r_energy": r_energy_sum / steps_count,
-            "r_close_risk": r_close_risk_sum / steps_count,
-            "r_collision_penalty": r_collision_penalty_sum / steps_count,
-            "r_battery_penalty": r_battery_penalty_sum / steps_count,
-            "r_fail_penalty": r_fail_penalty_sum / steps_count,
-            "r_term_service": r_term_service_sum / steps_count,
-            "r_term_throughput_access": r_term_throughput_access_sum / steps_count,
-            "r_term_throughput_backhaul": r_term_throughput_backhaul_sum / steps_count,
-            "r_term_drop": r_term_drop_sum / steps_count,
-            "r_term_drop_gu": r_term_drop_gu_sum / steps_count,
-            "r_term_drop_uav": r_term_drop_uav_sum / steps_count,
-            "r_term_drop_sat": r_term_drop_sat_sum / steps_count,
-            "r_term_drop_step": r_term_drop_step_sum / steps_count,
-            "r_term_queue": r_term_queue_sum / steps_count,
-            "r_term_topk": r_term_topk_sum / steps_count,
-            "r_term_assoc": r_term_assoc_sum / steps_count,
-            "r_term_q_delta": r_term_q_delta_sum / steps_count,
-            "r_term_dist": r_term_dist_sum / steps_count,
-            "r_term_dist_delta": r_term_dist_delta_sum / steps_count,
-            "r_term_centroid": r_term_centroid_sum / steps_count,
-            "r_term_bw_align": r_term_bw_align_sum / steps_count,
-            "r_term_sat_score": r_term_sat_score_sum / steps_count,
-            "r_term_energy": r_term_energy_sum / steps_count,
-            "r_term_accel": r_term_accel_sum / steps_count,
-            "r_term_close_risk": r_term_close_risk_sum / steps_count,
-            "reward_raw": reward_raw_sum / steps_count,
-            "arrival_sum": arrival_sum_sum / steps_count,
-            "outflow_sum": outflow_sum_sum / steps_count,
-            "service_norm": service_norm_sum / steps_count,
-            "throughput_access_norm": throughput_access_norm_sum / steps_count,
-            "throughput_backhaul_norm": throughput_backhaul_norm_sum / steps_count,
-            "sat_processed_norm": sat_processed_norm_sum / steps_count,
-            "drop_norm": drop_norm_sum / steps_count,
-            "gu_drop_norm": gu_drop_norm_sum / steps_count,
-            "uav_drop_norm": uav_drop_norm_sum / steps_count,
-            "sat_drop_norm": sat_drop_norm_sum / steps_count,
-            "outflow_arrival_ratio_step": outflow_arrival_ratio_step_sum / steps_count,
-            "sat_incoming_arrival_ratio_step": sat_incoming_arrival_ratio_step_sum / steps_count,
-            "sat_processed_arrival_ratio_step": sat_processed_arrival_ratio_step_sum / steps_count,
-            "sat_processed_incoming_ratio_step": sat_processed_incoming_ratio_step_sum / steps_count,
-            "gu_drop_ratio_step": gu_drop_ratio_step_sum / steps_count,
-            "uav_drop_ratio_step": uav_drop_ratio_step_sum / steps_count,
-            "sat_drop_ratio_step": sat_drop_ratio_step_sum / steps_count,
-            "drop_sum": drop_sum_total / steps_count,
-            "drop_sum_active": drop_sum_active_total / steps_count,
-            "sat_drop_sum_step": sat_drop_sum_step_total / steps_count,
-            "drop_event_rate": drop_event_sum / steps_count,
-            "queue_pen_gu": queue_pen_gu_sum / steps_count,
-            "queue_pen_uav": queue_pen_uav_sum / steps_count,
-            "queue_pen_sat": queue_pen_sat_sum / steps_count,
-            "gu_queue_fill_fraction": gu_queue_fill_fraction_sum / steps_count,
-            "uav_queue_fill_fraction": uav_queue_fill_fraction_sum / steps_count,
-            "sat_queue_fill_fraction": sat_queue_fill_fraction_sum / steps_count,
-            "gu_queue_arrival_steps": gu_queue_arrival_steps_sum / steps_count,
-            "uav_queue_arrival_steps": uav_queue_arrival_steps_sum / steps_count,
-            "sat_queue_arrival_steps": sat_queue_arrival_steps_sum / steps_count,
-            "queue_total": queue_total_sum / steps_count,
-            "queue_total_active": queue_total_active_sum / steps_count,
-            "queue_total_active_p95": (
-                float(np.percentile(queue_total_active_values, 95)) if queue_total_active_values else 0.0
-            ),
-            "queue_total_active_p99": (
-                float(np.percentile(queue_total_active_values, 99)) if queue_total_active_values else 0.0
-            ),
-            "queue_total_active_max": queue_total_active_max,
-            "q_norm_active": q_norm_active_sum / steps_count,
-            "q_norm_active_p95": float(np.percentile(q_norm_active_values, 95)) if q_norm_active_values else 0.0,
-            "q_norm_active_p99": float(np.percentile(q_norm_active_values, 99)) if q_norm_active_values else 0.0,
-            "q_norm_active_max": q_norm_active_max,
-            "q_norm_active_nonzero_rate": float(q_norm_active_nonzero_count) / float(steps_count),
-            "q_norm_tail_hit_rate": float(q_norm_tail_hit_count) / float(steps_count),
-            "prev_q_norm_active": prev_q_norm_active_sum / steps_count,
-            "q_norm_delta": q_norm_delta_sum / steps_count,
-            "queue_delta_gu": queue_delta_gu_sum / steps_count,
-            "queue_delta_uav": queue_delta_uav_sum / steps_count,
-            "queue_delta_sat": queue_delta_sat_sum / steps_count,
-            "q_norm_tail_q0": q_norm_tail_q0_sum / steps_count,
-            "q_norm_tail_excess": q_norm_tail_excess_sum / steps_count,
-            "queue_weight": queue_weight_sum / steps_count,
-            "q_delta_weight": q_delta_weight_sum / steps_count,
-            "crash_weight": crash_weight_sum / steps_count,
-            "centroid_transfer_ratio": centroid_transfer_ratio_sum / steps_count,
             "danger_imitation_loss": danger_imitation_loss_sum / max(1, len(policy_losses)),
             "danger_imitation_coef": danger_imitation_coef,
             "danger_imitation_active_rate": danger_imitation_active_rate_sum / steps_count,
-            "intervention_norm": intervention_norm_sum / steps_count,
-            "intervention_rate": intervention_rate_sum / steps_count,
-            "intervention_norm_top1": intervention_norm_top1_sum / steps_count,
-            "collision_rate": collision_event_sum / steps_count,
-            "avoidance_eta_eff": avoidance_eta_eff_sum / steps_count,
-            "avoidance_eta_exec": avoidance_eta_exec_sum / steps_count,
-            "avoidance_collision_rate_ema": avoidance_collision_rate_ema_sum / steps_count,
-            "avoidance_prev_episode_collision_rate": (
-                avoidance_prev_episode_collision_rate_sum / steps_count
-            ),
-            "filter_active_ratio": filter_active_ratio_sum / steps_count,
-            "projected_delta_norm_mean": projected_delta_norm_mean_sum / steps_count,
-            "fallback_count": fallback_count_sum / steps_count,
-            "boundary_filter_count": boundary_filter_count_sum / steps_count,
-            "pairwise_filter_count": pairwise_filter_count_sum / steps_count,
-            "pairwise_filter_active_ratio": pairwise_filter_active_ratio_sum / steps_count,
-            "pairwise_projected_delta_norm": pairwise_projected_delta_norm_sum / steps_count,
-            "pairwise_fallback_count": pairwise_fallback_count_sum / steps_count,
-            "pairwise_candidate_infeasible_count": pairwise_candidate_infeasible_count_sum / steps_count,
-            "arrival_rate_eff": arrival_rate_eff_sum / steps_count,
-            "gu_queue_mean": gu_queue_sum / steps_count,
-            "uav_queue_mean": uav_queue_sum / steps_count,
-            "sat_queue_mean": sat_queue_sum / steps_count,
-            "gu_queue_max": gu_queue_max,
-            "uav_queue_max": uav_queue_max,
-            "sat_queue_max": sat_queue_max,
-            "gu_drop_sum": gu_drop_sum,
-            "uav_drop_sum": uav_drop_sum,
-            "sat_drop_sum": sat_drop_sum,
-            "sat_processed_sum": sat_processed_sum,
-            "sat_incoming_sum": sat_incoming_sum,
-            "connected_sat_count": connected_sat_count_sum / steps_count,
-            "connected_sat_dist_mean": connected_sat_dist_mean_sum / steps_count,
-            "connected_sat_dist_p95": connected_sat_dist_p95_sum / steps_count,
-            "connected_sat_elevation_deg_mean": connected_sat_elevation_deg_mean_sum / steps_count,
-            "connected_sat_elevation_deg_min": connected_sat_elevation_deg_min_sum / steps_count,
-            "energy_mean": (energy_mean_sum / steps_count) if cfg.energy_enabled else 0.0,
-            "env_dynamics_time_sec": dynamics_time_sum / steps_count,
-            "env_orbit_visible_time_sec": orbit_visible_time_sum / steps_count,
-            "env_assoc_access_time_sec": assoc_access_time_sum / steps_count,
-            "env_backhaul_queue_time_sec": backhaul_queue_time_sum / steps_count,
-            "env_reward_time_sec": reward_time_sum / steps_count,
-            "env_obs_time_sec": obs_time_sum / steps_count,
-            "env_state_time_sec": state_time_sum / steps_count,
-            "env_step_total_time_sec": step_total_time_sum / steps_count,
-            "state_fetch_time_sec": state_fetch_time,
-            "policy_forward_time_sec": policy_forward_time,
-            "action_pack_time_sec": action_pack_time,
-            "env_step_time_sec": env_step_time,
+            "actor_lr": float(actor_optim.param_groups[0]["lr"]),
+            "critic_lr": float(critic_optim.param_groups[0]["lr"]),
             "update_time_sec": update_time,
             "rollout_time_sec": rollout_time,
             "optim_time_sec": optim_time,
-            "env_steps": float(steps_count),
             "env_steps_per_sec": steps_count / max(1e-9, rollout_time),
             "update_steps_per_sec": steps_count / max(1e-9, update_time),
             "total_env_steps": float(total_env_steps),

@@ -21,26 +21,29 @@ def test_smoke_train(tmp_path, actor_encoder_type):
     train(env, cfg, str(tmp_path), total_updates=1)
     with (tmp_path / "metrics.csv").open("r", encoding="utf-8", newline="") as f:
         header = next(csv.reader(f))
+    assert "episode_reward" in header
+    assert "episode_length_mean" in header
+    assert "completed_episode_count" in header
+    assert "rollout_reward_per_step" in header
+    assert "episode_term_throughput_access" in header
+    assert "episode_term_throughput_backhaul" in header
+    assert "throughput_access_norm" in header
+    assert "throughput_backhaul_norm" in header
+    assert "gu_queue_mean" in header
+    assert "uav_queue_mean" in header
+    assert "queue_total_active" in header
+    assert "collision_rate" in header
     assert "approx_kl" in header
     assert "clip_frac" in header
-    assert "adv_raw_std" in header
-    assert "adv_preclip_mean" in header
-    assert "adv_postclip_std" in header
-    assert "adv_clip_frac" in header
-    assert "log_std_mean" in header
-    assert "action_std_mean" in header
-    assert "reward_rms_sigma" in header
-    assert "reward_clip_frac" in header
-    assert "drop_sum" in header
-    assert "r_close_risk" in header
-    assert "r_term_accel" in header
-    assert "r_term_close_risk" in header
-    assert "r_collision_penalty" in header
-    assert "r_battery_penalty" in header
+    assert "policy_loss" in header
+    assert "value_loss" in header
+    assert "explained_variance" in header
+    assert "entropy" in header
     assert "danger_imitation_loss" in header
     assert "danger_imitation_coef" in header
     assert "danger_imitation_active_rate" in header
-    assert "intervention_norm" in header
-    assert "intervention_rate" in header
-    assert "intervention_norm_top1" in header
-    assert "q_norm_tail_hit_rate" in header
+    assert "actor_lr" in header
+    assert "critic_lr" in header
+    assert "env_steps_per_sec" in header
+    assert "update_steps_per_sec" in header
+    assert "total_env_steps" in header

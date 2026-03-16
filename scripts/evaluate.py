@@ -39,191 +39,42 @@ def _init_eval_tb_layout(writer: SummaryWriter, tag_prefix: str) -> None:
         return f"{tag_prefix}/{name}"
 
     layout = {
-        "Eval/Core": {
+        "Eval/Main": {
             "RewardSum": ["Multiline", [t("reward_sum")]],
-            "RewardRaw": ["Multiline", [t("reward_raw")]],
-            "Steps": ["Multiline", [t("steps")]],
-            "PolicyPerformance": [
-                "Multiline",
-                [
-                    t("outflow_arrival_ratio"),
-                    t("drop_ratio"),
-                    t("queue_total_active"),
-                    t("near_collision_ratio"),
-                ],
-            ],
-        },
-        "Eval/Queues": {
-            "QueueMean": ["Multiline", [t("gu_queue_mean"), t("uav_queue_mean"), t("sat_queue_mean")]],
-            "QueueMax": ["Multiline", [t("gu_queue_max"), t("uav_queue_max"), t("sat_queue_max")]],
-            "QueueFill": [
-                "Multiline",
-                [
-                    t("gu_queue_fill_fraction_mean"),
-                    t("uav_queue_fill_fraction_mean"),
-                    t("sat_queue_fill_fraction_mean"),
-                ],
-            ],
-            "QueueArrivalSteps": [
-                "Multiline",
-                [
-                    t("gu_queue_arrival_steps_mean"),
-                    t("uav_queue_arrival_steps_mean"),
-                    t("sat_queue_arrival_steps_mean"),
-                ],
-            ],
-        },
-        "Eval/Links": {
-            "ThroughputNorm": [
+            "Throughput": [
                 "Multiline",
                 [
                     t("throughput_access_norm"),
                     t("throughput_backhaul_norm"),
-                    t("sat_processed_norm"),
                 ],
             ],
-            "LinkRatios": [
+            "QueueMean": ["Multiline", [t("gu_queue_mean"), t("uav_queue_mean")]],
+            "QueueTail": [
                 "Multiline",
                 [
-                    t("outflow_arrival_ratio"),
-                    t("sat_incoming_arrival_ratio"),
-                    t("sat_processed_arrival_ratio"),
-                    t("sat_processed_incoming_ratio"),
+                    t("gu_queue_arrival_steps_p95"),
+                    t("uav_queue_arrival_steps_p95"),
+                ],
+            ],
+            "Safety": [
+                "Multiline",
+                [
+                    t("terminated_early"),
+                    t("collision"),
                 ],
             ],
         },
-        "Eval/Distance": {
-            "CentroidDist": ["Multiline", [t("centroid_dist_mean")]],
-        },
-        "Eval/Drops": {
-            "Drops": ["Multiline", [t("gu_drop_sum"), t("uav_drop_sum"), t("sat_drop_sum")]],
-            "DropRatios": [
-                "Multiline",
-                [
-                    t("gu_drop_ratio"),
-                    t("uav_drop_ratio"),
-                    t("sat_drop_ratio"),
-                ],
-            ],
-            "DropEvent": [
-                "Multiline",
-                [
-                    t("drop_event_step_fraction"),
-                    t("term_drop_mean"),
-                    t("term_drop_sat_mean"),
-                    t("term_drop_step_mean"),
-                ],
-            ],
-        },
-        "Eval/Association": {
-            "AssocRatio": ["Multiline", [t("assoc_ratio_mean")]],
-            "AssocDist": ["Multiline", [t("assoc_dist_mean")]],
-        },
-        "Eval/Danger": {
-            "DangerImitation": [
-                "Multiline",
-                [
-                    t("danger_imitation_active_rate_mean"),
-                    t("intervention_rate_mean"),
-                    t("intervention_norm_mean"),
-                    t("intervention_norm_top1_mean"),
-                ],
-            ],
-            "CloseRisk": [
-                "Multiline",
-                [
-                    t("close_risk_mean"),
-                    t("term_close_risk_mean"),
-                ],
-            ],
-        },
-        "Eval/Satellite": {
-            "SatFlow": ["Multiline", [t("sat_incoming_sum"), t("sat_processed_sum")]],
-            "LinkGeometry": [
-                "Multiline",
-                [
-                    t("connected_sat_count_mean"),
-                    t("connected_sat_dist_mean"),
-                    t("connected_sat_dist_p95_mean"),
-                    t("connected_sat_elevation_deg_mean"),
-                    t("connected_sat_elevation_deg_min"),
-                ],
-            ],
-        },
-        "Eval/Regime": {
-            "NonEmpty": [
-                "Multiline",
-                [
-                    t("active_queue_empty_step_fraction"),
-                    t("all_layers_nonempty_step_fraction"),
-                    t("gu_queue_nonzero_step_fraction"),
-                    t("uav_queue_nonzero_step_fraction"),
-                    t("sat_queue_nonzero_step_fraction"),
-                ],
-            ],
-            "Drift": [
+        "Eval/Drift": {
+            "QueueDrift": [
                 "Multiline",
                 [
                     t("gu_queue_drift_ratio"),
                     t("uav_queue_drift_ratio"),
-                    t("sat_queue_drift_ratio"),
-                    t("active_net_drift_per_step"),
-                    t("sat_net_drift_per_step"),
+                    t("sat_processed_norm"),
                 ],
             ],
-        },
-        "Eval/Performance": {
-            "Speed": ["Multiline", [t("steps_per_sec")]],
-            "EpisodeTime": ["Multiline", [t("episode_time_sec")]],
-        },
-        "Eval/Energy": {
-            "EnergyMean": ["Multiline", [t("energy_mean")]],
         },
     }
-
-    other = None
-    if tag_prefix == "eval/trained":
-        other = "eval/baseline"
-    elif tag_prefix == "eval/baseline":
-        other = "eval/trained"
-
-    if other is not None:
-        layout["Eval/Compare"] = {
-            "RewardSum": ["Multiline", [f"{tag_prefix}/reward_sum", f"{other}/reward_sum"]],
-            "PolicyPerformance": [
-                "Multiline",
-                [
-                    f"{tag_prefix}/outflow_arrival_ratio",
-                    f"{tag_prefix}/drop_ratio",
-                    f"{tag_prefix}/queue_total_active",
-                    f"{other}/outflow_arrival_ratio",
-                    f"{other}/drop_ratio",
-                    f"{other}/queue_total_active",
-                ],
-            ],
-            "LayerDropRatios": [
-                "Multiline",
-                [
-                    f"{tag_prefix}/gu_drop_ratio",
-                    f"{tag_prefix}/uav_drop_ratio",
-                    f"{tag_prefix}/sat_drop_ratio",
-                    f"{other}/gu_drop_ratio",
-                    f"{other}/uav_drop_ratio",
-                    f"{other}/sat_drop_ratio",
-                ],
-            ],
-            "SatFlow": [
-                "Multiline",
-                [
-                    f"{tag_prefix}/sat_incoming_arrival_ratio",
-                    f"{tag_prefix}/sat_processed_arrival_ratio",
-                    f"{tag_prefix}/sat_processed_incoming_ratio",
-                    f"{other}/sat_incoming_arrival_ratio",
-                    f"{other}/sat_processed_arrival_ratio",
-                    f"{other}/sat_processed_incoming_ratio",
-                ],
-            ],
-        }
 
     writer.add_custom_scalars(layout)
 
@@ -446,110 +297,34 @@ def main():
     fieldnames = [
         "episode",
         "reward_sum",
-        "reward_raw",
         "steps",
-        "episode_time_sec",
-        "steps_per_sec",
-        "service_norm",
         "throughput_access_norm",
         "throughput_backhaul_norm",
         "sat_processed_norm",
-        "drop_norm",
-        "queue_total_active",
-        "queue_total_active_excl_step0",
-        "queue_total_active_max",
-        "queue_total_active_p95_step",
-        "arrival_sum",
-        "outflow_sum",
-        "outflow_arrival_ratio",
-        "sat_incoming_sum",
-        "sat_processed_sum",
-        "sat_incoming_arrival_ratio",
-        "sat_processed_arrival_ratio",
-        "sat_processed_incoming_ratio",
-        "drop_sum",
-        "drop_ratio",
-        "drop_ratio_step_mean",
-        "drop_sum_step_mean",
-        "active_drop_sum",
-        "active_drop_ratio",
-        "active_drop_sum_step_mean",
-        "gu_drop_sum",
-        "uav_drop_sum",
-        "sat_drop_sum",
-        "sat_drop_sum_step_mean",
-        "gu_drop_ratio",
-        "uav_drop_ratio",
-        "sat_drop_ratio",
-        "drop_event_steps",
-        "drop_event_step_fraction",
-        "term_drop_mean",
-        "term_drop_gu_mean",
-        "term_drop_uav_mean",
-        "term_drop_sat_mean",
-        "term_drop_step_mean",
-        "terminated_early",
-        "termination_reason",
-        "collision",
-        "min_inter_uav_dist",
-        "near_collision_steps",
-        "near_collision_ratio",
-        "danger_imitation_active_rate_mean",
-        "intervention_norm_mean",
-        "intervention_rate_mean",
-        "intervention_norm_top1_mean",
-        "close_risk_mean",
-        "term_close_risk_mean",
-        "centroid_dist_mean",
         "gu_queue_mean",
         "uav_queue_mean",
-        "sat_queue_mean",
-        "gu_queue_max",
-        "uav_queue_max",
-        "sat_queue_max",
-        "gu_queue_arrival_steps_mean",
-        "uav_queue_arrival_steps_mean",
-        "sat_queue_arrival_steps_mean",
         "gu_queue_arrival_steps_p95",
         "uav_queue_arrival_steps_p95",
-        "sat_queue_arrival_steps_p95",
-        "gu_queue_fill_fraction_mean",
-        "uav_queue_fill_fraction_mean",
-        "sat_queue_fill_fraction_mean",
-        "gu_queue_fill_fraction_p95",
-        "uav_queue_fill_fraction_p95",
-        "sat_queue_fill_fraction_p95",
-        "active_queue_empty_step_fraction",
-        "all_layers_nonempty_step_fraction",
-        "gu_queue_nonzero_step_fraction",
-        "uav_queue_nonzero_step_fraction",
-        "sat_queue_nonzero_step_fraction",
+        "terminated_early",
+        "collision",
         "gu_queue_drift_ratio",
         "uav_queue_drift_ratio",
-        "sat_queue_drift_ratio",
-        "active_net_drift_per_step",
-        "sat_net_drift_per_step",
-        "total_net_drift_per_step",
-        "connected_sat_count_mean",
-        "connected_sat_dist_mean",
-        "connected_sat_dist_p95_mean",
-        "connected_sat_elevation_deg_mean",
-        "connected_sat_elevation_deg_min",
-        "energy_mean",
-        "assoc_ratio_mean",
-        "assoc_dist_mean",
     ]
-    for u in range(cfg.num_uav):
-        fieldnames.extend(
-            [
-                f"uav{u}_assoc_gu_count_mean",
-                f"uav{u}_assoc_gu_count_p95",
-                f"uav{u}_assoc_gu_count_max",
-                f"uav{u}_access_outflow_mean",
-                f"uav{u}_access_outflow_p95",
-                f"uav{u}_access_outflow_sum",
-            ]
-        )
+    tb_fieldnames = [
+        "reward_sum",
+        "throughput_access_norm",
+        "throughput_backhaul_norm",
+        "gu_queue_mean",
+        "uav_queue_mean",
+        "gu_queue_arrival_steps_p95",
+        "uav_queue_arrival_steps_p95",
+        "terminated_early",
+        "collision",
+        "gu_queue_drift_ratio",
+        "uav_queue_drift_ratio",
+        "sat_processed_norm",
+    ]
+    tb_field_set = set(tb_fieldnames)
     q_zero_eps = 1e-9
     layer_total_capacity = {
         "gu": float(cfg.num_gu) * float(cfg.queue_max_gu),
@@ -956,28 +731,9 @@ def main():
                 "assoc_ratio_mean": assoc_ratio_sum / steps,
                 "assoc_dist_mean": assoc_dist_sum / steps,
             }
-            for u in range(cfg.num_uav):
-                assoc_series = uav_assoc_gu_count_steps[u]
-                access_series = uav_access_outflow_steps[u]
-                metrics[f"uav{u}_assoc_gu_count_mean"] = (
-                    float(np.mean(assoc_series)) if assoc_series else 0.0
-                )
-                metrics[f"uav{u}_assoc_gu_count_p95"] = (
-                    float(np.percentile(assoc_series, 95)) if assoc_series else 0.0
-                )
-                metrics[f"uav{u}_assoc_gu_count_max"] = (
-                    float(np.max(assoc_series)) if assoc_series else 0.0
-                )
-                metrics[f"uav{u}_access_outflow_mean"] = (
-                    float(np.mean(access_series)) if access_series else 0.0
-                )
-                metrics[f"uav{u}_access_outflow_p95"] = (
-                    float(np.percentile(access_series, 95)) if access_series else 0.0
-                )
-                metrics[f"uav{u}_access_outflow_sum"] = float(uav_access_outflow_sum[u])
             writer.writerow([metrics.get(name, "") for name in fieldnames])
             for key, val in metrics.items():
-                if isinstance(val, (int, float, np.floating, np.integer)):
+                if key in tb_field_set and isinstance(val, (int, float, np.floating, np.integer)):
                     tb_writer.add_scalar(f"{tb_tag}/{key}", float(val), ep)
             progress.update(ep + 1)
     progress.close()
