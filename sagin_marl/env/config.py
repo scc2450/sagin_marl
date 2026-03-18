@@ -359,11 +359,16 @@ class SaginConfig:
     checkpoint_eval_start_update: int = 0
     checkpoint_eval_episodes: int = 20
     checkpoint_eval_episode_seed_base: int | None = None
-    checkpoint_eval_fixed_policy: str = "zero"  # "zero" or "queue_aware"
+    checkpoint_eval_fixed_policy: str = "zero"  # "zero" | "queue_aware" | "teacher_accel_queue_aware"
+    checkpoint_eval_sat_drop_early_stop_enabled: bool = True
     checkpoint_eval_sat_drop_worsen_delta: float = 5e-4
     checkpoint_eval_front_queue_rel_improve_tol: float = 0.05
     checkpoint_eval_worsen_patience: int = 2
     checkpoint_eval_early_stop_enabled: bool = True
+    checkpoint_eval_reward_early_stop_enabled: bool = False
+    checkpoint_eval_reward_patience: int = 5
+    checkpoint_eval_reward_min_delta_rel: float = 0.0
+    checkpoint_eval_reward_collision_threshold: float = 1.0
 
     @property
     def theta_min_rad(self) -> float:

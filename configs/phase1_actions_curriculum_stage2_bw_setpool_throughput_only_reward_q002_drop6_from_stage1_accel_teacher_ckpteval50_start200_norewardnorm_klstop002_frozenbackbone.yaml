@@ -1,0 +1,210 @@
+# Stage-2 bw-only training on top of the converged stage1 accel-only run.
+# Intended usage:
+#   - initialize actor/critic from the stage1 accel-only final checkpoints
+#   - execute accel from the fixed stage1 teacher
+#   - train only bw head, with shared backbone frozen
+#
+# Note:
+#   checkpoint_eval_fixed_policy is set to "teacher_accel_queue_aware":
+#   accel comes from the fixed teacher, while bw/sat come from queue_aware.
+seed: 42
+map_size: 1500.0
+tau0: 1.0
+T_steps: 400
+
+num_uav: 3
+num_gu: 20
+num_sat: 72
+walker_num_planes: 6
+sat_state_max: 9
+
+users_obs_max: 20
+sats_obs_max: 6
+visible_sats_max: 6
+visible_sats_min: null
+nbrs_obs_max: 4
+danger_nbr_enabled: true
+
+uav_height: 100.0
+sat_height: 500000.0
+theta_min_deg: 5.0
+v_max: 30.0
+a_max: 5.0
+d_safe: 20.0
+boundary_mode: reflect
+
+candidate_mode: "nearest"
+candidate_k: 20
+assoc_unfair_gu_threshold: 15
+
+uav_spawn_curriculum_enabled: false
+uav_spawn_radius_start: 300.0
+uav_spawn_radius_end: 900.0
+uav_spawn_curriculum_steps: 100
+uav_spawn_full_random_final: true
+uav_safe_random_init_enabled: true
+uav_init_boundary_margin_steps: 3.0
+uav_init_speed_frac: 0.2
+uav_init_min_spacing: 20.0
+
+task_arrival_rate: 1.3e5
+task_arrival_poisson: true
+traffic_level: 2
+traffic_level_nav_ratio: 0.08
+traffic_level_easy_ratio: 0.5
+traffic_level_hard_ratio: 1.0
+arrival_ramp_steps: 0
+arrival_ramp_start: 0.0
+arrival_ramp_use_global: false
+queue_max_gu: 3.0e7
+queue_max_uav: 1.0e9
+queue_max_sat: 2.0e8
+queue_init_frac: 0.0
+queue_init_uav_frac: 0.0
+queue_init_sat_frac: 0.0
+queue_init_gu_steps: 16.0
+queue_init_uav_steps: 40.0
+queue_init_sat_steps: 32.0
+
+gu_tx_power: 0.18
+uav_tx_gain: 300.0
+sat_rx_gain: 300.0
+b_acc: 2.2e6
+b_sat_total: 8.75e5
+sat_cpu_freq: 1.8e9
+noise_density: 4.0e-21
+pathloss_mode: prob_los
+pl_threshold_db: 140.0
+
+doppler_observed: true
+doppler_enabled: false
+energy_enabled: false
+fading_enabled: false
+interference_enabled: false
+
+enable_bw_action: true
+fixed_satellite_strategy: true
+sat_select_mode: sample
+N_RF: 2
+
+train_accel: false
+train_bw: true
+train_sat: false
+train_shared_backbone: false
+exec_accel_source: teacher
+exec_bw_source: policy
+exec_sat_source: zero
+exec_teacher_actor_path: runs/phase1_actions/stage1_accel_throughput_only_q002_drop6_rec_norewardnorm_klstop002_ckpteval50_start200_es_u1500/actor.pt
+exec_teacher_deterministic: true
+
+avoidance_enabled: true
+avoidance_eta: 3.5
+avoidance_alert_factor: 2.0
+avoidance_prealert_factor: 6.0
+avoidance_prealert_closing_speed: 20.0
+avoidance_prealert_mode: distance
+avoidance_repulse_mode: linear
+avoidance_repulse_clip: true
+avoidance_closing_gain_enabled: true
+avoidance_closing_gain_cap: 2.0
+avoidance_closing_gain_top1_only: true
+avoidance_adaptive_enabled: false
+avoidance_collision_target: 0.05
+avoidance_adaptive_gain: 1.0
+avoidance_adaptive_ema_beta: 0.9
+avoidance_eta_min: 1.0
+avoidance_eta_max: 5.0
+eta_crash: 0.0
+
+reward_mode: throughput_only
+omega_q: 0.0
+omega_q_gu: 0.0
+omega_q_uav: 0.0
+omega_q_sat: 0.0
+eta_drop: 0.0
+eta_drop_gu: 0.0
+eta_drop_uav: 0.0
+eta_drop_sat: 0.0
+eta_drop_step: 0.0
+eta_service: 0.0
+eta_assoc: 0.0
+eta_q_delta: 0.0
+eta_throughput_access: 1.0
+eta_throughput_backhaul: 1.0
+eta_accel: 0.0
+close_risk_enabled: false
+eta_close_risk: 0.0
+close_risk_cap: 2.0
+eta_centroid: 0.0
+eta_centroid_final: 0.0
+eta_centroid_decay_steps: 0
+centroid_cross_anneal_enabled: false
+centroid_cross_queue_gain: 0.6
+centroid_cross_q_delta_gain: 0.5
+centroid_cross_crash_gain: 1.0
+centroid_cross_avoidance_gain: 0.8
+centroid_dist_scale: 400.0
+eta_bw_align: 0.0
+eta_sat_score: 0.0
+eta_dist_delta: 0.0
+queue_penalty_mode: linear
+queue_log_k: 0.0
+queue_norm_K: 1.0
+queue_reward_use_arrival_norm: true
+q_norm_tail_q0: 0.0
+omega_q_tail: null
+queue_delta_use_active: false
+queue_delta_mode: total
+
+input_norm_enabled: true
+gamma: 0.9975
+gae_lambda: 0.95
+reward_norm_enabled: false
+reward_norm_clip: 5.0
+reward_tanh_enabled: false
+lr_decay_enabled: false
+lr_final_factor: 0.1
+actor_lr: 1.0e-4
+critic_lr: 2.0e-4
+kl_stop: true
+target_kl: 0.02
+actor_hidden: 256
+actor_encoder_type: set_pool
+actor_set_embed_dim: 64
+critic_hidden: 256
+
+imitation_enabled: false
+imitation_coef: 0.0
+imitation_coef_final: 0.0
+imitation_coef_decay_updates: 0
+imitation_accel: false
+imitation_bw: false
+imitation_sat: false
+danger_imitation_enabled: false
+danger_imitation_coef: 0.0
+danger_imitation_trigger_mode: intervention_threshold
+danger_imitation_close_risk_thresh: 0.05
+danger_imitation_intervention_thresh: 0.05
+
+buffer_size: 400
+num_mini_batch: 4
+ppo_epochs: 5
+adv_clip: 5.0
+entropy_coef: 0.001
+
+early_stop_enabled: false
+checkpoint_eval_enabled: true
+checkpoint_eval_interval_updates: 50
+checkpoint_eval_start_update: 200
+checkpoint_eval_episodes: 20
+checkpoint_eval_episode_seed_base: 42000
+checkpoint_eval_fixed_policy: teacher_accel_queue_aware
+checkpoint_eval_sat_drop_early_stop_enabled: false
+checkpoint_eval_sat_drop_worsen_delta: 5.0e-4
+checkpoint_eval_front_queue_rel_improve_tol: 0.05
+checkpoint_eval_worsen_patience: 2
+checkpoint_eval_early_stop_enabled: true
+checkpoint_eval_reward_early_stop_enabled: true
+checkpoint_eval_reward_patience: 5
+checkpoint_eval_reward_min_delta_rel: 0.005
+checkpoint_eval_reward_collision_threshold: 0.01

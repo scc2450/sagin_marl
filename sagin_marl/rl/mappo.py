@@ -144,7 +144,7 @@ def _normalize_exec_source(raw: str | None) -> str:
 
 def _normalize_checkpoint_eval_fixed_policy(raw: str | None) -> str:
     policy = str("zero" if raw is None else raw).strip().lower()
-    allowed = {"zero", "queue_aware"}
+    allowed = {"zero", "queue_aware", "teacher_accel_queue_aware"}
     if policy not in allowed:
         raise ValueError(f"Invalid checkpoint-eval fixed policy '{raw}'. Allowed: {sorted(allowed)}")
     return policy
@@ -387,6 +387,23 @@ def _checkpoint_eval_summary(
                             bw_logits=heur_bw,
                             sat_logits=heur_sat,
                         )
+                    elif fixed_baseline_policy == "teacher_accel_queue_aware":
+                        if teacher_actor is None:
+                            raise ValueError(
+                                "checkpoint_eval_fixed_policy='teacher_accel_queue_aware' requires a teacher actor."
+                            )
+                        obs_batch = batch_flatten_obs(obs_list, cfg)
+                        obs_tensor = torch.tensor(obs_batch, dtype=torch.float32, device=device)
+                        with torch.inference_mode():
+                            teacher_out = teacher_actor.act(obs_tensor, deterministic=teacher_deterministic)
+                        _, heur_bw, heur_sat = queue_aware_policy(obs_list, cfg)
+                        actions = assemble_actions(
+                            cfg,
+                            eval_env.agents,
+                            teacher_out.accel.cpu().numpy(),
+                            bw_logits=heur_bw,
+                            sat_logits=heur_sat,
+                        )
                     else:
                         accel_actions = np.zeros((len(eval_env.agents), 2), dtype=np.float32)
                         actions = assemble_actions(cfg, eval_env.agents, accel_actions)
@@ -522,6 +539,11 @@ def _checkpoint_eval_fieldnames() -> List[str]:
         'front_improved',
         'sat_drop_worsened',
         'sat_drop_worse_streak',
+        'reward_improved',
+        'reward_plateau_streak',
+        'collision_gate_passed',
+        'sat_drop_early_stop_triggered',
+        'reward_early_stop_triggered',
         'early_stop_triggered',
     ]
 
@@ -542,26 +564,44 @@ def _update_checkpoint_eval_state(
     summary: Dict[str, float],
     cfg,
 ) -> Dict[str, object]:
+    reward_sum = float(summary["reward_sum"])
     sat_drop = float(summary["sat_drop_ratio"])
+    collision_frac = float(summary["collision_episode_fraction"])
     gu_queue = float(summary["gu_queue_arrival_steps_mean"])
     uav_queue = float(summary["uav_queue_arrival_steps_mean"])
     rel_tol = max(float(getattr(cfg, "checkpoint_eval_front_queue_rel_improve_tol", 0.05) or 0.0), 0.0)
     worsen_delta = max(float(getattr(cfg, "checkpoint_eval_sat_drop_worsen_delta", 0.0) or 0.0), 0.0)
     patience = max(int(getattr(cfg, "checkpoint_eval_worsen_patience", 2) or 0), 1)
+    sat_drop_early_stop_enabled = bool(getattr(cfg, "checkpoint_eval_sat_drop_early_stop_enabled", True))
+    reward_early_stop_enabled = bool(getattr(cfg, "checkpoint_eval_reward_early_stop_enabled", False))
+    reward_patience = max(int(getattr(cfg, "checkpoint_eval_reward_patience", 5) or 0), 1)
+    reward_min_delta_rel = max(
+        float(getattr(cfg, "checkpoint_eval_reward_min_delta_rel", 0.0) or 0.0),
+        0.0,
+    )
+    reward_collision_threshold = max(
+        float(getattr(cfg, "checkpoint_eval_reward_collision_threshold", 1.0) or 0.0),
+        0.0,
+    )
 
     best_gu_prev = float(state.get("best_gu_queue_arrival_steps_mean", float("inf")))
     best_uav_prev = float(state.get("best_uav_queue_arrival_steps_mean", float("inf")))
     prev_sat_drop = state.get("prev_sat_drop_ratio", None)
+    best_reward_prev = float(state.get("best_reward_sum", -float("inf")))
 
     gu_improved = not np.isfinite(best_gu_prev) or gu_queue < best_gu_prev * (1.0 - rel_tol)
     uav_improved = not np.isfinite(best_uav_prev) or uav_queue < best_uav_prev * (1.0 - rel_tol)
     front_improved = bool(gu_improved or uav_improved)
     sat_drop_worsened = prev_sat_drop is not None and sat_drop > float(prev_sat_drop) + worsen_delta
+    reward_margin = reward_min_delta_rel * max(abs(best_reward_prev), 1.0) if np.isfinite(best_reward_prev) else 0.0
+    reward_improved = (not np.isfinite(best_reward_prev)) or reward_sum > (best_reward_prev + reward_margin)
 
     if gu_queue < best_gu_prev:
         state["best_gu_queue_arrival_steps_mean"] = gu_queue
     if uav_queue < best_uav_prev:
         state["best_uav_queue_arrival_steps_mean"] = uav_queue
+    if (not np.isfinite(best_reward_prev)) or reward_sum > best_reward_prev:
+        state["best_reward_sum"] = reward_sum
 
     prev_streak = int(state.get("sat_drop_worse_streak", 0))
     if sat_drop_worsened and not front_improved:
@@ -571,13 +611,32 @@ def _update_checkpoint_eval_state(
     state["sat_drop_worse_streak"] = float(sat_drop_worse_streak)
     state["prev_sat_drop_ratio"] = sat_drop
 
-    should_stop = sat_drop_worse_streak >= patience
+    reward_prev_streak = int(state.get("reward_plateau_streak", 0))
+    if reward_improved:
+        reward_plateau_streak = 0
+    else:
+        reward_plateau_streak = reward_prev_streak + 1
+    state["reward_plateau_streak"] = float(reward_plateau_streak)
+    collision_gate_passed = collision_frac <= reward_collision_threshold
+
+    sat_drop_should_stop = sat_drop_early_stop_enabled and sat_drop_worse_streak >= patience
+    reward_should_stop = (
+        reward_early_stop_enabled
+        and reward_plateau_streak >= reward_patience
+        and collision_gate_passed
+    )
+    should_stop = sat_drop_should_stop or reward_should_stop
     return {
         "gu_improved": float(gu_improved),
         "uav_improved": float(uav_improved),
         "front_improved": float(front_improved),
         "sat_drop_worsened": float(sat_drop_worsened),
         "sat_drop_worse_streak": float(sat_drop_worse_streak),
+        "reward_improved": float(reward_improved),
+        "reward_plateau_streak": float(reward_plateau_streak),
+        "collision_gate_passed": float(collision_gate_passed),
+        "sat_drop_early_stop_triggered": float(sat_drop_should_stop),
+        "reward_early_stop_triggered": float(reward_should_stop),
         "early_stop_triggered": float(should_stop),
     }
 
@@ -744,13 +803,23 @@ def train(
         "collision_rate",
         "policy_loss",
         "value_loss",
+        "ret_mean",
+        "ret_std",
+        "ret_p95",
         "explained_variance",
         "entropy",
         "approx_kl",
         "clip_frac",
+        "ratio_p50",
+        "ratio_p90",
+        "ratio_p99",
+        "log_ratio_abs_mean",
+        "reward_rms_mean",
+        "reward_rms_var",
         "danger_imitation_loss",
         "danger_imitation_coef",
         "danger_imitation_active_rate",
+        "log_std_mean",
         "actor_lr",
         "critic_lr",
         "update_time_sec",
@@ -1666,6 +1735,8 @@ def train(
         entropies = []
         approx_kls = []
         clip_fracs = []
+        ratio_samples = []
+        log_ratio_abs_samples = []
 
         optim_start = time.perf_counter()
         stop_early = False
@@ -1749,6 +1820,8 @@ def train(
                 entropies.append(entropy.mean().item())
                 approx_kls.append(float(approx_kl.item()))
                 clip_fracs.append(float(clip_frac.item()))
+                ratio_samples.append(ratio.detach().cpu().numpy().reshape(-1))
+                log_ratio_abs_samples.append(log_ratio.abs().detach().cpu().numpy().reshape(-1))
                 imitation_loss_sum += float(imitation_loss.item())
                 danger_imitation_loss_sum += float(danger_imitation_loss.item())
                 if stop_early:
@@ -1794,14 +1867,33 @@ def train(
         else:
             log_std_vec = np.zeros((1,), dtype=np.float32)
         action_std_vec = np.exp(log_std_vec)
+        if ratio_samples:
+            ratio_vec = np.concatenate(ratio_samples, axis=0)
+            ratio_p50 = float(np.percentile(ratio_vec, 50.0))
+            ratio_p90 = float(np.percentile(ratio_vec, 90.0))
+            ratio_p99 = float(np.percentile(ratio_vec, 99.0))
+        else:
+            ratio_p50 = 1.0
+            ratio_p90 = 1.0
+            ratio_p99 = 1.0
+        if log_ratio_abs_samples:
+            log_ratio_abs_vec = np.concatenate(log_ratio_abs_samples, axis=0)
+            log_ratio_abs_mean = float(np.mean(log_ratio_abs_vec))
+        else:
+            log_ratio_abs_mean = 0.0
         explained_variance = 0.0
         returns_np = np.asarray(rets, dtype=np.float32).reshape(-1)
+        ret_mean = float(np.mean(returns_np)) if returns_np.size else 0.0
+        ret_std = float(np.std(returns_np)) if returns_np.size else 0.0
+        ret_p95 = float(np.percentile(returns_np, 95.0)) if returns_np.size else 0.0
         if returns_np.size > 1:
             with torch.inference_mode():
                 value_pred_eval = critic(state_t).detach().cpu().numpy().reshape(-1)
             returns_var = float(np.var(returns_np))
             if returns_var > 1e-8:
                 explained_variance = 1.0 - float(np.var(returns_np - value_pred_eval)) / returns_var
+        reward_rms_mean = float(reward_rms.mean) if reward_rms is not None else float("nan")
+        reward_rms_var = float(reward_rms.var) if reward_rms is not None else float("nan")
         assoc_unfair_episode_frac_mean = (
             float(np.mean(assoc_unfair_episode_fracs)) if assoc_unfair_episode_fracs else 0.0
         )
@@ -1824,15 +1916,25 @@ def train(
             "uav_queue_mean": uav_queue_sum / steps_count,
             "queue_total_active": queue_total_active_sum / steps_count,
             "collision_rate": collision_rate,
-            "policy_loss": float(np.mean(policy_losses)),
-            "value_loss": float(np.mean(value_losses)),
+            "policy_loss": float(np.mean(policy_losses)) if policy_losses else 0.0,
+            "value_loss": float(np.mean(value_losses)) if value_losses else 0.0,
+            "ret_mean": ret_mean,
+            "ret_std": ret_std,
+            "ret_p95": ret_p95,
             "explained_variance": explained_variance,
-            "entropy": float(np.mean(entropies)),
+            "entropy": float(np.mean(entropies)) if entropies else 0.0,
             "approx_kl": float(np.mean(approx_kls)) if approx_kls else 0.0,
             "clip_frac": float(np.mean(clip_fracs)) if clip_fracs else 0.0,
+            "ratio_p50": ratio_p50,
+            "ratio_p90": ratio_p90,
+            "ratio_p99": ratio_p99,
+            "log_ratio_abs_mean": log_ratio_abs_mean,
+            "reward_rms_mean": reward_rms_mean,
+            "reward_rms_var": reward_rms_var,
             "danger_imitation_loss": danger_imitation_loss_sum / max(1, len(policy_losses)),
             "danger_imitation_coef": danger_imitation_coef,
             "danger_imitation_active_rate": danger_imitation_active_rate_sum / steps_count,
+            "log_std_mean": float(np.mean(log_std_vec)),
             "actor_lr": float(actor_optim.param_groups[0]["lr"]),
             "critic_lr": float(critic_optim.param_groups[0]["lr"]),
             "update_time_sec": update_time,
@@ -1964,13 +2066,21 @@ def train(
                 f"collision={checkpoint_eval_summary['collision_episode_fraction']:.4f} "
                 f"({checkpoint_eval_fixed_policy} ref {checkpoint_eval_fixed_summary['collision_episode_fraction']:.4f}), "
                 f"front_improved={int(checkpoint_eval_flags['front_improved'])}, "
-                f"worse_streak={int(checkpoint_eval_flags['sat_drop_worse_streak'])}"
+                f"worse_streak={int(checkpoint_eval_flags['sat_drop_worse_streak'])}, "
+                f"reward_plateau_streak={int(checkpoint_eval_flags['reward_plateau_streak'])}, "
+                f"collision_gate={int(checkpoint_eval_flags['collision_gate_passed'])}"
             )
             if checkpoint_eval_early_stop_enabled and checkpoint_eval_flags["early_stop_triggered"] > 0.5:
-                print(
-                    f"Checkpoint-eval early stopping at update {update + 1}: "
-                    "sat_drop_ratio kept worsening without meaningful GU/UAV improvement."
-                )
+                if checkpoint_eval_flags["reward_early_stop_triggered"] > 0.5:
+                    print(
+                        f"Checkpoint-eval early stopping at update {update + 1}: "
+                        "reward_sum plateaued and collision gate passed."
+                    )
+                else:
+                    print(
+                        f"Checkpoint-eval early stopping at update {update + 1}: "
+                        "sat_drop_ratio kept worsening without meaningful GU/UAV improvement."
+                    )
                 break
 
         if cfg.early_stop_enabled:

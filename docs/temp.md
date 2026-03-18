@@ -1,334 +1,391 @@
-当前**真正关心的目标**已经很明确了：
+我先直接给你结论：**bw 配置至少要先把 accel-only 里已经证明“更稳”的那批训练项同步过去**，否则你是在拿“改好后的 accel”去接“没改好的 bw 模板”，这样对比本身就不公平。你给的两份配置里，这种“不一致”很明显。 
 
-1. 主目标：`throughput_access`、`throughput_backhaul`
-2. 辅助状态：`GU/UAV` 队列是否在变坏
-3. 训练约束：PPO 本身有没有训崩
-4. 额外项：`danger_imitation_loss` 有没有过强干扰
+你这两份配置对照下来，我建议分成三类看。
 
-所以没必要继续背着 100 多个指标看图。你现在最需要的是：
+## 一、应该直接从 accel 配置迁到 bw 配置的项
 
-* **训练侧只保留少数“过程诊断指标”**
-* **评估侧只保留少数“结果指标”**
-* **不同指标换对横坐标**
+这些我认为是**优先级最高**的，因为它们不是“accel 专属”，而是更像通用的 PPO 稳定化设置。
 
----
+### 1) PPO 时序相关参数要补齐
 
-# 一、先说最关键的：横坐标怎么改
+在 accel 配置里有：
 
-你现在是并行 `vec env`，而且某个子环境一旦碰撞会立刻 reset。
-这会带来一个核心问题：
+* `gamma: 0.9975`
+* `gae_lambda: 0.95`
+* `kl_stop: true`
+* `target_kl: 0.02`
 
-**一个 update 收集到的是“固定步数的 rollout 样本块”，不是“固定数量的完整 episode”。**
+而你这份 bw 配置里这些项没有出现。 
 
-所以：
+这很可疑，因为如果代码默认值不是你现在 accel 这套，那 bw 实际训练口径就和 accel 不一致了。
+**我建议 bw 先显式加上这四个：**
 
-* `updates` 只表示**参数更新次数**
-* 不表示真实交互量
-* 更不表示经历了多少完整 episode
+```yaml
+gamma: 0.9975
+gae_lambda: 0.95
+kl_stop: true
+target_kl: 0.02
+```
 
-这意味着：
-
-## 1）哪些指标不适合用 `updates`
-
-凡是和**环境交互表现**有关的量，都更应该用：
-
-* `total_env_steps` 作为横坐标
-
-比如：
-
-* `throughput_access_norm`
-* `throughput_backhaul_norm`
-* `queue_total_active`
-* `gu_queue_mean`
-* `uav_queue_mean`
-* `drop_ratio_step`
-* `collision_rate`（这个不是，我想看的是一个episode的碰撞概率，因为碰撞了这个episode就终止了）
-
-
-因为这些东西本质上是在描述：
-**策略在环境里跑出来的行为质量，应该随“采样量/交互量”看，而不是随“更新次数”看。**
+尤其是 `kl_stop + target_kl=0.02`，你前面已经说 accel 改完后训练才比较好，这一项很可能就是关键稳定器之一。
 
 ---
 
-## 2）哪些指标继续用 `updates`
+### 2) checkpoint eval / early stop 逻辑要同步
 
-凡是和**优化器/PPO训练过程**直接相关的量，继续用 `updates` 最合适：
+accel 配置里有比较完整的 checkpoint-eval 和 reward plateau early-stop 逻辑，例如：
 
-* `policy_loss`
-* `value_loss`
-* `entropy`
-* `approx_kl`
-* `clip_frac`
-* `explained_variance`
-* `adv_*`
-* `danger_imitation_loss`
-* `actor_lr`
-* `critic_lr`
+* `checkpoint_eval_interval_updates: 50`
+* `checkpoint_eval_start_update: 200`
+* `checkpoint_eval_fixed_policy: zero`
+* `checkpoint_eval_early_stop_enabled: true`
+* `checkpoint_eval_reward_early_stop_enabled: true`
+* `checkpoint_eval_reward_patience: 5`
+* `checkpoint_eval_reward_min_delta_rel: 0.005`
+* `checkpoint_eval_reward_collision_threshold: 0.01`
 
-因为这些量本来就是“每次 update 计算一次”的优化统计。
+而 bw 配置里是旧式的：
 
+* `checkpoint_eval_interval_updates: 10`
+* `checkpoint_eval_start_update: 10`
+* `checkpoint_eval_fixed_policy: queue_aware`
+* `checkpoint_eval_early_stop_enabled: false`
 
+这说明 bw 这份配置还没吸收你后面对 accel 训练流程的修正。 
 
----
+这里我建议分开说：
 
-# 二、训练侧到底保留哪些指标
+* **checkpoint eval 的频率/开始点**：bw 不一定要照搬 50/200，但至少要有一套你认可的逻辑，不要还是“每 10 update 就 eval 一次”的旧口径。
+* **early stop**：如果 accel 上有用，bw 也建议接上。
+* **baseline 口径**：bw 用 `queue_aware` 当固定 baseline 是合理的，这一点不一定改成 `zero`。因为 bw 的固定对照本来就更适合是一个 hand-crafted bandwidth baseline。
 
-我建议训练侧只保留 **12 个左右**，够用了。
+所以这里不是“全盘照搬”，而是：
 
----
-
-## A. 训练主面板：业务结果
-
-这是你最该看的面板。
-
-### 必留
-
-* `throughput_access_norm`
-* `throughput_backhaul_norm`
-* `gu_queue_mean`
-* `uav_queue_mean`
-
-### 选留一个总量指标
-
-二选一：
-
-* `queue_total_active`
-* `q_norm_active`
-
-我更建议留 **`queue_total_active` + `gu_queue_mean` + `uav_queue_mean`**，因为更直观。
-
-
+* **训练稳定逻辑照搬**
+* **baseline 口径按 bw 任务保留 `queue_aware`**
 
 ---
 
-## B. 训练诊断面板：PPO 是否正常
+### 3) 初始化/生成场景的稳定化设置要同步
 
-### 必留
+accel 配置里有这些，而 bw 没有：
 
-* `policy_loss`
-* `value_loss`
-* `entropy`
-* `approx_kl`
-* `clip_frac`
-* `explained_variance`
+* `assoc_unfair_gu_threshold: 15`
+* `uav_spawn_curriculum_enabled: false`
+* `uav_safe_random_init_enabled: true`
+* `uav_init_boundary_margin_steps: 3.0`
+* `uav_init_speed_frac: 0.2`
+* `uav_init_min_spacing: 20.0`
 
-这 6 个基本够判断 PPO 是否训崩。
+bw 配置里却还是：
 
-其中你最该看的是：
+* `uav_spawn_curriculum_enabled: true`
+* 没有 safe init 这一组
+* 没有 `assoc_unfair_gu_threshold`
 
-* `entropy`：策略是否过早塌缩
-* `approx_kl`：每次更新是否过猛/过弱
-* `clip_frac`：PPO clipping 是否长期过高
-* `explained_variance`：critic 有没有完全失效
+这说明 **环境分布本身也没同步**。 
 
----
+这一点我非常建议你重视，因为你现在是想做：
 
-## C. 训练附加面板：模仿干预
+> 在现有 accel-only 基础上训练 bw
 
-既然你还有一个 `danger_imitation_loss`，这个要单独看，不要混进普通 PPO loss。
+那就意味着 **bw 阶段的环境分布最好尽量和“accel 已经学好的那套运行分布”一致**，否则 accel 学到的位置控制规律，和 bw 训练时看到的轨迹/碰撞/初始化分布不一致，会把后续 credit assignment 搅乱。
 
-### 必留
+所以我建议 bw 先改成更接近 accel：
 
-* `danger_imitation_loss`
-* `danger_imitation_coef`
+```yaml
+assoc_unfair_gu_threshold: 15
 
-### 可选
-
-* `danger_imitation_active_rate`
-
-这个有用，因为它能告诉你：
-不是 loss 本身大不大，而是“这个约束到底多频繁地在起作用”。
-
-我记得danger_imitation的开启关闭和别的量有关，这个量也要一并看
+uav_spawn_curriculum_enabled: false
+uav_safe_random_init_enabled: true
+uav_init_boundary_margin_steps: 3.0
+uav_init_speed_frac: 0.2
+uav_init_min_spacing: 20.0
+```
 
 ---
 
-## D. 训练安全/失败辅助
+### 4) 学习率拆分保留
 
-如果你这阶段仍然会碰撞早停，我建议只留一个：
+这项你 bw 已经和 accel 一致了：
 
-* `collision_rate`（我想看的是某个episode碰撞的概率）
+* `actor_lr: 1e-4`
+* `critic_lr: 2e-4`
 
-别再留一堆 filter / fallback / pairwise 统计了。那些更适合调安全模块时专门看，不适合日常主训练面板。
+这个保留就行。 
 
 ---
 
-## E. 训练里建议降级或删除的
+### 5) reward norm 关闭保留
 
-### 1）直接从 TB 主面板移除
+这项也已经一致：
 
-这些你当前主线几乎没必要看：
+* `reward_norm_enabled: false`
 
+继续保持。 
 
-* `reward_raw`
-* 几乎所有 `r_*`
-* 几乎所有 `r_term_*`，除了两个 throughput 项，这个要留着，但应该和episode_reward同样处理，考虑完整episode
-* `arrival_sum`
-* `outflow_sum`
-* `service_norm`
-* 各种 `drop_*` 总和量
-* 各种 `sat_*` 几何量
-* 各种运行时分解
-* 各种 `adv_*`
-* `log_std_mean`, `action_std_mean`
+---
+
+## 二、不要机械照搬 accel，而是要按“bw 任务”单独判断的项
+
+### 1) danger imitation 不建议直接照搬
+
+accel 配置里：
+
+* `danger_imitation_enabled: true`
+* `danger_imitation_coef: 0.1`
+
+bw 配置里：
+
+* `danger_imitation_enabled: false`
+
+这里我**不建议你直接照搬成 true**。 
 
 原因很简单：
-这些不是没信息，而是**相对于你的当前目标，边际信息太低**。
+danger imitation 本质上更像是**碰撞/近距离风险下的 accel 安全先验**。如果你现在训练的是 bw，而 accel 是固定执行的，那么这个 imitation loss 很可能：
+
+* 要么根本不作用在 bw head 上
+* 要么通过共享 backbone 间接扰动表示学习
+* 要么只会制造额外梯度噪声
+
+所以这项必须看代码后才能定，不能光看 yaml 决定。
 
 ---
 
-### 2）保留在 CSV，但不进 TB
+### 2) `exec_accel_source` 不能再用 `zero`
 
-这些可以留作排障，不必日常看图：
+你现在这份 bw 配置里写的是：
 
-* `env_steps_per_sec`
-* `update_steps_per_sec`
-* `rollout_time_sec`
-* `optim_time_sec`
-* `update_time_sec`
-* `total_env_steps`
-* `total_time_sec`
+```yaml
+train_accel: false
+train_bw: true
+exec_accel_source: zero
+exec_bw_source: policy
+```
 
-以及你所有运行时细分：
+如果你真的是“在现有 accel-only 基础上训练 bw”，那这里大概率不应该是 `zero`，而应该让 accel 来自**已训练好的 accel policy**。
 
-* `env_obs_time_sec`
-* `policy_forward_time_sec`
-* `env_step_time_sec`
-* ...
+这是我目前看到的**最关键问题之一**。
 
-这些只有在你做性能优化时才重要。
+因为 `exec_accel_source: zero` 的意思很可能是：
 
----
+* UAV 不再执行你训练好的机动策略
+* 而是用“零加速度 / no-op accel”跑环境
 
-# 三、评估侧保留哪些指标
+那这样训练出来的 bw，学到的是“静态/近静态 accel 行为下的最优带宽分配”，**不是你想要的“建立在已学好 accel 基础上的 bw”**。
 
-评估侧比训练侧更重要，因为评估才真正回答：
+这里我怀疑你真正需要的是类似下面这种口径：
 
-> 当前 checkpoint 的策略到底有没有比之前更好。
+```yaml
+train_accel: false
+train_bw: true
+train_sat: false
 
-我建议评估侧保留 **8～12 个核心量** 就够了。
+exec_accel_source: teacher   # 或 policy / frozen_policy，具体看代码定义
+exec_teacher_actor_path: <stage1_accel_actor.pt>
+exec_teacher_deterministic: true
 
----
+exec_bw_source: policy
+exec_sat_source: zero
+```
 
-## A. 评估主指标：结果成败
-
-### 必留
-
-* `throughput_access_norm`
-* `throughput_backhaul_norm`
-* `gu_queue_mean`
-* `uav_queue_mean`
-
-这是和训练主面板一一对应的，最重要。
+但具体 `exec_accel_source` 可选值是什么，必须看代码。
 
 ---
 
-## B. 评估稳态质量
+### 3) `train_shared_backbone: true` 要不要保留，要看实现
 
-### 队列尾部指标
+你现在 bw 配置是：
 
-GU和UAV的分开看
+```yaml
+train_shared_backbone: true
+```
 
----
+如果 actor 的 accel head 和 bw head 共享一个 backbone，那么当你只训练 bw 时，有两种可能：
 
-## C. 评估安全性
+* **可能是好的**：bw 能利用 accel 阶段学到的空间结构特征
+* **也可能有坑**：bw 更新把原来 accel 已经学好的表示冲坏，之后再做 joint 或 sat stage 会出问题
 
-### 必留
+所以这一项不能只靠经验判断，必须看代码里：
 
-* `collision`
-* `terminated_early`
+* “只训练 bw”时，shared backbone 是否仍然参与反传
+* accel head 是否被冻结
+* shared encoder 是否被冻结
+* optimizer 参数组是怎么构造的
 
-如果你一个 checkpoint 经常提前撞死，那 throughput 再高也没意义。
-
-
----
-
-## D. 评估工况方向
-
-### 必留一个 drift 指标
-
-三选一：
-
-* `gu_queue_drift_ratio`
-* `uav_queue_drift_ratio`
-* `total_net_drift_per_step`
-
-如果你现在主要关心 GU/UAV，我建议留：
-
-* `gu_queue_drift_ratio`
-* `uav_queue_drift_ratio`
-
-它们比单纯看 mean queue 更能说明系统是在“积压增加”还是“逐渐消化”。
+这一点我会把它列进“必须看代码”的第一优先级。
 
 ---
 
-## E. 可选补充
+## 三、我认为你现在最可能需要的 bw 配置方向
 
-* `sat_processed_norm`
+如果你的目标真的是：
 
-只有你怀疑瓶颈已经从接入段转到卫星处理段时才看。
+> 先训好 accel，再在这个基础上训 bw
 
----
+那我建议你的 bw 配置方向不是“from scratch bw-only”，而是“**frozen accel execution + train bw**”。
 
+也就是概念上改成：
 
-# 四、给你一个实际可执行的面板重组方案
+```yaml
+enable_bw_action: true
+train_accel: false
+train_bw: true
+train_sat: false
 
-你现在 TB 页太多了，我建议收成下面 5 页。
+# accel 用已训练好的 stage1 actor 执行
+exec_accel_source: <teacher/frozen_policy/loaded_actor>
+exec_teacher_actor_path: runs/.../actor.pt
+exec_teacher_deterministic: true
 
-## Training/Main
+# bw 仍由当前策略学习
+exec_bw_source: policy
+exec_sat_source: zero
 
-* `throughput_access_norm`
-* `throughput_backhaul_norm`
-* `gu_queue_mean`
-* `uav_queue_mean`
-* `queue_total_active`
-* `collision_rate`
+# 同步 accel 中验证过的训练稳定项
+gamma: 0.9975
+gae_lambda: 0.95
+reward_norm_enabled: false
+actor_lr: 1e-4
+critic_lr: 2e-4
+kl_stop: true
+target_kl: 0.02
 
+# 同步环境分布
+uav_spawn_curriculum_enabled: false
+uav_safe_random_init_enabled: true
+uav_init_boundary_margin_steps: 3.0
+uav_init_speed_frac: 0.2
+uav_init_min_spacing: 20.0
+assoc_unfair_gu_threshold: 15
+```
 
-
----
-
-## Training/PPO
-
-* `policy_loss`
-* `value_loss`
-* `entropy`
-* `approx_kl`
-* `clip_frac`
-* `explained_variance`
-
-
-
----
-
-## Training/Imitation
-
-* `danger_imitation_loss`
-* `danger_imitation_coef`
-* `danger_imitation_active_rate`
-
-
+也就是说，**最重要的不是把所有字段抄过去，而是把“执行的 accel 来源”从 zero 改成已训练 accel**。
 
 ---
 
-## Eval/Main
+## 四、我还需要看的代码
 
-* `throughput_access_norm`
-* `throughput_backhaul_norm`
-* `gu_queue_mean`
-* `uav_queue_mean`
-* 队列尾部指标
-* `terminated_early`
-* `collision`
+为了把这个事判断准，我下一步最需要你给我这几部分代码。按优先级排：
 
+### 1) action 执行源的分发逻辑
+
+我最想先看这部分，确认这些配置到底怎么生效：
+
+* `exec_accel_source`
+* `exec_bw_source`
+* `exec_sat_source`
+* `exec_teacher_actor_path`
+* `exec_teacher_deterministic`
+* `train_accel / train_bw / train_sat`
+
+对应通常会在这些位置之一：
+
+* `train.py`
+* `mappo.py`
+* `policy.py`
+* `action_assembler.py`
+* 和环境 `step()` 前组装 action 的那段代码
+
+我想确认的是：
+
+* `zero` 到底是不是“全零动作”
+* 是否支持“accel 用 teacher、bw 用 policy”
+* teacher actor 是整网输出还是只输出 accel head
+* 单独训 bw 时，采样的 logprob 是不是只算 bw 那部分
 
 ---
 
-## Eval/Drift
+### 2) policy / actor 的多头结构
 
-* `gu_queue_drift_ratio`
-* `uav_queue_drift_ratio`
-* `sat_processed_norm`
+我需要看：
 
+* shared backbone
+* accel head
+* bw head
+* sat head
+* forward 时哪些 head 被调用
+* logprob / entropy 怎么分解
+* `train_shared_backbone` 怎么控制
 
+这里主要判断：
 
+* bw 训练会不会把 accel 表征带坏
+* 只训 bw 时 entropy 和 PPO ratio 是不是只对 bw 分量算
+* 是否存在“未训练 head 仍参与 loss/entropy”的问题
+
+---
+
+### 3) PPO loss 组装代码
+
+我需要看 `mappo.py` 里：
+
+* actor loss
+* entropy loss
+* imitation / danger imitation loss
+* mask 哪些 action 维度参与训练
+* checkpoint eval / early stop 逻辑
+
+重点确认：
+
+* 只训 bw 时，danger imitation 是否还会影响 shared encoder
+* KL stop 是按总 action 还是只按可训练 action 统计
+* entropy 是全动作熵还是只算 bw 熵
+
+---
+
+### 4) 环境里 bw 动作的实际语义
+
+你前面说过 bw 头不是直接 softmax，而是环境里再转成分配权重。这个地方我也需要再看一次完整链路：
+
+* policy 输出什么
+* action_assembler 怎么打包
+* env 里怎么从 `bw_logits` 变成带宽比例
+* 是否有裁剪、归一化、mask、无效候选处理
+
+因为 bw 训练是否稳定，常常就死在这里，比如：
+
+* 某些维度经常无效
+* softmax 温度过硬
+* 候选数变化导致梯度尺度乱跳
+* 分配后大部分带宽落到无意义链路上
+
+---
+
+## 五、你现在可以直接先改的地方
+
+不等代码，我建议你先把 bw yaml 至少改这几项：
+
+```yaml
+# 先补齐 PPO 稳定项
+gamma: 0.9975
+gae_lambda: 0.95
+kl_stop: true
+target_kl: 0.02
+
+# 先对齐环境分布
+assoc_unfair_gu_threshold: 15
+uav_spawn_curriculum_enabled: false
+uav_safe_random_init_enabled: true
+uav_init_boundary_margin_steps: 3.0
+uav_init_speed_frac: 0.2
+uav_init_min_spacing: 20.0
+```
+
+然后最关键的是，把这项别再留成：
+
+```yaml
+exec_accel_source: zero
+```
+
+这项我目前判断**大概率必须改**，否则它不是“基于已学好 accel 训 bw”。
+
+---
+
+把下面几段代码贴给我就够了，我可以直接帮你给出“bw 阶段最终该怎么配”的精确版本：
+
+1. `policy.py` 里 actor 多头 forward、logprob、entropy 那几段
+2. `mappo.py` 里 action sampling / PPO loss / danger imitation 那几段
+3. `action_assembler.py` 全文件
+4. 环境里把 `bw_logits` 变成实际带宽分配的那段
+5. 配置解析里 `exec_accel_source / train_bw / train_shared_backbone` 这些字段是怎么用的那段
