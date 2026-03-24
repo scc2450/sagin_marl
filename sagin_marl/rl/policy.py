@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import math
 from dataclasses import dataclass
 from typing import Dict, Tuple
 
@@ -8,7 +7,8 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torch.distributions import Normal
+
+from .distributions import HybridActionDist
 
 OWN_OBS_DIM = 7
 USER_OBS_DIM = 5
@@ -22,9 +22,18 @@ class PolicyOutput:
     action: torch.Tensor
     logprob: torch.Tensor
     accel: torch.Tensor
-    bw_logits: torch.Tensor | None = None
-    sat_logits: torch.Tensor | None = None
+    bw_action: torch.Tensor | None = None
+    sat_select_mask: torch.Tensor | None = None
+    sat_indices: torch.Tensor | None = None
     dist_out: Dict[str, torch.Tensor] | None = None
+
+    @property
+    def bw_logits(self) -> torch.Tensor | None:
+        return self.bw_action
+
+    @property
+    def sat_logits(self) -> torch.Tensor | None:
+        return self.sat_select_mask
 
 
 def flat_obs_dim(cfg) -> int:
@@ -32,7 +41,9 @@ def flat_obs_dim(cfg) -> int:
         OWN_OBS_DIM
         + cfg.users_obs_max * USER_OBS_DIM
         + cfg.users_obs_max
+        + cfg.users_obs_max
         + cfg.sats_obs_max * SAT_OBS_DIM
+        + cfg.sats_obs_max
         + cfg.sats_obs_max
         + cfg.nbrs_obs_max * NBR_OBS_DIM
         + cfg.nbrs_obs_max
@@ -43,6 +54,8 @@ def flat_obs_dim(cfg) -> int:
 
 
 def flatten_obs(obs: Dict[str, np.ndarray], cfg) -> np.ndarray:
+    bw_valid_mask = obs.get("bw_valid_mask", obs["users_mask"])
+    sat_valid_mask = obs.get("sat_valid_mask", obs["sats_mask"])
     parts = [
         obs["own"].ravel(),
     ]
@@ -52,8 +65,10 @@ def flatten_obs(obs: Dict[str, np.ndarray], cfg) -> np.ndarray:
         [
             obs["users"].ravel(),
             obs["users_mask"].ravel(),
+            np.asarray(bw_valid_mask, dtype=np.float32).ravel(),
             obs["sats"].ravel(),
             obs["sats_mask"].ravel(),
+            np.asarray(sat_valid_mask, dtype=np.float32).ravel(),
             obs["nbrs"].ravel(),
             obs["nbrs_mask"].ravel(),
         ]
@@ -62,30 +77,8 @@ def flatten_obs(obs: Dict[str, np.ndarray], cfg) -> np.ndarray:
 
 
 def batch_flatten_obs(obs_batch: list[Dict[str, np.ndarray]], cfg) -> np.ndarray:
-    # obs_batch is a list/dict of per-agent observations
     obs_list = [flatten_obs(obs, cfg) for obs in obs_batch]
     return np.stack(obs_list, axis=0)
-
-
-def atanh(x: torch.Tensor) -> torch.Tensor:
-    eps = 1e-4
-    x = torch.clamp(x, -1 + eps, 1 - eps)
-    return 0.5 * (torch.log1p(x) - torch.log1p(-x))
-
-
-def _squash_action(z: torch.Tensor, scale: float = 1.0) -> torch.Tensor:
-    return torch.tanh(z) * scale
-
-
-def _logprob_from_squashed(dist: Normal, action: torch.Tensor, scale: float = 1.0) -> torch.Tensor:
-    eps = 1e-4
-    t = action / scale
-    t = torch.clamp(t, -1 + eps, 1 - eps)
-    z = atanh(t)
-    logprob = dist.log_prob(z) - torch.log(1 - t.pow(2) + eps)
-    if scale != 1.0:
-        logprob = logprob - math.log(scale)
-    return logprob.sum(-1)
 
 
 def _make_encoder(in_dim: int, hidden_dim: int, use_input_norm: bool) -> nn.Sequential:
@@ -103,18 +96,20 @@ def _make_encoder(in_dim: int, hidden_dim: int, use_input_norm: bool) -> nn.Sequ
     return nn.Sequential(*layers)
 
 
+def _make_scorer(in_dim: int, hidden_dim: int = 128) -> nn.Sequential:
+    return nn.Sequential(
+        nn.Linear(in_dim, hidden_dim),
+        nn.ReLU(),
+        nn.Linear(hidden_dim, 1),
+    )
+
+
 class ActorNet(nn.Module):
     def __init__(self, obs_dim: int, cfg):
         super().__init__()
         self.cfg = cfg
-        self.enable_bw = cfg.enable_bw_action
-        self.enable_sat = not cfg.fixed_satellite_strategy
-        bw_exec_source = str(getattr(cfg, "exec_bw_source", "policy") or "policy").strip().lower()
-        if bw_exec_source == "heuristic_residual":
-            self.bw_scale = float(getattr(cfg, "bw_residual_clip", 1.0) or 1.0)
-        else:
-            self.bw_scale = float(cfg.bw_logit_scale)
-        self.sat_scale = float(cfg.sat_logit_scale)
+        self.enable_bw = bool(cfg.enable_bw_action)
+        self.enable_sat = not bool(cfg.fixed_satellite_strategy)
         self.danger_nbr_enabled = bool(getattr(cfg, "danger_nbr_enabled", False))
         self.obs_dim = int(obs_dim)
         self.expected_obs_dim = flat_obs_dim(cfg)
@@ -126,6 +121,7 @@ class ActorNet(nn.Module):
         self._users_obs_size = self.users_obs_max * USER_OBS_DIM
         self._sats_obs_size = self.sats_obs_max * SAT_OBS_DIM
         self._nbrs_obs_size = self.nbrs_obs_max * NBR_OBS_DIM
+        self.sat_num_select = max(int(getattr(cfg, "sat_num_select", cfg.N_RF) or cfg.N_RF), 0)
 
         idx = 0
         self._own_slice = slice(idx, idx + OWN_OBS_DIM)
@@ -138,9 +134,13 @@ class ActorNet(nn.Module):
         idx += self._users_obs_size
         self._users_mask_slice = slice(idx, idx + self.users_obs_max)
         idx += self.users_obs_max
+        self._bw_valid_mask_slice = slice(idx, idx + self.users_obs_max)
+        idx += self.users_obs_max
         self._sats_slice = slice(idx, idx + self._sats_obs_size)
         idx += self._sats_obs_size
         self._sats_mask_slice = slice(idx, idx + self.sats_obs_max)
+        idx += self.sats_obs_max
+        self._sat_valid_mask_slice = slice(idx, idx + self.sats_obs_max)
         idx += self.sats_obs_max
         self._nbrs_slice = slice(idx, idx + self._nbrs_obs_size)
         idx += self._nbrs_obs_size
@@ -153,8 +153,9 @@ class ActorNet(nn.Module):
         if self.encoder_type not in {"flat_mlp", "set_pool"}:
             raise ValueError(f"Unsupported actor_encoder_type='{self.encoder_type}'")
 
+        use_input_norm = bool(getattr(cfg, "input_norm_enabled", False))
         if self.encoder_type == "flat_mlp":
-            self.obs_norm = nn.LayerNorm(obs_dim) if getattr(cfg, "input_norm_enabled", False) else nn.Identity()
+            self.obs_norm = nn.LayerNorm(obs_dim) if use_input_norm else nn.Identity()
             self.fc1 = nn.Linear(obs_dim, cfg.actor_hidden)
             self.fc2 = nn.Linear(cfg.actor_hidden, cfg.actor_hidden)
             self.own_encoder = None
@@ -168,7 +169,6 @@ class ActorNet(nn.Module):
             embed_dim = int(getattr(cfg, "actor_set_embed_dim", 64))
             if embed_dim <= 0:
                 raise ValueError("actor_set_embed_dim must be positive")
-            use_input_norm = bool(getattr(cfg, "input_norm_enabled", False))
             self.obs_norm = nn.Identity()
             self.fc1 = None
             self.fc2 = None
@@ -179,37 +179,42 @@ class ActorNet(nn.Module):
             self.users_encoder = _make_encoder(USER_OBS_DIM, embed_dim, use_input_norm)
             self.sats_encoder = _make_encoder(SAT_OBS_DIM, embed_dim, use_input_norm)
             self.nbrs_encoder = _make_encoder(NBR_OBS_DIM, embed_dim, use_input_norm)
-            fusion_in_dim = 2 * embed_dim + 3 * (2 * embed_dim) if self.danger_nbr_enabled else embed_dim + 3 * (2 * embed_dim)
+            fusion_in_dim = (
+                2 * embed_dim + 3 * (2 * embed_dim)
+                if self.danger_nbr_enabled
+                else embed_dim + 3 * (2 * embed_dim)
+            )
             self.fusion_fc1 = nn.Linear(fusion_in_dim, cfg.actor_hidden)
             self.fusion_fc2 = nn.Linear(cfg.actor_hidden, cfg.actor_hidden)
 
+        elem_embed_dim = int(getattr(cfg, "actor_set_embed_dim", 64))
+        elem_embed_dim = max(elem_embed_dim, 16)
         self.mu_head = nn.Linear(cfg.actor_hidden, 2)
         self.log_std = nn.Parameter(torch.zeros(2))
 
         if self.enable_bw:
-            self.bw_head = nn.Linear(cfg.actor_hidden, cfg.users_obs_max)
+            self.bw_user_encoder = _make_encoder(USER_OBS_DIM, elem_embed_dim, use_input_norm)
+            self.bw_scorer = _make_scorer(cfg.actor_hidden + elem_embed_dim + USER_OBS_DIM)
             if bool(getattr(cfg, "bw_head_zero_init", False)):
-                nn.init.zeros_(self.bw_head.weight)
-                nn.init.zeros_(self.bw_head.bias)
-            bw_log_std_init = float(getattr(cfg, "bw_log_std_init", 0.0) or 0.0)
-            self.bw_log_std = nn.Parameter(torch.full((cfg.users_obs_max,), bw_log_std_init, dtype=torch.float32))
+                final = self.bw_scorer[-1]
+                if isinstance(final, nn.Linear):
+                    nn.init.zeros_(final.weight)
+                    nn.init.zeros_(final.bias)
         else:
-            self.bw_head = None
-            self.bw_log_std = None
+            self.bw_user_encoder = None
+            self.bw_scorer = None
 
         if self.enable_sat:
-            self.sat_head = nn.Linear(cfg.actor_hidden, cfg.sats_obs_max)
-            self.sat_log_std = nn.Parameter(torch.zeros(cfg.sats_obs_max))
+            self.sat_action_encoder = _make_encoder(SAT_OBS_DIM, elem_embed_dim, use_input_norm)
+            self.sat_scorer = _make_scorer(cfg.actor_hidden + elem_embed_dim + SAT_OBS_DIM)
         else:
-            self.sat_head = None
-            self.sat_log_std = None
+            self.sat_action_encoder = None
+            self.sat_scorer = None
 
     def backbone_modules(self) -> Tuple[nn.Module, ...]:
         if self.encoder_type == "flat_mlp":
             return (self.obs_norm, self.fc1, self.fc2)
-        modules: list[nn.Module] = [
-            self.own_encoder,
-        ]
+        modules: list[nn.Module] = [self.own_encoder]
         if self.danger_nbr_encoder is not None:
             modules.append(self.danger_nbr_encoder)
         modules.extend(
@@ -234,6 +239,8 @@ class ActorNet(nn.Module):
         torch.Tensor,
         torch.Tensor,
         torch.Tensor,
+        torch.Tensor,
+        torch.Tensor,
     ]:
         if obs.ndim != 2:
             raise ValueError(f"Expected obs tensor with shape [B, D], got {tuple(obs.shape)}")
@@ -245,11 +252,13 @@ class ActorNet(nn.Module):
         danger_nbr = obs[:, self._danger_nbr_slice] if self._danger_nbr_slice is not None else None
         users = obs[:, self._users_slice].reshape(batch_size, self.users_obs_max, USER_OBS_DIM)
         users_mask = obs[:, self._users_mask_slice]
+        bw_valid_mask = obs[:, self._bw_valid_mask_slice]
         sats = obs[:, self._sats_slice].reshape(batch_size, self.sats_obs_max, SAT_OBS_DIM)
         sats_mask = obs[:, self._sats_mask_slice]
+        sat_valid_mask = obs[:, self._sat_valid_mask_slice]
         nbrs = obs[:, self._nbrs_slice].reshape(batch_size, self.nbrs_obs_max, NBR_OBS_DIM)
         nbrs_mask = obs[:, self._nbrs_mask_slice]
-        return own, danger_nbr, users, users_mask, sats, sats_mask, nbrs, nbrs_mask
+        return own, danger_nbr, users, users_mask, bw_valid_mask, sats, sats_mask, sat_valid_mask, nbrs, nbrs_mask
 
     def _masked_pool(self, encoded: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
         mask_bool = (mask > 0.0).unsqueeze(-1)
@@ -268,7 +277,7 @@ class ActorNet(nn.Module):
             x = F.relu(self.fc1(x))
             return F.relu(self.fc2(x))
 
-        own, danger_nbr, users, users_mask, sats, sats_mask, nbrs, nbrs_mask = self._split_flat_obs(obs)
+        own, danger_nbr, users, users_mask, _, sats, sats_mask, _, nbrs, nbrs_mask = self._split_flat_obs(obs)
         own_feat = self.own_encoder(own)
         fused_parts = [own_feat]
         if self.danger_nbr_encoder is not None:
@@ -284,28 +293,42 @@ class ActorNet(nn.Module):
 
     def forward(self, obs: torch.Tensor) -> Dict[str, torch.Tensor]:
         x = self._encode_obs(obs)
-        mu = self.mu_head(x)
-        out = {"mu": mu}
-        if self.bw_head is not None:
-            out["bw_mu"] = self.bw_head(x)
-        if self.sat_head is not None:
-            out["sat_mu"] = self.sat_head(x)
+        own, danger_nbr, users, users_mask, bw_valid_mask, sats, sats_mask, sat_valid_mask, nbrs, nbrs_mask = self._split_flat_obs(obs)
+        del own, danger_nbr, users_mask, sats_mask, nbrs, nbrs_mask
+        out: Dict[str, torch.Tensor] = {
+            "ctx": x,
+            "mu": self.mu_head(x),
+            "users": users,
+            "bw_valid_mask": bw_valid_mask,
+            "sats": sats,
+            "sat_valid_mask": sat_valid_mask,
+        }
+        if self.enable_bw and self.bw_user_encoder is not None and self.bw_scorer is not None:
+            user_emb = self.bw_user_encoder(users)
+            ctx_u = x.unsqueeze(1).expand(-1, self.users_obs_max, -1)
+            bw_in = torch.cat([ctx_u, user_emb, users], dim=-1)
+            bw_score = self.bw_scorer(bw_in).squeeze(-1)
+            alpha_floor = max(float(getattr(self.cfg, "bw_alpha_floor", 0.2) or 0.0), 1e-4)
+            out["bw_alpha"] = F.softplus(bw_score) + alpha_floor
+        if self.enable_sat and self.sat_action_encoder is not None and self.sat_scorer is not None:
+            sat_emb = self.sat_action_encoder(sats)
+            ctx_s = x.unsqueeze(1).expand(-1, self.sats_obs_max, -1)
+            sat_in = torch.cat([ctx_s, sat_emb, sats], dim=-1)
+            out["sat_logits"] = self.sat_scorer(sat_in).squeeze(-1)
         return out
 
-    def _concat_actions(
-        self,
-        accel: torch.Tensor,
-        bw: torch.Tensor | None,
-        sat: torch.Tensor | None,
-    ) -> torch.Tensor:
-        parts = [accel]
-        if self.enable_bw and bw is not None:
-            parts.append(bw)
-        if self.enable_sat and sat is not None:
-            parts.append(sat)
-        return torch.cat(parts, dim=-1)
+    def _build_hybrid_dist(self, out: Dict[str, torch.Tensor]) -> HybridActionDist:
+        return HybridActionDist(
+            accel_mu=out["mu"],
+            accel_log_std=self.log_std,
+            bw_alpha=out.get("bw_alpha"),
+            bw_mask=out.get("bw_valid_mask"),
+            sat_logits=out.get("sat_logits"),
+            sat_mask=out.get("sat_valid_mask"),
+            sat_num_select=self.sat_num_select,
+        )
 
-    def _split_actions(
+    def _split_env_action(
         self, action: torch.Tensor
     ) -> Tuple[torch.Tensor, torch.Tensor | None, torch.Tensor | None]:
         idx = 0
@@ -322,45 +345,16 @@ class ActorNet(nn.Module):
 
     def act(self, obs: torch.Tensor, deterministic: bool = False) -> PolicyOutput:
         out = self.forward(obs)
-        mu = out["mu"]
-        log_std = torch.clamp(self.log_std, -5.0, 2.0)
-        std = torch.exp(log_std)
-        dist = Normal(mu, std)
-        if deterministic:
-            z = mu
-        else:
-            z = dist.rsample()
-        accel = _squash_action(z, scale=1.0)
-        logprob = _logprob_from_squashed(dist, accel, scale=1.0)
-
-        bw_logits = None
-        sat_logits = None
-
-        if self.enable_bw:
-            bw_mu = out["bw_mu"]
-            bw_log_std = torch.clamp(self.bw_log_std, -5.0, 2.0)
-            bw_std = torch.exp(bw_log_std)
-            bw_dist = Normal(bw_mu, bw_std)
-            z_bw = bw_mu if deterministic else bw_dist.rsample()
-            bw_logits = _squash_action(z_bw, scale=self.bw_scale)
-            logprob = logprob + _logprob_from_squashed(bw_dist, bw_logits, scale=self.bw_scale)
-
-        if self.enable_sat:
-            sat_mu = out["sat_mu"]
-            sat_log_std = torch.clamp(self.sat_log_std, -5.0, 2.0)
-            sat_std = torch.exp(sat_log_std)
-            sat_dist = Normal(sat_mu, sat_std)
-            z_sat = sat_mu if deterministic else sat_dist.rsample()
-            sat_logits = _squash_action(z_sat, scale=self.sat_scale)
-            logprob = logprob + _logprob_from_squashed(sat_dist, sat_logits, scale=self.sat_scale)
-
-        action = self._concat_actions(accel, bw_logits, sat_logits)
+        hybrid_dist = self._build_hybrid_dist(out)
+        sample = hybrid_dist.sample(deterministic=deterministic)
+        logprob = sum(sample.logprob_parts.values())
         return PolicyOutput(
-            action=action,
+            action=sample.env_action,
             logprob=logprob,
-            accel=accel,
-            bw_logits=bw_logits,
-            sat_logits=sat_logits,
+            accel=sample.accel,
+            bw_action=sample.bw_action,
+            sat_select_mask=sample.sat_select_mask,
+            sat_indices=sample.sat_indices,
             dist_out=out,
         )
 
@@ -368,53 +362,27 @@ class ActorNet(nn.Module):
         self,
         obs: torch.Tensor,
         action: torch.Tensor,
+        sat_indices: torch.Tensor | None = None,
         out: Dict[str, torch.Tensor] | None = None,
     ) -> Tuple[Dict[str, torch.Tensor], Dict[str, torch.Tensor]]:
         if not torch.isfinite(obs).all():
-            print("NaN/Inf detected in obs passed to evaluate_actions_parts")
             raise ValueError("obs contains NaN/Inf")
         if out is None:
             out = self.forward(obs)
-        accel_action, bw_action, sat_action = self._split_actions(action)
-
-        mu = out["mu"]
-        if not torch.isfinite(mu).all():
-            print("NaN/Inf detected in actor mu inside evaluate_actions_parts")
-            raise ValueError("actor mu contains NaN/Inf")
-        log_std = torch.clamp(self.log_std, -5.0, 2.0)
-        std = torch.exp(log_std)
-        if not torch.isfinite(std).all():
-            print("NaN/Inf detected in actor std inside evaluate_actions_parts")
-            raise ValueError("actor std contains NaN/Inf")
-        dist = Normal(mu, std)
-        logprob_parts: Dict[str, torch.Tensor] = {"accel": _logprob_from_squashed(dist, accel_action, scale=1.0)}
-        entropy_parts: Dict[str, torch.Tensor] = {"accel": dist.entropy().sum(-1)}
-
-        if self.enable_bw and bw_action is not None:
-            bw_mu = out["bw_mu"]
-            bw_log_std = torch.clamp(self.bw_log_std, -5.0, 2.0)
-            bw_std = torch.exp(bw_log_std)
-            bw_dist = Normal(bw_mu, bw_std)
-            logprob_parts["bw"] = _logprob_from_squashed(bw_dist, bw_action, scale=self.bw_scale)
-            entropy_parts["bw"] = bw_dist.entropy().sum(-1)
-
-        if self.enable_sat and sat_action is not None:
-            sat_mu = out["sat_mu"]
-            sat_log_std = torch.clamp(self.sat_log_std, -5.0, 2.0)
-            sat_std = torch.exp(sat_log_std)
-            sat_dist = Normal(sat_mu, sat_std)
-            logprob_parts["sat"] = _logprob_from_squashed(sat_dist, sat_action, scale=self.sat_scale)
-            entropy_parts["sat"] = sat_dist.entropy().sum(-1)
-
+        accel_action, bw_action, _ = self._split_env_action(action)
+        hybrid_dist = self._build_hybrid_dist(out)
+        logprob_parts = hybrid_dist.log_prob(accel_action, bw_action=bw_action, sat_indices=sat_indices)
+        entropy_parts = hybrid_dist.entropy()
         return logprob_parts, entropy_parts
 
     def evaluate_actions(
         self,
         obs: torch.Tensor,
         action: torch.Tensor,
+        sat_indices: torch.Tensor | None = None,
         out: Dict[str, torch.Tensor] | None = None,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
-        logprob_parts, entropy_parts = self.evaluate_actions_parts(obs, action, out=out)
+        logprob_parts, entropy_parts = self.evaluate_actions_parts(obs, action, sat_indices=sat_indices, out=out)
         logprob = sum(logprob_parts.values())
         entropy = sum(entropy_parts.values())
         return logprob, entropy

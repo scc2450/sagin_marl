@@ -161,7 +161,9 @@ def cluster_center_accel_policy(
     return accel
 
 def uniform_bw_policy(num_agents: int, users_obs_max: int) -> np.ndarray:
-    return np.zeros((num_agents, users_obs_max), dtype=np.float32)
+    if users_obs_max <= 0:
+        return np.zeros((num_agents, 0), dtype=np.float32)
+    return np.full((num_agents, users_obs_max), 1.0 / float(users_obs_max), dtype=np.float32)
 
 def random_bw_policy(
     num_agents: int,
@@ -169,7 +171,7 @@ def random_bw_policy(
     rng: np.random.Generator | None = None,
 ) -> np.ndarray:
     rng = rng or np.random.default_rng()
-    return rng.uniform(-cfg.bw_logit_scale, cfg.bw_logit_scale, size=(num_agents, cfg.users_obs_max)).astype(np.float32)
+    return rng.random(size=(num_agents, cfg.users_obs_max)).astype(np.float32)
 
 def uniform_sat_policy(num_agents: int, sats_obs_max: int) -> np.ndarray:
     return np.zeros((num_agents, sats_obs_max), dtype=np.float32)
@@ -180,7 +182,7 @@ def random_sat_policy(
     rng: np.random.Generator | None = None,
 ) -> np.ndarray:
     rng = rng or np.random.default_rng()
-    return rng.uniform(-cfg.sat_logit_scale, cfg.sat_logit_scale, size=(num_agents, cfg.sats_obs_max)).astype(np.float32)
+    return (rng.random(size=(num_agents, cfg.sats_obs_max)) > 0.5).astype(np.float32)
 
 
 def _minmax_normalize(values: np.ndarray) -> np.ndarray:
@@ -239,6 +241,17 @@ def _sat_heuristic_score(sats: np.ndarray, mask: np.ndarray, cfg) -> np.ndarray:
     score[mask] = np.clip(score_slice, -cfg.sat_logit_scale, cfg.sat_logit_scale)
     return score
 
+
+def _topk_select_mask(scores: np.ndarray, valid_mask: np.ndarray, k: int) -> np.ndarray:
+    out = np.zeros_like(scores, dtype=np.float32)
+    valid_idx = np.flatnonzero(valid_mask)
+    if valid_idx.size == 0 or k <= 0:
+        return out
+    order = valid_idx[np.argsort(scores[valid_idx])[::-1]]
+    keep = order[: min(k, order.size)]
+    out[keep] = 1.0
+    return out
+
 def queue_aware_policy(
     obs_list: List[Dict[str, np.ndarray]],
     cfg,
@@ -254,8 +267,8 @@ def queue_aware_policy(
 
     num_agents = len(obs_list)
     accel = np.zeros((num_agents, 2), dtype=np.float32)
-    bw_logits = np.zeros((num_agents, cfg.users_obs_max), dtype=np.float32)
-    sat_logits = np.zeros((num_agents, cfg.sats_obs_max), dtype=np.float32)
+    bw_alloc = np.zeros((num_agents, cfg.users_obs_max), dtype=np.float32)
+    sat_select_mask = np.zeros((num_agents, cfg.sats_obs_max), dtype=np.float32)
 
     accel_gain = float(getattr(cfg, "baseline_accel_gain", 2.0))
     assoc_bonus = float(getattr(cfg, "baseline_assoc_bonus", 0.3))
@@ -269,6 +282,7 @@ def queue_aware_policy(
         accel_vec = np.zeros((2,), dtype=np.float32)
         users = obs["users"]
         users_mask = obs["users_mask"] > 0.0
+        bw_valid_mask = np.asarray(obs.get("bw_valid_mask", obs["users_mask"]) > 0.0)
         if np.any(users_mask):
             rel = users[users_mask, 0:2]
             q = users[users_mask, 2]
@@ -284,17 +298,26 @@ def queue_aware_policy(
                 accel_vec = accel_vec + vec * accel_gain
 
             if cfg.enable_bw_action:
-                logits = np.zeros((cfg.users_obs_max,), dtype=np.float32)
-                logits_slice = np.log(weights + 1e-6)
-                logits_slice = np.clip(logits_slice, -cfg.bw_logit_scale, cfg.bw_logit_scale)
-                logits[users_mask] = logits_slice
-                bw_logits[i] = logits
+                slot_weights = np.zeros((cfg.users_obs_max,), dtype=np.float32)
+                slot_weights[users_mask] = np.clip(weights, 0.0, None)
+                slot_weights = slot_weights * bw_valid_mask.astype(np.float32)
+                denom = float(np.sum(slot_weights))
+                if denom > 1e-6:
+                    bw_alloc[i] = slot_weights / denom
+                elif np.any(bw_valid_mask):
+                    bw_alloc[i, bw_valid_mask] = 1.0 / float(np.sum(bw_valid_mask))
 
         if not cfg.fixed_satellite_strategy:
             sats = obs["sats"]
             sats_mask = obs["sats_mask"] > 0.0
+            sat_valid_mask = np.asarray(obs.get("sat_valid_mask", obs["sats_mask"]) > 0.0)
             if np.any(sats_mask):
-                sat_logits[i] = _sat_heuristic_score(sats, sats_mask, cfg)
+                sat_scores = _sat_heuristic_score(sats, sats_mask, cfg)
+                sat_select_mask[i] = _topk_select_mask(
+                    sat_scores,
+                    sat_valid_mask,
+                    max(int(getattr(cfg, "sat_num_select", cfg.N_RF) or cfg.N_RF), 0),
+                )
 
         if repulse_gain > 0.0 and repulse_radius > 0.0:
             nbrs = obs["nbrs"]
@@ -326,18 +349,18 @@ def queue_aware_policy(
 
         accel[i] = np.clip(accel_vec, -1.0, 1.0)
 
-    return accel, bw_logits, sat_logits
+    return accel, bw_alloc, sat_select_mask
 
 def queue_aware_bw_policy(
     obs_list: List[Dict[str, np.ndarray]],
     cfg,
 ) -> np.ndarray:
-    _, bw_logits, _ = queue_aware_policy(obs_list, cfg)
-    return bw_logits
+    _, bw_alloc, _ = queue_aware_policy(obs_list, cfg)
+    return bw_alloc
 
 def queue_aware_sat_policy(
     obs_list: List[Dict[str, np.ndarray]],
     cfg,
 ) -> np.ndarray:
-    _, _, sat_logits = queue_aware_policy(obs_list, cfg)
-    return sat_logits
+    _, _, sat_select_mask = queue_aware_policy(obs_list, cfg)
+    return sat_select_mask

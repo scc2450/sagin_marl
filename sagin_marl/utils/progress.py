@@ -18,8 +18,16 @@ class Progress:
         self.width = max(10, int(width))
         self.min_interval = max(0.0, float(min_interval))
         self.file = file or sys.stdout
+        self.inline = self._supports_inline_refresh(self.file)
         self.start = time.perf_counter()
         self.last = 0.0
+
+    @staticmethod
+    def _supports_inline_refresh(file) -> bool:
+        try:
+            return bool(file.isatty())
+        except Exception:
+            return False
 
     def update(self, current: int) -> None:
         now = time.perf_counter()
@@ -34,11 +42,15 @@ class Progress:
         elapsed = max(1e-9, now - self.start)
         rate = current / elapsed
         eta = (self.total - current) / rate if rate > 0 else 0.0
-        msg = f"\r{self.desc} [{bar}] {current}/{self.total} ({rate:.2f}/s, ETA {eta:.1f}s)"
+        if self.inline:
+            msg = f"\r{self.desc} [{bar}] {current}/{self.total} ({rate:.2f}/s, ETA {eta:.1f}s)"
+        else:
+            msg = f"{self.desc} [{bar}] {current}/{self.total} ({rate:.2f}/s, ETA {eta:.1f}s)\n"
         self.file.write(msg)
         self.file.flush()
 
     def close(self) -> None:
         self.update(self.total)
-        self.file.write("\n")
-        self.file.flush()
+        if self.inline:
+            self.file.write("\n")
+            self.file.flush()

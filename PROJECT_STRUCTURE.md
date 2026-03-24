@@ -72,6 +72,7 @@
       - 📄 [baselines.py](#f046)
       - 📄 [buffer.py](#f047)
       - 📄 [critic.py](#f048)
+      - 📄 [distributions.py](#f050a)
       - 📄 [mappo.py](#f049)
       - 📄 [policy.py](#f050)
     - 📂 `utils/`
@@ -88,6 +89,7 @@
     - 📄 [estimate_throughput.py](#f059)
     - 📄 [evaluate.py](#f060)
     - 📄 [render_episode.py](#f061)
+    - 📄 [run_curriculum_stage123_formal.ps1](#f061a)
     - 📄 [summarize_policy_kpi.py](#f081)
     - 📄 [train.py](#f062)
   - 📂 `tests/`
@@ -113,17 +115,17 @@
 
 ## <a id="f002"></a>📄 `configs/phase1_actions_curriculum_stage1_accel.yaml`
 - 功能：Stage 1 训练配置，重点学习 UAV 机动（`accel`），不启用带宽与卫星动作。
-- 关键内容：`train_accel=true`、`train_bw=false`、`train_sat=false`，并启用尾部队列惩罚（`q_norm_tail_q0`/`omega_q_tail`）、线性避碰+自适应安全权重（`avoidance_*`）与 centroid 交叉退火（`centroid_cross_*`）。
+- 关键内容：`train_accel=true`、`train_bw=false`、`train_sat=false`，使用 `reward_mode=controllable_flow`、`append_action_masks_to_obs=true`、`actor_encoder_type=set_pool`、`checkpoint_eval_interval_updates=50`，并保留当前稳定的安全初始化与避碰配置。
 - 项目作用：作为三阶段课程训练的起点，产出 `stage1_accel` 权重。
 
 ## <a id="f003"></a>📄 `configs/phase1_actions_curriculum_stage2_bw.yaml`
 - 功能：Stage 2 带宽配置，在 Stage 1 权重基础上仅训练 `bw`。
-- 关键内容：`train_accel=false`、`train_bw=true`、`train_sat=false`，并通过 `exec_accel_source=teacher` 固定执行加速度。
-- 项目作用：在保持机动策略稳定的前提下学习带宽分配。
+- 关键内容：`train_accel=false`、`train_bw=true`、`train_sat=false`，冻结共享骨干与 accel 头；`enable_bw_action=true`，`bw_policy=dirichlet`，执行时 `accel/bw` 都直接来自当前策略，不再使用旧的 teacher / residual-bw 语义。
+- 项目作用：在保持机动策略稳定的前提下学习最终带宽分配。
 
 ## <a id="f003a"></a>📄 `configs/phase1_actions_curriculum_stage3_sat.yaml`
-- 功能：Stage 3 卫星选择配置，在 Stage 2 权重基础上仅训练 `sat`。
-- 关键内容：`train_accel=false`、`train_bw=false`、`train_sat=true`，并通过 `exec_accel_source/exec_bw_source=teacher` 固定前两阶段动作。
+- 功能：Stage 3 卫星选择配置，在 Stage 2 权重基础上解锁 `sat`，并做最终三动作评估。
+- 关键内容：`train_accel=true`、`train_bw=true`、`train_sat=true`，`fixed_satellite_strategy=false`，`sat_policy=masked_categorical`，checkpoint 参考策略使用 `stage2_exec_fixed_sat` 以隔离卫星动作收益。
 - 项目作用：完成三阶段递进训练链路（加速度 → 带宽 → 卫星选择）。
 
 ## <a id="f003b"></a>📄 `docs/cloud_compute_workflow.md`
@@ -138,12 +140,12 @@
 
 ## <a id="f005"></a>📄 `docs/metrics_guide.md`
 - 功能：说明训练与评估日志字段的定义及解读方式。
-- 关键内容：覆盖 `metrics.csv` 与 `eval_*.csv` 中奖励、队列、丢包、吞吐、性能等指标，并新增尾部分位（P95/P99）、安全指标（`collision_rate`、`avoidance_*`）与交叉退火权重（`queue_weight` 等）说明。
+- 关键内容：覆盖 `A_ref` 归一化口径、`controllable_flow` 奖励、`metrics.csv`/`eval_*.csv`/`checkpoint_eval.csv` 的主字段、TensorBoard 页面映射、checkpoint 排序规则与 reward-plateau early stop。
 - 项目作用：统一实验结果口径，减少“指标含义不一致”问题。
 
 ## <a id="f006"></a>📄 `docs/model_architecture.md`
 - 功能：记录模型网络结构设计。
-- 关键内容：描述 Actor/Critic 的输入组织、结构思路及动作相关输出设计。
+- 关键内容：描述当前 set-pool actor、全局状态 critic、`accel + bw + sat` hybrid action、`bw_valid_mask/sat_valid_mask`、以及 Stage 1/2/3 的训练语义。
 - 项目作用：作为源码实现（`policy.py`、`critic.py`）的设计说明文档。
 
 ## <a id="f007"></a>📄 `docs/phase1_training_summary.md`
@@ -163,7 +165,7 @@
 
 ## <a id="f010"></a>📄 `README.md`
 - 功能：项目总入口文档。
-- 关键内容：包含安装、训练/评估/渲染命令、输出文件说明、TensorBoard 使用方式和环境接口简介。
+- 关键内容：包含正式三阶段 YAML、训练/评估/混合策略/渲染命令、TensorBoard 与图片导出说明、批量正式训练脚本、输出文件说明和环境接口简介。
 - 项目作用：提供从零到复现实验的操作入口。
 
 ## <a id="f011"></a>📄 `requirements.txt`
@@ -328,7 +330,7 @@
 
 ## <a id="f040"></a>📄 `sagin_marl/env/config.py`
 - 功能：定义全局配置对象与配置加载流程。
-- 关键内容：`SaginConfig` 与 `AblationConfig` dataclass 覆盖地图、流量分级、队列、信道、奖励、PPO 超参与消融开关；支持阶段训练开关（`train_accel/train_bw/train_sat`）与执行覆盖来源（`exec_*_source`），并新增尾部惩罚、避碰势场/自适应安全、centroid 交叉退火等配置项；`load_config` 读 YAML；`update_config` 支持嵌套键更新与 `ablation_flags` 别名。
+- 关键内容：`SaginConfig` 与 `AblationConfig` dataclass 覆盖地图、流量分级、队列、信道、奖励、PPO 超参与阶段训练开关；当前正式配置重点包括 `reward_mode=controllable_flow`、`arrival_ref_mode`、`bw_policy`、`sat_policy`、`append_action_masks_to_obs` 与 checkpoint-eval 参数，同时仍保留旧实验项的兼容入口。
 - 项目作用：统一参数入口，是所有模块共享的配置中心。
 
 ## <a id="f041"></a>📄 `sagin_marl/env/orbit.py`
@@ -338,8 +340,8 @@
 
 ## <a id="f042"></a>📄 `sagin_marl/env/sagin_env.py`
 - 功能：核心多智能体环境（PettingZoo `ParallelEnv`）。
-- 关键流程：`reset` 初始化用户聚类、UAV 状态和缓存，并按 `traffic_level` 设置有效到达率；`step` 依次执行 UAV 动力学、用户关联、接入速率、卫星选择、回传速率、三级队列更新、奖励计算和终止判断。
-- 关键机制：支持候选用户模式（assoc/nearest/radius）、多普勒与可见性约束、可选衰落/干扰/大气损耗、能量模型与安全层、流量课程学习（Level 0/1/2）；新增 active 队列尾部阈值惩罚、线性/平方避碰势场与预限幅、自适应避碰权重、centroid 交叉退火权重迁移，并在 `last_reward_parts` 记录完整中间量。
+- 关键流程：`reset` 初始化用户聚类、UAV 状态和缓存；`step` 依次执行 UAV 动力学、用户关联、接入速率、卫星选择、回传速率、三级队列更新、统一奖励计算和终止判断。
+- 关键机制：支持候选用户模式（assoc/nearest/radius）、多普勒与可见性约束、可选衰落/干扰/大气损耗、能量模型与安全层、流量课程学习；当前正式版本固定 `A_ref`，显式暴露 `bw_valid_mask/sat_valid_mask`，记录 `x_acc/x_rel/g_pre/d_pre` 与 `processed_ratio_eval/drop_ratio_eval/pre_backlog_steps_eval/D_sys_report`，并让环境执行语义与策略采样保持一致。
 - 项目作用：这是训练与评估的环境主体，几乎所有实验行为都由该文件定义。
 
 ## <a id="f043"></a>📄 `sagin_marl/env/topology.py`
@@ -359,33 +361,38 @@
 
 ## <a id="f045"></a>📄 `sagin_marl/rl/action_assembler.py`
 - 功能：把网络输出拼装成环境可执行动作字典。
-- 关键函数：`assemble_actions`，按配置开关决定是否写入 `bw_logits`、`sat_logits` 并执行范围裁剪。
-- 项目作用：统一训练、评估、基线策略到环境动作接口的桥接层。
+- 关键函数：`assemble_actions`，按阶段把 `accel`、最终 `bw_alloc` 与最终 `sat_select_mask` 打包成扁平环境动作，不再做 heuristic residual 融合。
+- 项目作用：统一训练、评估、基线策略到环境动作接口的桥接层，并保证“策略优化的动作”和“环境真实执行的动作”一致。
 
 ## <a id="f046"></a>📄 `sagin_marl/rl/baselines.py`
 - 功能：内置启发式基线策略。
-- 关键函数：`zero_accel_policy`（固定不动）、`random_accel_policy`（同分布随机动作）、`centroid_accel_policy`（向用户质心移动）与 `queue_aware_policy`（队列+信道感知，含邻机排斥与低能量减速逻辑）。
-- 项目作用：用于评估对照与 imitation target 生成。
+- 关键函数：`zero_accel_policy`、`random_accel_policy`、`centroid_accel_policy`、`cluster_center_accel_policy` 与 `queue_aware_policy`，并支持阶段一致的 hybrid 对照，例如 Stage 1 actor + heuristic bw、Stage 2 actor + heuristic sat。
+- 项目作用：用于评估对照、分动作消融与阶段化 baseline 比较。
 
 ## <a id="f047"></a>📄 `sagin_marl/rl/buffer.py`
 - 功能：Rollout 经验缓存。
-- 关键类：`RolloutBuffer`，支持固定容量数组模式和列表模式，存储 obs/action/logprob/reward/value/done/global_state/imitation。
-- 项目作用：为 PPO 更新阶段提供批量化训练样本。
+- 关键类：`RolloutBuffer`，支持固定容量数组模式和列表模式，存储 obs/action/logprob/reward/value/done/global_state/imitation，并为 hybrid action 额外保存 `sat_indices`。
+- 项目作用：为 PPO 更新阶段提供批量化训练样本，并支持 Stage 3 重新计算 masked categorical `log_prob`。
 
 ## <a id="f048"></a>📄 `sagin_marl/rl/critic.py`
 - 功能：集中式价值网络定义。
 - 关键类：`CriticNet`，两层 MLP（可选 `LayerNorm`）输出标量值函数。
 - 项目作用：为 MAPPO 提供全局状态价值估计。
 
+## <a id="f050a"></a>📄 `sagin_marl/rl/distributions.py`
+- 功能：hybrid action 分布封装。
+- 关键内容：实现 `MaskedDirichlet`、`MaskedSequentialCategorical` 与 `HybridActionDist`，统一处理 `bw` simplex 动作、`sat` 无放回离散选择，以及三动作头的 `sample/mode/log_prob/entropy`。
+- 项目作用：把当前正式策略的分布语义从网络层抽出来，供训练和评估共用。
+
 ## <a id="f049"></a>📄 `sagin_marl/rl/mappo.py`
 - 功能：MAPPO 训练主循环实现。
 - 关键函数：`compute_gae` 与 `train`。
-- 关键实现：支持单环境与多环境并行 rollout；包含动作掩码执行、按阶段的动作头冻结训练、执行时动作覆盖（policy/teacher/heuristic/zero）、按动作头重算 logprob、按环境独立 GAE、奖励归一化、PPO clipped objective、可选 KL 正则/早停、可选 imitation loss、梯度裁剪、NaN/Inf 防护、指标记录和 checkpoint 保存；新增队列尾部分位（P95/P99）、碰撞率与交叉退火/避碰有效权重日志。
+- 关键实现：支持单环境与多环境并行 rollout、按阶段冻结动作头、hybrid action 采样与重算 `log_prob`、按环境独立 GAE、PPO clipped objective、checkpoint 评估与 early stop、warm start `strict=False`、梯度裁剪、NaN/Inf 防护与指标记录。
 - 项目作用：整个训练流程的中枢控制文件。
 
 ## <a id="f050"></a>📄 `sagin_marl/rl/policy.py`
 - 功能：Actor 策略网络与动作概率建模。
-- 关键内容：`PolicyOutput` 数据结构；`flatten_obs`/`batch_flatten_obs` 将结构化观测展平；`ActorNet` 采用 squashed Gaussian（tanh）输出 `accel`，并按开关扩展 `bw_logits` 与 `sat_logits`；`evaluate_actions` 计算联合 logprob 与熵。
+- 关键内容：`flatten_obs`/`batch_flatten_obs` 将结构化观测展平；`ActorNet` 采用 set-pool 编码器与共享上下文骨干，`accel` 用 squashed Gaussian，`bw` 用逐用户打分 + Dirichlet，`sat` 用逐卫星打分 + masked categorical；`evaluate_actions` 计算联合 logprob 与分头熵。
 - 项目作用：决定策略表达能力，是训练与推理的核心网络。
 
 ## <a id="f051"></a>📄 `sagin_marl/utils/__init__.py`
@@ -405,8 +412,8 @@
 
 ## <a id="f054"></a>📄 `sagin_marl/utils/progress.py`
 - 功能：轻量终端进度条。
-- 关键类：`Progress`，显示当前进度、速率与 ETA。
-- 项目作用：训练/评估脚本的人机反馈组件。
+- 关键类：`Progress`，显示当前进度、速率与 ETA；当输出被重定向到文件时会改成按行落盘，避免交互式 `\r` 进度条丢失。
+- 项目作用：训练/评估脚本的人机反馈组件，并支撑后续批量训练的 `console.log` 留档。
 
 ## <a id="f055"></a>📄 `sagin_marl/utils/seeding.py`
 - 功能：统一随机种子设置。
@@ -435,13 +442,18 @@
 
 ## <a id="f060"></a>📄 `scripts/evaluate.py`
 - 功能：评估入口脚本。
-- 关键内容：支持训练策略评估、`fixed`/`random_accel`/`centroid`/`zero_accel`/`queue_aware` 基线评估、`hybrid_bw_sat` 混合评估；支持 `--episode_seed_base` 做跨策略同种子对照；输出 `queue_total_active`、`arrival_sum`、`outflow_sum`、`outflow_arrival_ratio`、`drop_ratio` 等评估字段，并写入 `eval_tb` TensorBoard。
+- 关键内容：支持训练策略评估、`fixed`/`random_accel`/`centroid`/`cluster_center`/`zero_accel`/`queue_aware` 基线评估、stage-consistent hybrid 评估；支持 `--episode_seed_base` 做跨策略同种子对照；输出 `processed_ratio_eval`、`drop_ratio_eval`、`pre_backlog_steps_eval`、`D_sys_report` 及 `x_acc_mean/x_rel_mean/g_pre_mean/d_pre_mean`，并写入 `eval_tb` TensorBoard。
 - 项目作用：统一产出可对比评估结果。
 
 ## <a id="f061"></a>📄 `scripts/render_episode.py`
 - 功能：渲染单回合并导出 GIF。
-- 关键内容：加载 actor 权重，以确定性动作执行环境并逐帧保存；`_resolve_render_paths` 支持 run 目录默认路径。
+- 关键内容：加载 actor 权重，以确定性动作执行环境并逐帧保存；支持 trained / baseline 渲染、按 `episode_seed` 复现评估回合；`_resolve_render_paths` 对旧调用补了默认 `baseline` 兼容。
 - 项目作用：用于可视化策略行为与调试。
+
+## <a id="f061a"></a>📄 `scripts/run_curriculum_stage123_formal.ps1`
+- 功能：正式三阶段课程训练批处理脚本。
+- 关键内容：顺序运行 `stage1 -> stage2 -> stage3`，统一传入 `num_envs/vec_backend/torch_threads/updates`，在每阶段结束后自动做 trained 与 baseline 评估，并把终端输出同步写入各阶段的 `console.log`。
+- 项目作用：减少正式实验的人为操作差异，并方便事后追踪训练过程。
 
 ## <a id="f081"></a>📄 `scripts/summarize_policy_kpi.py`
 - 功能：对多策略评估 CSV 进行 KPI 汇总对照。
@@ -450,7 +462,7 @@
 
 ## <a id="f062"></a>📄 `scripts/train.py`
 - 功能：训练启动脚本。
-- 关键内容：解析参数、加载配置、设置随机种子、创建单环境或向量环境、解析日志目录、保存配置快照并调用 `mappo.train`；支持 `--num_envs`、`--vec_backend`、`--torch_threads`。
+- 关键内容：解析参数、加载配置、设置随机种子、创建单环境或向量环境、解析日志目录、保存配置快照并调用 `mappo.train`；支持 `--num_envs`、`--vec_backend`、`--torch_threads`、warm start 权重路径与正式三阶段训练流程。
 - 项目作用：命令行训练总入口。
 
 ## <a id="f063"></a>📄 `tests/conftest.py`

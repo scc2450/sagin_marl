@@ -23,6 +23,7 @@ class RolloutBuffer:
         self._imitation: Optional[np.ndarray] = None
         self._danger_imitation_target: Optional[np.ndarray] = None
         self._danger_imitation_mask: Optional[np.ndarray] = None
+        self._sat_indices: Optional[np.ndarray] = None
 
         if self._use_list:
             self.obs: List[np.ndarray] = []
@@ -37,6 +38,7 @@ class RolloutBuffer:
             self.imitation: List[np.ndarray] = []
             self.danger_imitation_target: List[np.ndarray] = []
             self.danger_imitation_mask: List[np.ndarray] = []
+            self.sat_indices: List[np.ndarray] = []
 
     def _allocate(
         self,
@@ -48,6 +50,7 @@ class RolloutBuffer:
         imitation: np.ndarray,
         danger_imitation_target: np.ndarray,
         danger_imitation_mask: np.ndarray,
+        sat_indices: np.ndarray,
     ) -> None:
         if self.capacity is None:
             return
@@ -64,6 +67,7 @@ class RolloutBuffer:
         self._imitation = np.empty((cap,) + imitation.shape, dtype=np.float32)
         self._danger_imitation_target = np.empty((cap,) + danger_imitation_target.shape, dtype=np.float32)
         self._danger_imitation_mask = np.empty((cap,) + danger_imitation_mask.shape, dtype=np.float32)
+        self._sat_indices = np.empty((cap,) + sat_indices.shape, dtype=np.int64)
 
     def add(
         self,
@@ -79,6 +83,7 @@ class RolloutBuffer:
         imitation: np.ndarray | None = None,
         danger_imitation_target: np.ndarray | None = None,
         danger_imitation_mask: np.ndarray | None = None,
+        sat_indices: np.ndarray | None = None,
     ) -> None:
         if imitation is None:
             imitation = np.zeros_like(actions, dtype=np.float32)
@@ -86,6 +91,8 @@ class RolloutBuffer:
             danger_imitation_target = np.zeros((actions.shape[0], 2), dtype=np.float32)
         if danger_imitation_mask is None:
             danger_imitation_mask = np.zeros((actions.shape[0], 2), dtype=np.float32)
+        if sat_indices is None:
+            sat_indices = np.full((actions.shape[0], 0), -1, dtype=np.int64)
         if self._use_list:
             self.obs.append(obs)
             self.actions.append(actions)
@@ -99,6 +106,7 @@ class RolloutBuffer:
             self.imitation.append(imitation)
             self.danger_imitation_target.append(danger_imitation_target)
             self.danger_imitation_mask.append(danger_imitation_mask)
+            self.sat_indices.append(sat_indices)
             return
 
         if self._obs is None:
@@ -111,6 +119,7 @@ class RolloutBuffer:
                 imitation,
                 danger_imitation_target,
                 danger_imitation_mask,
+                sat_indices,
             )
 
         if self.capacity is not None and self._idx >= self.capacity:
@@ -128,6 +137,7 @@ class RolloutBuffer:
         self._imitation[self._idx] = imitation
         self._danger_imitation_target[self._idx] = danger_imitation_target
         self._danger_imitation_mask[self._idx] = danger_imitation_mask
+        self._sat_indices[self._idx] = sat_indices
         self._idx += 1
 
     def as_arrays(self):
@@ -145,6 +155,7 @@ class RolloutBuffer:
                 np.stack(self.imitation, axis=0),
                 np.stack(self.danger_imitation_target, axis=0),
                 np.stack(self.danger_imitation_mask, axis=0),
+                np.stack(self.sat_indices, axis=0),
             )
         end = self._idx
         return (
@@ -160,4 +171,5 @@ class RolloutBuffer:
             self._imitation[:end],
             self._danger_imitation_target[:end],
             self._danger_imitation_mask[:end],
+            self._sat_indices[:end],
         )

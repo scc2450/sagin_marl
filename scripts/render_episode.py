@@ -35,7 +35,10 @@ _UNASSOCIATED_GU_COLOR = np.array([0.65, 0.65, 0.65, 0.85], dtype=np.float32)
 
 
 def _resolve_render_paths(
-    run_dir: str | None, checkpoint: str | None, out: str | None, baseline: str
+    run_dir: str | None,
+    checkpoint: str | None,
+    out: str | None,
+    baseline: str = "none",
 ) -> tuple[str | None, str]:
     use_baseline = baseline != "none"
     if run_dir:

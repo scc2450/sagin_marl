@@ -49,6 +49,10 @@ def _single_env_step_stats(env) -> Dict[str, object]:
 
     num_agents = len(getattr(env, "agents", []))
     default_accel = np.zeros((num_agents, 2), dtype=np.float32)
+    default_bw = np.zeros((num_agents, getattr(env.cfg, "users_obs_max", 0)), dtype=np.float32)
+    sat_k = max(int(getattr(env.cfg, "sat_num_select", env.cfg.N_RF) or env.cfg.N_RF), 0)
+    default_sat_mask = np.zeros((num_agents, getattr(env.cfg, "sats_obs_max", 0)), dtype=np.float32)
+    default_sat_indices = np.full((num_agents, sat_k), -1, dtype=np.int64)
     parts = getattr(env, "last_reward_parts", None) or {}
     profile = getattr(env, "last_step_profile", None) or {}
     sat_processed = getattr(env, "last_sat_processed", None)
@@ -56,6 +60,15 @@ def _single_env_step_stats(env) -> Dict[str, object]:
 
     return {
         "last_exec_accel": np.asarray(getattr(env, "last_exec_accel", default_accel), dtype=np.float32),
+        "last_exec_bw_alloc": np.asarray(getattr(env, "last_exec_bw_alloc", default_bw), dtype=np.float32),
+        "last_exec_sat_select_mask": np.asarray(
+            getattr(env, "last_exec_sat_select_mask", default_sat_mask),
+            dtype=np.float32,
+        ),
+        "last_exec_sat_indices": np.asarray(
+            getattr(env, "last_exec_sat_indices", default_sat_indices),
+            dtype=np.int64,
+        ),
         "danger_imitation_mask": np.asarray(
             getattr(env, "last_danger_imitation_mask", np.zeros((num_agents,), dtype=np.float32)),
             dtype=np.float32,
@@ -137,7 +150,9 @@ def _sum_selected_parts(parts: Dict[str, torch.Tensor], train_heads: Dict[str, b
 
 def _normalize_exec_source(raw: str | None) -> str:
     src = str("policy" if raw is None else raw).strip().lower()
-    allowed = {"policy", "teacher", "heuristic", "zero", "heuristic_residual"}
+    if src == "heuristic_residual":
+        src = "policy"
+    allowed = {"policy", "teacher", "heuristic", "zero"}
     if src not in allowed:
         raise ValueError(f"Invalid exec source '{raw}'. Allowed: {sorted(allowed)}")
     return src
@@ -168,7 +183,7 @@ def _select_exec_values(
 
 
 def _source_needs_heuristic(source: str) -> bool:
-    return source in {"heuristic", "heuristic_residual"}
+    return source == "heuristic"
 
 
 def _compose_bw_exec_values(
@@ -179,23 +194,8 @@ def _compose_bw_exec_values(
     shape: Tuple[int, int],
     cfg,
 ) -> np.ndarray:
-    if source != "heuristic_residual":
-        return _select_exec_values(source, policy_values, teacher_values, heuristic_values, shape)
-    if heuristic_values is None:
-        raise ValueError("exec_bw_source='heuristic_residual' requires heuristic bw logits.")
-    heur = np.asarray(heuristic_values, dtype=np.float32)
-    delta = (
-        np.asarray(policy_values, dtype=np.float32)
-        if policy_values is not None
-        else np.zeros(shape, dtype=np.float32)
-    )
-    residual_clip = max(float(getattr(cfg, "bw_residual_clip", 1.0) or 0.0), 0.0)
-    if residual_clip > 0.0:
-        delta = np.clip(delta, -residual_clip, residual_clip)
-    alpha = float(getattr(cfg, "bw_residual_alpha", 0.5) or 0.0)
-    out = heur + alpha * delta
-    bw_limit = float(getattr(cfg, "bw_logit_scale", 1.0) or 1.0)
-    return np.clip(out, -bw_limit, bw_limit).astype(np.float32, copy=False)
+    del cfg
+    return _select_exec_values(source, policy_values, teacher_values, heuristic_values, shape)
 
 
 def _compose_bw_train_action(
@@ -204,14 +204,10 @@ def _compose_bw_train_action(
     shape: Tuple[int, int],
     cfg,
 ) -> np.ndarray:
+    del source, cfg
     if policy_values is None:
         return np.zeros(shape, dtype=np.float32)
-    out = np.asarray(policy_values, dtype=np.float32)
-    if source == "heuristic_residual":
-        residual_clip = max(float(getattr(cfg, "bw_residual_clip", 1.0) or 0.0), 0.0)
-        if residual_clip > 0.0:
-            out = np.clip(out, -residual_clip, residual_clip)
-    return out.astype(np.float32, copy=False)
+    return np.asarray(policy_values, dtype=np.float32)
 
 
 def _build_danger_imitation_step_data(stats: Dict[str, object], cfg, num_agents: int) -> Tuple[np.ndarray, np.ndarray]:
@@ -404,12 +400,14 @@ def _checkpoint_eval_summary(
     eval_env = SaginParallelEnv(eval_cfg)
     try:
         reward_sum_total = 0.0
-        throughput_access_norm_total = 0.0
-        throughput_backhaul_norm_total = 0.0
-        gu_queue_arrival_steps_total = 0.0
-        uav_queue_arrival_steps_total = 0.0
-        sat_queue_arrival_steps_total = 0.0
-        sat_drop_ratio_total = 0.0
+        processed_ratio_total = 0.0
+        drop_ratio_total = 0.0
+        pre_backlog_total = 0.0
+        d_sys_total = 0.0
+        x_acc_total = 0.0
+        x_rel_total = 0.0
+        g_pre_total = 0.0
+        d_pre_total = 0.0
         collision_total = 0.0
 
         for ep in range(max(int(episodes), 1)):
@@ -418,13 +416,14 @@ def _checkpoint_eval_summary(
             done = False
             steps = 0
             reward_sum = 0.0
-            arrival_sum_ep = 0.0
-            throughput_access_norm_sum = 0.0
-            throughput_backhaul_norm_sum = 0.0
-            gu_queue_sum_steps = 0.0
-            uav_queue_sum_steps = 0.0
-            sat_queue_sum_steps = 0.0
-            sat_drop_sum_ep = 0.0
+            processed_ratio_sum = 0.0
+            drop_ratio_sum = 0.0
+            pre_backlog_sum = 0.0
+            x_acc_sum = 0.0
+            x_rel_sum = 0.0
+            g_pre_sum = 0.0
+            d_pre_sum = 0.0
+            sat_processed_sum_ep = 0.0
             collision_any = 0.0
 
             while not done:
@@ -453,8 +452,8 @@ def _checkpoint_eval_summary(
                             eval_cfg,
                             eval_env.agents,
                             teacher_out.accel.cpu().numpy(),
-                            bw_logits=heur_bw,
-                            sat_logits=heur_sat,
+                            bw_alloc=heur_bw,
+                            sat_select_mask=heur_sat,
                         )
                     elif fixed_baseline_policy == "stage2_exec_fixed_sat":
                         if actor is None:
@@ -472,8 +471,8 @@ def _checkpoint_eval_summary(
                                 teacher_out = teacher_actor.act(obs_tensor, deterministic=teacher_deterministic)
                             teacher_accel = teacher_out.accel.cpu().numpy()
                             teacher_bw = (
-                                teacher_out.bw_logits.cpu().numpy()
-                                if teacher_out.bw_logits is not None
+                                teacher_out.bw_action.cpu().numpy()
+                                if teacher_out.bw_action is not None
                                 else None
                             )
                         heur_accel = None
@@ -490,7 +489,7 @@ def _checkpoint_eval_summary(
                         bw_logits = None
                         if eval_cfg.enable_bw_action:
                             policy_bw = (
-                                policy_out.bw_logits.cpu().numpy() if policy_out.bw_logits is not None else None
+                                policy_out.bw_action.cpu().numpy() if policy_out.bw_action is not None else None
                             )
                             bw_logits = _compose_bw_exec_values(
                                 exec_bw_source,
@@ -504,8 +503,8 @@ def _checkpoint_eval_summary(
                             eval_cfg,
                             eval_env.agents,
                             accel_actions,
-                            bw_logits=bw_logits,
-                            sat_logits=None,
+                            bw_alloc=bw_logits,
+                            sat_select_mask=None,
                         )
                     else:
                         accel_actions = np.zeros((len(eval_env.agents), 2), dtype=np.float32)
@@ -523,10 +522,12 @@ def _checkpoint_eval_summary(
                             teacher_out = teacher_actor.act(obs_tensor, deterministic=teacher_deterministic)
                         teacher_accel = teacher_out.accel.cpu().numpy()
                         teacher_bw = (
-                            teacher_out.bw_logits.cpu().numpy() if teacher_out.bw_logits is not None else None
+                            teacher_out.bw_action.cpu().numpy() if teacher_out.bw_action is not None else None
                         )
                         teacher_sat = (
-                            teacher_out.sat_logits.cpu().numpy() if teacher_out.sat_logits is not None else None
+                            teacher_out.sat_select_mask.cpu().numpy()
+                            if teacher_out.sat_select_mask is not None
+                            else None
                         )
                     heur_accel = None
                     heur_bw = None
@@ -544,7 +545,7 @@ def _checkpoint_eval_summary(
                     sat_logits = None
                     if cfg.enable_bw_action:
                         policy_bw = (
-                            policy_out.bw_logits.cpu().numpy() if policy_out.bw_logits is not None else None
+                            policy_out.bw_action.cpu().numpy() if policy_out.bw_action is not None else None
                         )
                         bw_logits = _compose_bw_exec_values(
                             exec_bw_source,
@@ -556,7 +557,9 @@ def _checkpoint_eval_summary(
                         )
                     if not cfg.fixed_satellite_strategy:
                         policy_sat = (
-                            policy_out.sat_logits.cpu().numpy() if policy_out.sat_logits is not None else None
+                            policy_out.sat_select_mask.cpu().numpy()
+                            if policy_out.sat_select_mask is not None
+                            else None
                         )
                         sat_logits = _select_exec_values(
                             exec_sat_source,
@@ -569,46 +572,52 @@ def _checkpoint_eval_summary(
                         cfg,
                         eval_env.agents,
                         accel_actions,
-                        bw_logits=bw_logits,
-                        sat_logits=sat_logits,
+                        bw_alloc=bw_logits,
+                        sat_select_mask=sat_logits,
                     )
 
                 obs, rewards, terms, truncs, _ = eval_env.step(actions)
                 reward_sum += float(list(rewards.values())[0])
                 done = bool(list(terms.values())[0] or list(truncs.values())[0])
                 steps += 1
-                gu_queue_sum_steps += float(np.sum(eval_env.gu_queue))
-                uav_queue_sum_steps += float(np.sum(eval_env.uav_queue))
-                sat_queue_sum_steps += float(np.sum(eval_env.sat_queue))
-                sat_drop_sum_ep += float(np.sum(getattr(eval_env, 'sat_drop', 0.0)))
                 parts = dict(getattr(eval_env, 'last_reward_parts', {}) or {})
-                arrival_sum_ep += float(parts.get('arrival_sum', 0.0))
-                throughput_access_norm_sum += float(parts.get('throughput_access_norm', 0.0))
-                throughput_backhaul_norm_sum += float(parts.get('throughput_backhaul_norm', 0.0))
+                processed_ratio_sum += float(parts.get('processed_ratio_eval', 0.0))
+                drop_ratio_sum += float(parts.get('drop_ratio_eval', 0.0))
+                pre_backlog_sum += float(parts.get('pre_backlog_steps_eval', 0.0))
+                x_acc_sum += float(parts.get('x_acc', 0.0))
+                x_rel_sum += float(parts.get('x_rel', 0.0))
+                g_pre_sum += float(parts.get('g_pre', 0.0))
+                d_pre_sum += float(parts.get('d_pre', 0.0))
+                sat_processed_sum_ep += float(parts.get('sat_processed_sum', 0.0))
                 collision_any = max(collision_any, float(parts.get('collision_event', 0.0)))
 
             steps = max(steps, 1)
-            arrival_per_step = arrival_sum_ep / float(steps)
-            arrival_denom = max(arrival_per_step, 1e-9)
             reward_sum_total += reward_sum
-            throughput_access_norm_total += throughput_access_norm_sum / float(steps)
-            throughput_backhaul_norm_total += throughput_backhaul_norm_sum / float(steps)
-            gu_queue_arrival_steps_total += (gu_queue_sum_steps / float(steps)) / arrival_denom
-            uav_queue_arrival_steps_total += (uav_queue_sum_steps / float(steps)) / arrival_denom
-            sat_queue_arrival_steps_total += (sat_queue_sum_steps / float(steps)) / arrival_denom
-            sat_drop_ratio_total += sat_drop_sum_ep / max(arrival_sum_ep, 1e-9)
+            processed_ratio_total += processed_ratio_sum / float(steps)
+            drop_ratio_total += drop_ratio_sum / float(steps)
+            pre_backlog_total += pre_backlog_sum / float(steps)
+            x_acc_total += x_acc_sum / float(steps)
+            x_rel_total += x_rel_sum / float(steps)
+            g_pre_total += g_pre_sum / float(steps)
+            d_pre_total += d_pre_sum / float(steps)
+            d_sys_total += (
+                float(np.sum(eval_env.gu_queue) + np.sum(eval_env.uav_queue) + np.sum(eval_env.sat_queue))
+                / max(sat_processed_sum_ep, 1e-9)
+            )
             collision_total += collision_any
 
         denom = float(max(int(episodes), 1))
         return {
             'episodes': denom,
             'reward_sum': reward_sum_total / denom,
-            'throughput_access_norm_mean': throughput_access_norm_total / denom,
-            'throughput_backhaul_norm_mean': throughput_backhaul_norm_total / denom,
-            'gu_queue_arrival_steps_mean': gu_queue_arrival_steps_total / denom,
-            'uav_queue_arrival_steps_mean': uav_queue_arrival_steps_total / denom,
-            'sat_queue_arrival_steps_mean': sat_queue_arrival_steps_total / denom,
-            'sat_drop_ratio': sat_drop_ratio_total / denom,
+            'processed_ratio_eval': processed_ratio_total / denom,
+            'drop_ratio_eval': drop_ratio_total / denom,
+            'pre_backlog_steps_eval': pre_backlog_total / denom,
+            'D_sys_report': d_sys_total / denom,
+            'x_acc_mean': x_acc_total / denom,
+            'x_rel_mean': x_rel_total / denom,
+            'g_pre_mean': g_pre_total / denom,
+            'd_pre_mean': d_pre_total / denom,
             'collision_episode_fraction': collision_total / denom,
         }
     finally:
@@ -623,30 +632,35 @@ def _checkpoint_eval_fieldnames() -> List[str]:
         'checkpoint_suffix',
         'episodes',
         'reward_sum',
-        'throughput_access_norm_mean',
-        'throughput_backhaul_norm_mean',
-        'gu_queue_arrival_steps_mean',
-        'uav_queue_arrival_steps_mean',
-        'sat_queue_arrival_steps_mean',
-        'sat_drop_ratio',
+        'processed_ratio_eval',
+        'drop_ratio_eval',
+        'pre_backlog_steps_eval',
+        'D_sys_report',
+        'x_acc_mean',
+        'x_rel_mean',
+        'g_pre_mean',
+        'd_pre_mean',
         'collision_episode_fraction',
         'fixed_reward_sum',
-        'fixed_throughput_access_norm_mean',
-        'fixed_throughput_backhaul_norm_mean',
-        'fixed_gu_queue_arrival_steps_mean',
-        'fixed_uav_queue_arrival_steps_mean',
-        'fixed_sat_queue_arrival_steps_mean',
-        'fixed_sat_drop_ratio',
+        'fixed_processed_ratio_eval',
+        'fixed_drop_ratio_eval',
+        'fixed_pre_backlog_steps_eval',
+        'fixed_D_sys_report',
+        'fixed_x_acc_mean',
+        'fixed_x_rel_mean',
+        'fixed_g_pre_mean',
+        'fixed_d_pre_mean',
         'fixed_collision_episode_fraction',
-        'gu_improved',
-        'uav_improved',
-        'front_improved',
-        'sat_drop_worsened',
-        'sat_drop_worse_streak',
+        'processed_improved',
+        'drop_improved',
+        'pre_backlog_improved',
+        'model_improved',
+        'quality_worsened',
+        'quality_worse_streak',
         'reward_improved',
         'reward_plateau_streak',
         'collision_gate_passed',
-        'sat_drop_early_stop_triggered',
+        'quality_early_stop_triggered',
         'reward_early_stop_triggered',
         'early_stop_triggered',
     ]
@@ -669,10 +683,10 @@ def _update_checkpoint_eval_state(
     cfg,
 ) -> Dict[str, object]:
     reward_sum = float(summary["reward_sum"])
-    sat_drop = float(summary["sat_drop_ratio"])
+    processed = float(summary["processed_ratio_eval"])
+    drop_ratio = float(summary["drop_ratio_eval"])
+    pre_backlog = float(summary["pre_backlog_steps_eval"])
     collision_frac = float(summary["collision_episode_fraction"])
-    gu_queue = float(summary["gu_queue_arrival_steps_mean"])
-    uav_queue = float(summary["uav_queue_arrival_steps_mean"])
     rel_tol = max(float(getattr(cfg, "checkpoint_eval_front_queue_rel_improve_tol", 0.05) or 0.0), 0.0)
     worsen_delta = max(float(getattr(cfg, "checkpoint_eval_sat_drop_worsen_delta", 0.0) or 0.0), 0.0)
     patience = max(int(getattr(cfg, "checkpoint_eval_worsen_patience", 2) or 0), 1)
@@ -688,32 +702,50 @@ def _update_checkpoint_eval_state(
         0.0,
     )
 
-    best_gu_prev = float(state.get("best_gu_queue_arrival_steps_mean", float("inf")))
-    best_uav_prev = float(state.get("best_uav_queue_arrival_steps_mean", float("inf")))
-    prev_sat_drop = state.get("prev_sat_drop_ratio", None)
+    best_processed_prev = float(state.get("best_processed_ratio_eval", -float("inf")))
+    best_drop_prev = float(state.get("best_drop_ratio_eval", float("inf")))
+    best_pre_backlog_prev = float(state.get("best_pre_backlog_steps_eval", float("inf")))
+    prev_processed = state.get("prev_processed_ratio_eval", None)
+    prev_drop = state.get("prev_drop_ratio_eval", None)
+    prev_pre_backlog = state.get("prev_pre_backlog_steps_eval", None)
     best_reward_prev = float(state.get("best_reward_sum", -float("inf")))
 
-    gu_improved = not np.isfinite(best_gu_prev) or gu_queue < best_gu_prev * (1.0 - rel_tol)
-    uav_improved = not np.isfinite(best_uav_prev) or uav_queue < best_uav_prev * (1.0 - rel_tol)
-    front_improved = bool(gu_improved or uav_improved)
-    sat_drop_worsened = prev_sat_drop is not None and sat_drop > float(prev_sat_drop) + worsen_delta
+    processed_improved = processed > best_processed_prev + worsen_delta
+    drop_improved = drop_ratio < best_drop_prev - worsen_delta
+    pre_backlog_improved = (
+        (not np.isfinite(best_pre_backlog_prev))
+        or pre_backlog < best_pre_backlog_prev * (1.0 - rel_tol)
+    )
+    current_key = (processed, -drop_ratio, -pre_backlog)
+    best_key = (best_processed_prev, -best_drop_prev, -best_pre_backlog_prev)
+    model_improved = (not np.isfinite(best_processed_prev)) or current_key > best_key
+    quality_worsened = (
+        prev_processed is not None
+        and prev_drop is not None
+        and prev_pre_backlog is not None
+        and processed < float(prev_processed) - worsen_delta
+        and drop_ratio > float(prev_drop) + worsen_delta
+        and pre_backlog > float(prev_pre_backlog) * (1.0 + rel_tol)
+    )
     reward_margin = reward_min_delta_rel * max(abs(best_reward_prev), 1.0) if np.isfinite(best_reward_prev) else 0.0
     reward_improved = (not np.isfinite(best_reward_prev)) or reward_sum > (best_reward_prev + reward_margin)
 
-    if gu_queue < best_gu_prev:
-        state["best_gu_queue_arrival_steps_mean"] = gu_queue
-    if uav_queue < best_uav_prev:
-        state["best_uav_queue_arrival_steps_mean"] = uav_queue
+    if model_improved:
+        state["best_processed_ratio_eval"] = processed
+        state["best_drop_ratio_eval"] = drop_ratio
+        state["best_pre_backlog_steps_eval"] = pre_backlog
     if (not np.isfinite(best_reward_prev)) or reward_sum > best_reward_prev:
         state["best_reward_sum"] = reward_sum
 
-    prev_streak = int(state.get("sat_drop_worse_streak", 0))
-    if sat_drop_worsened and not front_improved:
-        sat_drop_worse_streak = prev_streak + 1
+    prev_streak = int(state.get("quality_worse_streak", 0))
+    if quality_worsened and not model_improved:
+        quality_worse_streak = prev_streak + 1
     else:
-        sat_drop_worse_streak = 0
-    state["sat_drop_worse_streak"] = float(sat_drop_worse_streak)
-    state["prev_sat_drop_ratio"] = sat_drop
+        quality_worse_streak = 0
+    state["quality_worse_streak"] = float(quality_worse_streak)
+    state["prev_processed_ratio_eval"] = processed
+    state["prev_drop_ratio_eval"] = drop_ratio
+    state["prev_pre_backlog_steps_eval"] = pre_backlog
 
     reward_prev_streak = int(state.get("reward_plateau_streak", 0))
     if reward_improved:
@@ -723,23 +755,24 @@ def _update_checkpoint_eval_state(
     state["reward_plateau_streak"] = float(reward_plateau_streak)
     collision_gate_passed = collision_frac <= reward_collision_threshold
 
-    sat_drop_should_stop = sat_drop_early_stop_enabled and sat_drop_worse_streak >= patience
+    quality_should_stop = sat_drop_early_stop_enabled and quality_worse_streak >= patience
     reward_should_stop = (
         reward_early_stop_enabled
         and reward_plateau_streak >= reward_patience
         and collision_gate_passed
     )
-    should_stop = sat_drop_should_stop or reward_should_stop
+    should_stop = quality_should_stop or reward_should_stop
     return {
-        "gu_improved": float(gu_improved),
-        "uav_improved": float(uav_improved),
-        "front_improved": float(front_improved),
-        "sat_drop_worsened": float(sat_drop_worsened),
-        "sat_drop_worse_streak": float(sat_drop_worse_streak),
+        "processed_improved": float(processed_improved),
+        "drop_improved": float(drop_improved),
+        "pre_backlog_improved": float(pre_backlog_improved),
+        "model_improved": float(model_improved),
+        "quality_worsened": float(quality_worsened),
+        "quality_worse_streak": float(quality_worse_streak),
         "reward_improved": float(reward_improved),
         "reward_plateau_streak": float(reward_plateau_streak),
         "collision_gate_passed": float(collision_gate_passed),
-        "sat_drop_early_stop_triggered": float(sat_drop_should_stop),
+        "quality_early_stop_triggered": float(quality_should_stop),
         "reward_early_stop_triggered": float(reward_should_stop),
         "early_stop_triggered": float(should_stop),
     }
@@ -818,14 +851,10 @@ def train(
     train_shared_backbone = bool(getattr(cfg, "train_shared_backbone", True))
     _set_module_requires_grad(actor.mu_head, train_heads["accel"])
     actor.log_std.requires_grad = train_heads["accel"]
-    _set_module_requires_grad(actor.bw_head, train_heads["bw"])
-    if actor.bw_log_std is not None:
-        actor.bw_log_std.requires_grad = train_heads["bw"] and bool(
-            getattr(cfg, "bw_log_std_trainable", True)
-        )
-    _set_module_requires_grad(actor.sat_head, train_heads["sat"])
-    if actor.sat_log_std is not None:
-        actor.sat_log_std.requires_grad = train_heads["sat"]
+    _set_module_requires_grad(getattr(actor, "bw_user_encoder", None), train_heads["bw"])
+    _set_module_requires_grad(getattr(actor, "bw_scorer", None), train_heads["bw"])
+    _set_module_requires_grad(getattr(actor, "sat_action_encoder", None), train_heads["sat"])
+    _set_module_requires_grad(getattr(actor, "sat_scorer", None), train_heads["sat"])
     if not train_shared_backbone:
         for module in actor.backbone_modules():
             _set_module_requires_grad(module, False)
@@ -899,6 +928,14 @@ def train(
         "episode_length_mean",
         "completed_episode_count",
         "rollout_reward_per_step",
+        "x_acc",
+        "x_rel",
+        "g_pre",
+        "d_pre",
+        "processed_ratio_eval",
+        "drop_ratio_eval",
+        "pre_backlog_steps_eval",
+        "D_sys_report",
         "episode_term_throughput_access",
         "episode_term_throughput_backhaul",
         "episode_term_queue_gu_arrival",
@@ -916,6 +953,9 @@ def train(
         "ret_p95",
         "explained_variance",
         "entropy",
+        "entropy_accel",
+        "entropy_bw",
+        "entropy_sat",
         "approx_kl",
         "clip_frac",
         "ratio_p50",
@@ -942,6 +982,13 @@ def train(
     tb_fields = [
         "episode_reward",
         "rollout_reward_per_step",
+        "x_acc",
+        "x_rel",
+        "g_pre",
+        "d_pre",
+        "processed_ratio_eval",
+        "drop_ratio_eval",
+        "pre_backlog_steps_eval",
         "episode_term_throughput_access",
         "episode_term_throughput_backhaul",
         "episode_term_queue_gu_arrival",
@@ -966,6 +1013,13 @@ def train(
     env_step_fields = [
         "episode_reward",
         "rollout_reward_per_step",
+        "x_acc",
+        "x_rel",
+        "g_pre",
+        "d_pre",
+        "processed_ratio_eval",
+        "drop_ratio_eval",
+        "pre_backlog_steps_eval",
         "episode_term_throughput_access",
         "episode_term_throughput_backhaul",
         "episode_term_queue_gu_arrival",
@@ -1018,7 +1072,6 @@ def train(
     imitation_accel = bool(getattr(cfg, "imitation_accel", True)) and train_heads["accel"]
     imitation_bw = bool(getattr(cfg, "imitation_bw", True)) and train_heads["bw"]
     imitation_sat = bool(getattr(cfg, "imitation_sat", False)) and train_heads["sat"]
-    bw_residual_enabled = str(getattr(cfg, "exec_bw_source", "policy") or "policy").strip().lower() == "heuristic_residual"
     bw_residual_l2_coef = max(float(getattr(cfg, "bw_residual_l2_coef", 0.0) or 0.0), 0.0)
     imitation_coef_curr = _imitation_coef_at(resume_update)
     imitation_enabled_curr = imitation_enabled and imitation_coef_curr > 0.0
@@ -1026,8 +1079,6 @@ def train(
     danger_imitation_enabled = bool(getattr(cfg, "danger_imitation_enabled", False)) and danger_imitation_coef > 0.0
     if danger_imitation_enabled and not train_heads["accel"]:
         raise ValueError("danger_imitation_enabled=true requires train_accel=true")
-    bw_scale = float(getattr(actor, "bw_scale", getattr(cfg, "bw_logit_scale", 1.0)) or 1.0)
-    sat_scale = float(getattr(cfg, "sat_logit_scale", 1.0) or 1.0)
     exec_accel_source = _normalize_exec_source(getattr(cfg, "exec_accel_source", "policy"))
     exec_bw_source = _normalize_exec_source(getattr(cfg, "exec_bw_source", "policy"))
     exec_sat_source = _normalize_exec_source(getattr(cfg, "exec_sat_source", "policy"))
@@ -1106,20 +1157,18 @@ def train(
             print(
                 f"Checkpoint eval {checkpoint_eval_fixed_policy} reference: "
                 f"reward={checkpoint_eval_fixed_summary['reward_sum']:.4f}, "
-                f"T_access={checkpoint_eval_fixed_summary['throughput_access_norm_mean']:.4f}, "
-                f"T_backhaul={checkpoint_eval_fixed_summary['throughput_backhaul_norm_mean']:.4f}, "
-                f"GU={checkpoint_eval_fixed_summary['gu_queue_arrival_steps_mean']:.4f}, "
-                f"UAV={checkpoint_eval_fixed_summary['uav_queue_arrival_steps_mean']:.4f}, "
+                f"processed={checkpoint_eval_fixed_summary['processed_ratio_eval']:.4f}, "
+                f"drop={checkpoint_eval_fixed_summary['drop_ratio_eval']:.4f}, "
+                f"pre_backlog={checkpoint_eval_fixed_summary['pre_backlog_steps_eval']:.4f}, "
                 f"collision={checkpoint_eval_fixed_summary['collision_episode_fraction']:.4f}"
             )
         else:
             print(
                 f"Reused checkpoint eval {checkpoint_eval_fixed_policy} reference from {resume_state_path}: "
                 f"reward={checkpoint_eval_fixed_summary['reward_sum']:.4f}, "
-                f"T_access={checkpoint_eval_fixed_summary['throughput_access_norm_mean']:.4f}, "
-                f"T_backhaul={checkpoint_eval_fixed_summary['throughput_backhaul_norm_mean']:.4f}, "
-                f"GU={checkpoint_eval_fixed_summary['gu_queue_arrival_steps_mean']:.4f}, "
-                f"UAV={checkpoint_eval_fixed_summary['uav_queue_arrival_steps_mean']:.4f}, "
+                f"processed={checkpoint_eval_fixed_summary['processed_ratio_eval']:.4f}, "
+                f"drop={checkpoint_eval_fixed_summary['drop_ratio_eval']:.4f}, "
+                f"pre_backlog={checkpoint_eval_fixed_summary['pre_backlog_steps_eval']:.4f}, "
                 f"collision={checkpoint_eval_fixed_summary['collision_episode_fraction']:.4f}"
             )
 
@@ -1134,10 +1183,7 @@ def train(
             parts.append(np.zeros_like(base_accel))
         if cfg.enable_bw_action:
             if imitation_bw:
-                if bw_residual_enabled:
-                    parts.append(np.zeros_like(base_bw))
-                else:
-                    parts.append(base_bw)
+                parts.append(base_bw)
             else:
                 parts.append(np.zeros_like(base_bw))
         if not cfg.fixed_satellite_strategy:
@@ -1238,6 +1284,14 @@ def train(
         danger_imitation_loss_sum = 0.0
         residual_reg_loss_sum = 0.0
         reward_raw_sum = 0.0
+        x_acc_sum = 0.0
+        x_rel_sum = 0.0
+        g_pre_sum = 0.0
+        d_pre_sum = 0.0
+        processed_ratio_eval_sum = 0.0
+        drop_ratio_eval_sum = 0.0
+        pre_backlog_steps_eval_sum = 0.0
+        d_sys_report_sum = 0.0
         arrival_sum_sum = 0.0
         outflow_sum_sum = 0.0
         service_norm_sum = 0.0
@@ -1349,19 +1403,26 @@ def train(
                 with torch.inference_mode():
                     teacher_out = teacher_actor.act(obs_tensor, deterministic=teacher_deterministic)
                 teacher_accel_all = teacher_out.accel.cpu().numpy()
-                teacher_bw_all = teacher_out.bw_logits.cpu().numpy() if teacher_out.bw_logits is not None else None
-                teacher_sat_all = teacher_out.sat_logits.cpu().numpy() if teacher_out.sat_logits is not None else None
+                teacher_bw_all = teacher_out.bw_action.cpu().numpy() if teacher_out.bw_action is not None else None
+                teacher_sat_all = (
+                    teacher_out.sat_select_mask.cpu().numpy()
+                    if teacher_out.sat_select_mask is not None
+                    else None
+                )
             policy_forward_time += time.perf_counter() - policy_forward_start
 
             action_pack_start = time.perf_counter()
             accel_actions = policy_out.accel.cpu().numpy()
-            bw_logits_all = policy_out.bw_logits.cpu().numpy() if policy_out.bw_logits is not None else None
-            sat_logits_all = policy_out.sat_logits.cpu().numpy() if policy_out.sat_logits is not None else None
+            bw_logits_all = policy_out.bw_action.cpu().numpy() if policy_out.bw_action is not None else None
+            sat_logits_all = (
+                policy_out.sat_select_mask.cpu().numpy()
+                if policy_out.sat_select_mask is not None
+                else None
+            )
 
             action_dicts = []
             accel_cmd_list: List[np.ndarray] = []
             bw_exec_list: List[np.ndarray | None] = []
-            bw_policy_action_list: List[np.ndarray | None] = []
             sat_exec_list: List[np.ndarray | None] = []
             for env_idx in range(num_envs):
                 sl = slice(env_idx * num_agents, (env_idx + 1) * num_agents)
@@ -1387,22 +1448,17 @@ def train(
                 )
                 accel_cmd = np.clip(accel_cmd, -1.0, 1.0).astype(np.float32, copy=False)
 
-                users_mask = np.stack([o["users_mask"] for o in obs_list], axis=0)
-                sats_mask = np.stack([o["sats_mask"] for o in obs_list], axis=0)
-                if cfg.doppler_enabled and use_heuristic_mask:
-                    nu_norm = np.stack([o["sats"][:, 6] for o in obs_list], axis=0)
-                    doppler_ok = (np.abs(nu_norm) <= 1.0).astype(np.float32)
-                    sats_mask = sats_mask * doppler_ok
+                bw_valid_mask = np.stack(
+                    [o.get("bw_valid_mask", o["users_mask"]) for o in obs_list],
+                    axis=0,
+                ).astype(np.float32, copy=False)
+                sat_valid_mask = np.stack(
+                    [o.get("sat_valid_mask", o["sats_mask"]) for o in obs_list],
+                    axis=0,
+                ).astype(np.float32, copy=False)
 
                 bw_exec = None
-                bw_policy_action = None
                 if cfg.enable_bw_action:
-                    bw_policy_action = _compose_bw_train_action(
-                        exec_bw_source,
-                        bw_policy_env,
-                        (len(obs_list), cfg.users_obs_max),
-                        cfg,
-                    )
                     bw_raw = _compose_bw_exec_values(
                         exec_bw_source,
                         bw_policy_env,
@@ -1411,8 +1467,7 @@ def train(
                         (len(obs_list), cfg.users_obs_max),
                         cfg,
                     )
-                    bw_exec = bw_raw * users_mask
-                    bw_policy_action = bw_policy_action * users_mask
+                    bw_exec = np.clip(bw_raw, 0.0, None) * bw_valid_mask
 
                 sat_exec = None
                 if not cfg.fixed_satellite_strategy:
@@ -1423,19 +1478,18 @@ def train(
                         heur_sat,
                         (len(obs_list), cfg.sats_obs_max),
                     )
-                    sat_exec = sat_raw * sats_mask
+                    sat_exec = np.clip(sat_raw, 0.0, 1.0) * sat_valid_mask
 
                 action_dict = assemble_actions(
                     cfg,
                     env.agents,
                     accel_cmd,
-                    bw_logits=bw_exec,
-                    sat_logits=sat_exec,
+                    bw_alloc=bw_exec,
+                    sat_select_mask=sat_exec,
                 )
                 action_dicts.append(action_dict)
                 accel_cmd_list.append(accel_cmd)
                 bw_exec_list.append(bw_exec)
-                bw_policy_action_list.append(bw_policy_action)
                 sat_exec_list.append(sat_exec)
             action_pack_time += time.perf_counter() - action_pack_start
 
@@ -1469,6 +1523,7 @@ def train(
             value_np = value.detach().cpu().numpy().reshape(num_envs)
 
             action_vec_exec_env = []
+            sat_indices_exec_env = []
             for env_idx in range(num_envs):
                 stats = step_stats[env_idx] if step_stats[env_idx] is not None else {}
                 fallback_accel = accel_cmd_list[env_idx] * cfg.a_max
@@ -1477,18 +1532,43 @@ def train(
                 accel_exec_norm = np.clip(accel_exec_norm, -1.0, 1.0).astype(np.float32, copy=False)
                 exec_parts = [accel_exec_norm]
                 if cfg.enable_bw_action and bw_exec_list[env_idx] is not None:
-                    if exec_bw_source == "heuristic_residual" and bw_policy_action_list[env_idx] is not None:
-                        exec_parts.append(bw_policy_action_list[env_idx])
-                    else:
-                        exec_parts.append(bw_exec_list[env_idx])
+                    exec_bw = np.asarray(
+                        stats.get("last_exec_bw_alloc", bw_exec_list[env_idx]),
+                        dtype=np.float32,
+                    )
+                    exec_parts.append(exec_bw)
                 if not cfg.fixed_satellite_strategy and sat_exec_list[env_idx] is not None:
-                    exec_parts.append(sat_exec_list[env_idx])
+                    exec_sat = np.asarray(
+                        stats.get("last_exec_sat_select_mask", sat_exec_list[env_idx]),
+                        dtype=np.float32,
+                    )
+                    exec_parts.append(exec_sat)
                 action_vec_exec_env.append(np.concatenate(exec_parts, axis=1).astype(np.float32, copy=False))
+                sat_indices_exec_env.append(
+                    np.asarray(
+                        stats.get(
+                            "last_exec_sat_indices",
+                            np.full(
+                                (num_agents, max(int(getattr(cfg, "sat_num_select", cfg.N_RF) or cfg.N_RF), 0)),
+                                -1,
+                                dtype=np.int64,
+                            ),
+                        ),
+                        dtype=np.int64,
+                    )
+                )
 
             action_vec_exec = np.concatenate(action_vec_exec_env, axis=0).astype(np.float32, copy=False)
             with torch.inference_mode():
                 action_vec_exec_t = torch.from_numpy(action_vec_exec).to(device)
-                logprob_parts, _ = actor.evaluate_actions_parts(obs_tensor, action_vec_exec_t, out=policy_out.dist_out)
+                sat_indices_exec = np.concatenate(sat_indices_exec_env, axis=0)
+                sat_indices_exec_t = torch.from_numpy(sat_indices_exec).to(device)
+                logprob_parts, _ = actor.evaluate_actions_parts(
+                    obs_tensor,
+                    action_vec_exec_t,
+                    sat_indices=sat_indices_exec_t,
+                    out=policy_out.dist_out,
+                )
                 logprobs_all = _sum_selected_parts(logprob_parts, train_heads).detach().cpu().numpy()
 
             for env_idx in range(num_envs):
@@ -1541,6 +1621,14 @@ def train(
 
                 parts = stats.get("reward_parts", None)
                 if parts:
+                    x_acc_sum += float(parts.get("x_acc", 0.0))
+                    x_rel_sum += float(parts.get("x_rel", 0.0))
+                    g_pre_sum += float(parts.get("g_pre", 0.0))
+                    d_pre_sum += float(parts.get("d_pre", 0.0))
+                    processed_ratio_eval_sum += float(parts.get("processed_ratio_eval", 0.0))
+                    drop_ratio_eval_sum += float(parts.get("drop_ratio_eval", 0.0))
+                    pre_backlog_steps_eval_sum += float(parts.get("pre_backlog_steps_eval", 0.0))
+                    d_sys_report_sum += float(parts.get("D_sys_report", 0.0))
                     r_service_ratio_sum += float(parts.get("service_ratio", 0.0))
                     r_drop_ratio_sum += float(parts.get("drop_ratio", 0.0))
                     arrival_sum_sum += float(parts.get("arrival_sum", 0.0))
@@ -1724,6 +1812,7 @@ def train(
                     _build_imitation_target(per_env_obs_lists[env_idx]),
                     danger_target_env,
                     danger_mask_env,
+                    sat_indices_exec_env[env_idx],
                 )
 
             obs_env = list(next_obs_env)
@@ -1743,6 +1832,7 @@ def train(
         imitation_arr_list = []
         danger_imitation_target_list = []
         danger_imitation_mask_list = []
+        sat_indices_list = []
         adv_list = []
         rets_list = []
         clip_val = float(getattr(cfg, "reward_norm_clip", 0.0) or 0.0)
@@ -1761,6 +1851,7 @@ def train(
             imitation_arr_e,
             danger_imitation_target_e,
             danger_imitation_mask_e,
+            sat_indices_e,
         ) in buffer_data:
             rewards_proc = rewards_e
             if getattr(cfg, "reward_norm_enabled", False) and reward_rms is not None:
@@ -1790,6 +1881,7 @@ def train(
             imitation_arr_list.append(imitation_arr_e)
             danger_imitation_target_list.append(danger_imitation_target_e)
             danger_imitation_mask_list.append(danger_imitation_mask_e)
+            sat_indices_list.append(sat_indices_e)
             adv_list.append(adv_e)
             rets_list.append(rets_e)
 
@@ -1800,6 +1892,7 @@ def train(
         imitation_arr = np.concatenate(imitation_arr_list, axis=0)
         danger_imitation_target_arr = np.concatenate(danger_imitation_target_list, axis=0)
         danger_imitation_mask_arr = np.concatenate(danger_imitation_mask_list, axis=0)
+        sat_indices_arr = np.concatenate(sat_indices_list, axis=0)
         adv = np.concatenate(adv_list, axis=0)
         rets = np.concatenate(rets_list, axis=0)
         adv_raw_mean = float(np.mean(adv))
@@ -1826,6 +1919,7 @@ def train(
         imitation_flat = imitation_arr.reshape(T * N, -1)
         danger_imitation_target_flat = danger_imitation_target_arr.reshape(T * N, -1)
         danger_imitation_mask_flat = danger_imitation_mask_arr.reshape(T * N, -1)
+        sat_indices_flat = sat_indices_arr.reshape(T * N, -1)
         adv_flat = np.repeat(adv, N)
 
         # Convert to torch
@@ -1838,6 +1932,7 @@ def train(
         imitation_flat_t = torch.from_numpy(imitation_flat).to(device)
         danger_imitation_target_flat_t = torch.from_numpy(danger_imitation_target_flat).to(device)
         danger_imitation_mask_flat_t = torch.from_numpy(danger_imitation_mask_flat).to(device)
+        sat_indices_flat_t = torch.from_numpy(sat_indices_flat).to(device)
         if not torch.isfinite(obs_flat_t).all():
             print(f"NaN/Inf detected in obs_flat_t at update={update}")
             raise ValueError("obs_flat_t contains NaN/Inf")
@@ -1883,6 +1978,9 @@ def train(
         policy_losses = []
         value_losses = []
         entropies = []
+        entropy_accel_values = []
+        entropy_bw_values = []
+        entropy_sat_values = []
         approx_kls = []
         clip_fracs = []
         ratio_samples = []
@@ -1901,7 +1999,12 @@ def train(
                     print(f"NaN/Inf detected in act minibatch at update={update}")
                     raise ValueError("act minibatch contains NaN/Inf")
                 out = actor.forward(obs_flat_t[mb_idx])
-                logprob_parts, entropy_parts = actor.evaluate_actions_parts(obs_flat_t[mb_idx], act_flat_t[mb_idx], out=out)
+                logprob_parts, entropy_parts = actor.evaluate_actions_parts(
+                    obs_flat_t[mb_idx],
+                    act_flat_t[mb_idx],
+                    sat_indices=sat_indices_flat_t[mb_idx],
+                    out=out,
+                )
                 new_logp = _sum_selected_parts(logprob_parts, train_heads)
                 entropy = _sum_selected_parts(entropy_parts, train_heads)
                 if not torch.isfinite(new_logp).all():
@@ -1926,20 +2029,14 @@ def train(
 
                 imitation_loss = torch.tensor(0.0, device=device)
                 if imitation_enabled_curr and imitation_mask is not None and imitation_mask_sum > 0:
-                    pred_parts = [torch.tanh(out["mu"])]
-                    if cfg.enable_bw_action:
-                        pred_parts.append(torch.tanh(out["bw_mu"]) * bw_scale)
-                    if not cfg.fixed_satellite_strategy:
-                        pred_parts.append(torch.tanh(out["sat_mu"]) * sat_scale)
-                    pred_action = torch.cat(pred_parts, dim=-1)
+                    pred_action = actor.act(obs_flat_t[mb_idx], deterministic=True).action
                     target_action = imitation_flat_t[mb_idx]
                     diff = (pred_action - target_action) * imitation_mask
                     imitation_loss = (diff.pow(2).sum(-1) / (imitation_mask_sum + 1e-9)).mean()
 
                 residual_reg_loss = torch.tensor(0.0, device=device)
-                if bw_residual_enabled and train_heads["bw"] and bw_residual_l2_coef > 0.0:
-                    pred_bw_residual = torch.tanh(out["bw_mu"]) * bw_scale
-                    residual_reg_loss = pred_bw_residual.pow(2).mean()
+                if train_heads["bw"] and bw_residual_l2_coef > 0.0 and "bw_alpha" in out:
+                    residual_reg_loss = out["bw_alpha"].pow(2).mean()
 
                 danger_imitation_loss = torch.tensor(0.0, device=device)
                 if danger_imitation_enabled:
@@ -1974,6 +2071,9 @@ def train(
 
                 policy_losses.append(policy_loss.item())
                 entropies.append(entropy.mean().item())
+                entropy_accel_values.append(float(entropy_parts.get("accel", torch.zeros(1, device=device)).mean().item()))
+                entropy_bw_values.append(float(entropy_parts.get("bw", torch.zeros(1, device=device)).mean().item()))
+                entropy_sat_values.append(float(entropy_parts.get("sat", torch.zeros(1, device=device)).mean().item()))
                 approx_kls.append(float(approx_kl.item()))
                 clip_fracs.append(float(clip_frac.item()))
                 ratio_samples.append(ratio.detach().cpu().numpy().reshape(-1))
@@ -2020,10 +2120,6 @@ def train(
         log_std_terms: List[np.ndarray] = []
         if train_heads["accel"]:
             log_std_terms.append(torch.clamp(actor.log_std.detach(), -5.0, 2.0).cpu().numpy().reshape(-1))
-        if train_heads["bw"] and actor.bw_log_std is not None:
-            log_std_terms.append(torch.clamp(actor.bw_log_std.detach(), -5.0, 2.0).cpu().numpy().reshape(-1))
-        if train_heads["sat"] and actor.sat_log_std is not None:
-            log_std_terms.append(torch.clamp(actor.sat_log_std.detach(), -5.0, 2.0).cpu().numpy().reshape(-1))
         if log_std_terms:
             log_std_vec = np.concatenate(log_std_terms, axis=0)
         else:
@@ -2070,6 +2166,14 @@ def train(
             "episode_length_mean": episode_length_mean,
             "completed_episode_count": float(completed_episode_count),
             "rollout_reward_per_step": rollout_reward_per_step,
+            "x_acc": x_acc_sum / steps_count,
+            "x_rel": x_rel_sum / steps_count,
+            "g_pre": g_pre_sum / steps_count,
+            "d_pre": d_pre_sum / steps_count,
+            "processed_ratio_eval": processed_ratio_eval_sum / steps_count,
+            "drop_ratio_eval": drop_ratio_eval_sum / steps_count,
+            "pre_backlog_steps_eval": pre_backlog_steps_eval_sum / steps_count,
+            "D_sys_report": d_sys_report_sum / steps_count,
             "episode_term_throughput_access": episode_term_throughput_access,
             "episode_term_throughput_backhaul": episode_term_throughput_backhaul,
             "episode_term_queue_gu_arrival": episode_term_queue_gu_arrival,
@@ -2087,6 +2191,9 @@ def train(
             "ret_p95": ret_p95,
             "explained_variance": explained_variance,
             "entropy": float(np.mean(entropies)) if entropies else 0.0,
+            "entropy_accel": float(np.mean(entropy_accel_values)) if entropy_accel_values else 0.0,
+            "entropy_bw": float(np.mean(entropy_bw_values)) if entropy_bw_values else 0.0,
+            "entropy_sat": float(np.mean(entropy_sat_values)) if entropy_sat_values else 0.0,
             "approx_kl": float(np.mean(approx_kls)) if approx_kls else 0.0,
             "clip_frac": float(np.mean(clip_fracs)) if clip_fracs else 0.0,
             "ratio_p50": ratio_p50,
@@ -2197,20 +2304,24 @@ def train(
                 "checkpoint_suffix": checkpoint_suffix,
                 "episodes": checkpoint_eval_summary["episodes"],
                 "reward_sum": checkpoint_eval_summary["reward_sum"],
-                "throughput_access_norm_mean": checkpoint_eval_summary["throughput_access_norm_mean"],
-                "throughput_backhaul_norm_mean": checkpoint_eval_summary["throughput_backhaul_norm_mean"],
-                "gu_queue_arrival_steps_mean": checkpoint_eval_summary["gu_queue_arrival_steps_mean"],
-                "uav_queue_arrival_steps_mean": checkpoint_eval_summary["uav_queue_arrival_steps_mean"],
-                "sat_queue_arrival_steps_mean": checkpoint_eval_summary["sat_queue_arrival_steps_mean"],
-                "sat_drop_ratio": checkpoint_eval_summary["sat_drop_ratio"],
+                "processed_ratio_eval": checkpoint_eval_summary["processed_ratio_eval"],
+                "drop_ratio_eval": checkpoint_eval_summary["drop_ratio_eval"],
+                "pre_backlog_steps_eval": checkpoint_eval_summary["pre_backlog_steps_eval"],
+                "D_sys_report": checkpoint_eval_summary["D_sys_report"],
+                "x_acc_mean": checkpoint_eval_summary["x_acc_mean"],
+                "x_rel_mean": checkpoint_eval_summary["x_rel_mean"],
+                "g_pre_mean": checkpoint_eval_summary["g_pre_mean"],
+                "d_pre_mean": checkpoint_eval_summary["d_pre_mean"],
                 "collision_episode_fraction": checkpoint_eval_summary["collision_episode_fraction"],
                 "fixed_reward_sum": checkpoint_eval_fixed_summary["reward_sum"],
-                "fixed_throughput_access_norm_mean": checkpoint_eval_fixed_summary["throughput_access_norm_mean"],
-                "fixed_throughput_backhaul_norm_mean": checkpoint_eval_fixed_summary["throughput_backhaul_norm_mean"],
-                "fixed_gu_queue_arrival_steps_mean": checkpoint_eval_fixed_summary["gu_queue_arrival_steps_mean"],
-                "fixed_uav_queue_arrival_steps_mean": checkpoint_eval_fixed_summary["uav_queue_arrival_steps_mean"],
-                "fixed_sat_queue_arrival_steps_mean": checkpoint_eval_fixed_summary["sat_queue_arrival_steps_mean"],
-                "fixed_sat_drop_ratio": checkpoint_eval_fixed_summary["sat_drop_ratio"],
+                "fixed_processed_ratio_eval": checkpoint_eval_fixed_summary["processed_ratio_eval"],
+                "fixed_drop_ratio_eval": checkpoint_eval_fixed_summary["drop_ratio_eval"],
+                "fixed_pre_backlog_steps_eval": checkpoint_eval_fixed_summary["pre_backlog_steps_eval"],
+                "fixed_D_sys_report": checkpoint_eval_fixed_summary["D_sys_report"],
+                "fixed_x_acc_mean": checkpoint_eval_fixed_summary["x_acc_mean"],
+                "fixed_x_rel_mean": checkpoint_eval_fixed_summary["x_rel_mean"],
+                "fixed_g_pre_mean": checkpoint_eval_fixed_summary["g_pre_mean"],
+                "fixed_d_pre_mean": checkpoint_eval_fixed_summary["d_pre_mean"],
                 "fixed_collision_episode_fraction": checkpoint_eval_fixed_summary["collision_episode_fraction"],
             }
             checkpoint_eval_row.update(checkpoint_eval_flags)
@@ -2220,18 +2331,16 @@ def train(
                 f"{checkpoint_suffix}: "
                 f"reward={checkpoint_eval_summary['reward_sum']:.4f} "
                 f"({checkpoint_eval_fixed_policy} ref {checkpoint_eval_fixed_summary['reward_sum']:.4f}), "
-                f"T_access={checkpoint_eval_summary['throughput_access_norm_mean']:.4f} "
-                f"({checkpoint_eval_fixed_policy} ref {checkpoint_eval_fixed_summary['throughput_access_norm_mean']:.4f}), "
-                f"T_backhaul={checkpoint_eval_summary['throughput_backhaul_norm_mean']:.4f} "
-                f"({checkpoint_eval_fixed_policy} ref {checkpoint_eval_fixed_summary['throughput_backhaul_norm_mean']:.4f}), "
-                f"GU={checkpoint_eval_summary['gu_queue_arrival_steps_mean']:.4f} "
-                f"({checkpoint_eval_fixed_policy} ref {checkpoint_eval_fixed_summary['gu_queue_arrival_steps_mean']:.4f}), "
-                f"UAV={checkpoint_eval_summary['uav_queue_arrival_steps_mean']:.4f} "
-                f"({checkpoint_eval_fixed_policy} ref {checkpoint_eval_fixed_summary['uav_queue_arrival_steps_mean']:.4f}), "
+                f"processed={checkpoint_eval_summary['processed_ratio_eval']:.4f} "
+                f"({checkpoint_eval_fixed_policy} ref {checkpoint_eval_fixed_summary['processed_ratio_eval']:.4f}), "
+                f"drop={checkpoint_eval_summary['drop_ratio_eval']:.4f} "
+                f"({checkpoint_eval_fixed_policy} ref {checkpoint_eval_fixed_summary['drop_ratio_eval']:.4f}), "
+                f"pre_backlog={checkpoint_eval_summary['pre_backlog_steps_eval']:.4f} "
+                f"({checkpoint_eval_fixed_policy} ref {checkpoint_eval_fixed_summary['pre_backlog_steps_eval']:.4f}), "
                 f"collision={checkpoint_eval_summary['collision_episode_fraction']:.4f} "
                 f"({checkpoint_eval_fixed_policy} ref {checkpoint_eval_fixed_summary['collision_episode_fraction']:.4f}), "
-                f"front_improved={int(checkpoint_eval_flags['front_improved'])}, "
-                f"worse_streak={int(checkpoint_eval_flags['sat_drop_worse_streak'])}, "
+                f"model_improved={int(checkpoint_eval_flags['model_improved'])}, "
+                f"worse_streak={int(checkpoint_eval_flags['quality_worse_streak'])}, "
                 f"reward_plateau_streak={int(checkpoint_eval_flags['reward_plateau_streak'])}, "
                 f"collision_gate={int(checkpoint_eval_flags['collision_gate_passed'])}"
             )
@@ -2244,7 +2353,7 @@ def train(
                 else:
                     print(
                         f"Checkpoint-eval early stopping at update {update + 1}: "
-                        "sat_drop_ratio kept worsening without meaningful GU/UAV improvement."
+                        "processed/drop/pre_backlog quality kept worsening."
                     )
                 break
 

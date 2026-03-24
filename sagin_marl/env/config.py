@@ -177,6 +177,7 @@ class SaginConfig:
     N_RF: int = 1
     sat_select_mode: str = "topk"
     sat_state_max: int | None = None
+    append_action_masks_to_obs: bool = True
 
     # Collision avoidance (optional safety layer)
     avoidance_enabled: bool = False
@@ -228,6 +229,10 @@ class SaginConfig:
     bw_head_zero_init: bool = False
     bw_log_std_init: float = 0.0
     bw_log_std_trainable: bool = True
+    bw_policy: str = "dirichlet"
+    bw_alpha_floor: float = 0.2
+    sat_policy: str = "masked_categorical"
+    sat_num_select: int | None = None
 
     # Baseline heuristics (queue_aware)
     baseline_accel_gain: float = 2.0
@@ -249,7 +254,13 @@ class SaginConfig:
     baseline_cluster_vel_gain: float = 1.0
 
     # Reward shaping
-    reward_mode: str = "dense"  # "dense" or "throughput_only"
+    reward_mode: str = "dense"  # "controllable_flow", "dense", or "throughput_only"
+    arrival_ref_mode: str = "expected_arrival"
+    use_queue_max_norm: bool = False
+    reward_w_access: float = 0.5
+    reward_w_relay: float = 0.5
+    reward_w_pre_drop: float = 1.0
+    reward_w_pre_growth: float = 0.2
     throughput_only_access_coef: float = 1.0
     throughput_only_backhaul_coef: float = 1.0
     throughput_only_gu_queue_coef: float = 0.0

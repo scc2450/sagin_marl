@@ -119,7 +119,9 @@ def _baseline_actions(
 
 def _normalize_exec_source(raw: str | None) -> str:
     src = str("policy" if raw is None else raw).strip().lower()
-    allowed = {"policy", "teacher", "heuristic", "zero", "heuristic_residual"}
+    if src == "heuristic_residual":
+        src = "policy"
+    allowed = {"policy", "teacher", "heuristic", "zero"}
     if src not in allowed:
         raise ValueError(f"Invalid exec source '{raw}'. Allowed: {sorted(allowed)}")
     return src
@@ -142,7 +144,7 @@ def _select_exec_values(
 
 
 def _source_needs_heuristic(source: str) -> bool:
-    return source in {"heuristic", "heuristic_residual"}
+    return source == "heuristic"
 
 
 def _compose_bw_exec_values(
@@ -153,23 +155,8 @@ def _compose_bw_exec_values(
     shape: tuple[int, int],
     cfg,
 ) -> np.ndarray:
-    if source != "heuristic_residual":
-        return _select_exec_values(source, policy_values, teacher_values, heuristic_values, shape)
-    if heuristic_values is None:
-        raise ValueError("exec_bw_source='heuristic_residual' requires heuristic bw logits.")
-    heur = np.asarray(heuristic_values, dtype=np.float32)
-    delta = (
-        np.asarray(policy_values, dtype=np.float32)
-        if policy_values is not None
-        else np.zeros(shape, dtype=np.float32)
-    )
-    residual_clip = max(float(getattr(cfg, "bw_residual_clip", 1.0) or 0.0), 0.0)
-    if residual_clip > 0.0:
-        delta = np.clip(delta, -residual_clip, residual_clip)
-    alpha = float(getattr(cfg, "bw_residual_alpha", 0.5) or 0.0)
-    out = heur + alpha * delta
-    bw_limit = float(getattr(cfg, "bw_logit_scale", 1.0) or 1.0)
-    return np.clip(out, -bw_limit, bw_limit).astype(np.float32, copy=False)
+    del cfg
+    return _select_exec_values(source, policy_values, teacher_values, heuristic_values, shape)
 
 
 def _hybrid_bw_sat_actions(
@@ -341,6 +328,14 @@ def main():
         "episode",
         "reward_sum",
         "steps",
+        "processed_ratio_eval",
+        "drop_ratio_eval",
+        "pre_backlog_steps_eval",
+        "D_sys_report",
+        "x_acc_mean",
+        "x_rel_mean",
+        "g_pre_mean",
+        "d_pre_mean",
         "throughput_access_norm",
         "throughput_backhaul_norm",
         "sat_processed_norm",
@@ -355,6 +350,11 @@ def main():
     ]
     tb_fieldnames = [
         "reward_sum",
+        "processed_ratio_eval",
+        "drop_ratio_eval",
+        "pre_backlog_steps_eval",
+        "x_acc_mean",
+        "x_rel_mean",
         "throughput_access_norm",
         "throughput_backhaul_norm",
         "gu_queue_mean",
@@ -422,6 +422,13 @@ def main():
             throughput_access_norm_sum = 0.0
             throughput_backhaul_norm_sum = 0.0
             sat_processed_norm_sum = 0.0
+            processed_ratio_eval_sum = 0.0
+            drop_ratio_eval_sum = 0.0
+            pre_backlog_steps_eval_sum = 0.0
+            x_acc_sum = 0.0
+            x_rel_sum = 0.0
+            g_pre_sum = 0.0
+            d_pre_sum = 0.0
             drop_norm_sum = 0.0
             queue_total_active_sum = 0.0
             queue_total_active_steps: list[float] = []
@@ -571,6 +578,13 @@ def main():
                     throughput_access_norm_sum += float(parts.get("throughput_access_norm", 0.0))
                     throughput_backhaul_norm_sum += float(parts.get("throughput_backhaul_norm", 0.0))
                     sat_processed_norm_sum += float(parts.get("sat_processed_norm", 0.0))
+                    processed_ratio_eval_sum += float(parts.get("processed_ratio_eval", 0.0))
+                    drop_ratio_eval_sum += float(parts.get("drop_ratio_eval", 0.0))
+                    pre_backlog_steps_eval_sum += float(parts.get("pre_backlog_steps_eval", 0.0))
+                    x_acc_sum += float(parts.get("x_acc", 0.0))
+                    x_rel_sum += float(parts.get("x_rel", 0.0))
+                    g_pre_sum += float(parts.get("g_pre", 0.0))
+                    d_pre_sum += float(parts.get("d_pre", 0.0))
                     drop_norm_sum += float(parts.get("drop_norm", 0.0))
                     queue_total_active_step = float(parts.get("queue_total_active", 0.0))
                     queue_total_active_sum += queue_total_active_step
@@ -675,6 +689,17 @@ def main():
                 "reward_sum": reward_sum,
                 "reward_raw": reward_raw_sum / steps,
                 "steps": steps,
+                "processed_ratio_eval": processed_ratio_eval_sum / steps,
+                "drop_ratio_eval": drop_ratio_eval_sum / steps,
+                "pre_backlog_steps_eval": pre_backlog_steps_eval_sum / steps,
+                "D_sys_report": (
+                    float(np.sum(env.gu_queue) + np.sum(env.uav_queue) + np.sum(env.sat_queue))
+                    / max(sat_processed_sum, 1e-9)
+                ),
+                "x_acc_mean": x_acc_sum / steps,
+                "x_rel_mean": x_rel_sum / steps,
+                "g_pre_mean": g_pre_sum / steps,
+                "d_pre_mean": d_pre_sum / steps,
                 "episode_time_sec": ep_time,
                 "steps_per_sec": steps / max(1e-9, ep_time),
                 "service_norm": service_norm_sum / steps,

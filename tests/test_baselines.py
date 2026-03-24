@@ -124,33 +124,39 @@ def test_queue_aware_policy_shapes():
         "own": np.zeros((7,), dtype=np.float32),
         "users": np.zeros((cfg.users_obs_max, 5), dtype=np.float32),
         "users_mask": np.zeros((cfg.users_obs_max,), dtype=np.float32),
+        "bw_valid_mask": np.zeros((cfg.users_obs_max,), dtype=np.float32),
         "sats": np.zeros((cfg.sats_obs_max, SAT_OBS_DIM), dtype=np.float32),
         "sats_mask": np.zeros((cfg.sats_obs_max,), dtype=np.float32),
+        "sat_valid_mask": np.zeros((cfg.sats_obs_max,), dtype=np.float32),
         "nbrs": np.zeros((cfg.nbrs_obs_max, 4), dtype=np.float32),
         "nbrs_mask": np.zeros((cfg.nbrs_obs_max,), dtype=np.float32),
     }
     obs["users_mask"][0] = 1.0
+    obs["bw_valid_mask"][0] = 1.0
     obs["users"][0, 0:2] = np.array([0.2, -0.1], dtype=np.float32)
     obs["users"][0, 2] = 0.5
     obs["users"][0, 3] = 1.0
     obs["users"][0, 4] = 1.0
     obs["sats_mask"][0] = 1.0
+    obs["sat_valid_mask"][0] = 1.0
     obs["sats"][0, 7] = 2.0
     obs["sats"][0, 8] = 0.1
 
-    accel, bw_logits, sat_logits = queue_aware_policy([obs, obs], cfg)
+    accel, bw_alloc, sat_select_mask = queue_aware_policy([obs, obs], cfg)
     assert accel.shape == (2, 2)
-    assert bw_logits.shape == (2, cfg.users_obs_max)
-    assert sat_logits.shape == (2, cfg.sats_obs_max)
+    assert bw_alloc.shape == (2, cfg.users_obs_max)
+    assert sat_select_mask.shape == (2, cfg.sats_obs_max)
     assert accel.dtype == np.float32
-    assert bw_logits.dtype == np.float32
-    assert sat_logits.dtype == np.float32
+    assert bw_alloc.dtype == np.float32
+    assert sat_select_mask.dtype == np.float32
     assert np.all(np.isfinite(accel))
-    assert np.all(np.isfinite(bw_logits))
-    assert np.all(np.isfinite(sat_logits))
+    assert np.all(np.isfinite(bw_alloc))
+    assert np.all(np.isfinite(sat_select_mask))
     assert np.max(np.abs(accel)) <= 1.0 + 1e-6
-    assert np.max(np.abs(bw_logits)) <= cfg.bw_logit_scale + 1e-6
-    assert np.max(np.abs(sat_logits)) <= cfg.sat_logit_scale + 1e-6
+    assert np.all(bw_alloc >= -1e-6)
+    assert np.all(sat_select_mask >= -1e-6)
+    assert np.allclose(np.sum(bw_alloc, axis=1), 1.0, atol=1e-6)
+    assert np.all(np.sum(sat_select_mask, axis=1) <= cfg.N_RF + 1e-6)
 
 
 def test_queue_aware_sat_uses_load_bw_and_stay_features():
@@ -160,12 +166,15 @@ def test_queue_aware_sat_uses_load_bw_and_stay_features():
         "own": np.zeros((7,), dtype=np.float32),
         "users": np.zeros((cfg.users_obs_max, 5), dtype=np.float32),
         "users_mask": np.zeros((cfg.users_obs_max,), dtype=np.float32),
+        "bw_valid_mask": np.zeros((cfg.users_obs_max,), dtype=np.float32),
         "sats": np.zeros((cfg.sats_obs_max, SAT_OBS_DIM), dtype=np.float32),
         "sats_mask": np.zeros((cfg.sats_obs_max,), dtype=np.float32),
+        "sat_valid_mask": np.zeros((cfg.sats_obs_max,), dtype=np.float32),
         "nbrs": np.zeros((cfg.nbrs_obs_max, 4), dtype=np.float32),
         "nbrs_mask": np.zeros((cfg.nbrs_obs_max,), dtype=np.float32),
     }
     obs["sats_mask"][:] = 1.0
+    obs["sat_valid_mask"][:] = 1.0
     obs["sats"][0, 7] = 5.0
     obs["sats"][0, 8] = 0.5
     obs["sats"][0, 9] = 2.0 / 3.0
@@ -178,9 +187,9 @@ def test_queue_aware_sat_uses_load_bw_and_stay_features():
     obs["sats"][1, 10] = 1.0
     obs["sats"][1, 11] = 1.0
 
-    _, _, sat_logits = queue_aware_policy([obs], cfg)
-    assert sat_logits.shape == (1, cfg.sats_obs_max)
-    assert sat_logits[0, 1] > sat_logits[0, 0]
+    _, _, sat_select_mask = queue_aware_policy([obs], cfg)
+    assert sat_select_mask.shape == (1, cfg.sats_obs_max)
+    assert sat_select_mask[0, 1] > sat_select_mask[0, 0]
 
 
 def test_queue_aware_sat_prefers_current_sat_within_switch_margin():
@@ -191,12 +200,15 @@ def test_queue_aware_sat_prefers_current_sat_within_switch_margin():
         "own": np.zeros((7,), dtype=np.float32),
         "users": np.zeros((cfg.users_obs_max, 5), dtype=np.float32),
         "users_mask": np.zeros((cfg.users_obs_max,), dtype=np.float32),
+        "bw_valid_mask": np.zeros((cfg.users_obs_max,), dtype=np.float32),
         "sats": np.zeros((cfg.sats_obs_max, SAT_OBS_DIM), dtype=np.float32),
         "sats_mask": np.zeros((cfg.sats_obs_max,), dtype=np.float32),
+        "sat_valid_mask": np.zeros((cfg.sats_obs_max,), dtype=np.float32),
         "nbrs": np.zeros((cfg.nbrs_obs_max, 4), dtype=np.float32),
         "nbrs_mask": np.zeros((cfg.nbrs_obs_max,), dtype=np.float32),
     }
     obs["sats_mask"][:] = 1.0
+    obs["sat_valid_mask"][:] = 1.0
     obs["sats"][0, 7] = 4.8
     obs["sats"][0, 8] = 0.2
     obs["sats"][0, 9] = 1.0 / 3.0
@@ -209,5 +221,5 @@ def test_queue_aware_sat_prefers_current_sat_within_switch_margin():
     obs["sats"][1, 10] = 0.5
     obs["sats"][1, 11] = 0.0
 
-    _, _, sat_logits = queue_aware_policy([obs], cfg)
-    assert sat_logits[0, 0] > sat_logits[0, 1]
+    _, _, sat_select_mask = queue_aware_policy([obs], cfg)
+    assert sat_select_mask[0, 0] > sat_select_mask[0, 1]

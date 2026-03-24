@@ -168,6 +168,25 @@ class SaginParallelEnv(ParallelEnv):
         base_rate = max(float(getattr(cfg, "task_arrival_rate", 0.0) or 0.0), 0.0)
         ratio = self._traffic_level_ratio()
         self.effective_task_arrival_rate = base_rate * ratio
+        self.arrival_ref_bits_per_step = max(
+            float(self.effective_task_arrival_rate) * float(cfg.num_gu) * float(cfg.tau0),
+            1e-9,
+        )
+
+    def _arrival_ref(self) -> float:
+        return max(float(getattr(self, "arrival_ref_bits_per_step", 0.0) or 0.0), 1e-9)
+
+    def _build_bw_valid_mask(self, assoc: np.ndarray, candidates: List[List[int]]) -> np.ndarray:
+        cfg = self.cfg
+        mask = np.zeros((cfg.num_uav, cfg.users_obs_max), dtype=np.float32)
+        for u in range(cfg.num_uav):
+            cand = candidates[u]
+            if not cand:
+                continue
+            cand_idx = np.asarray(cand[: cfg.users_obs_max], dtype=np.int32)
+            assoc_mask = (assoc[cand_idx] == u).astype(np.float32, copy=False)
+            mask[u, : assoc_mask.shape[0]] = assoc_mask
+        return mask
 
     def _uav_init_boundary_margin(self) -> float:
         cfg = self.cfg
@@ -278,8 +297,10 @@ class SaginParallelEnv(ParallelEnv):
             "own": gym.spaces.Box(-np.inf, np.inf, shape=(self.own_dim,), dtype=np.float32),
             "users": gym.spaces.Box(-np.inf, np.inf, shape=(cfg.users_obs_max, self.user_dim), dtype=np.float32),
             "users_mask": gym.spaces.Box(0.0, 1.0, shape=(cfg.users_obs_max,), dtype=np.float32),
+            "bw_valid_mask": gym.spaces.Box(0.0, 1.0, shape=(cfg.users_obs_max,), dtype=np.float32),
             "sats": gym.spaces.Box(-np.inf, np.inf, shape=(cfg.sats_obs_max, self.sat_dim), dtype=np.float32),
             "sats_mask": gym.spaces.Box(0.0, 1.0, shape=(cfg.sats_obs_max,), dtype=np.float32),
+            "sat_valid_mask": gym.spaces.Box(0.0, 1.0, shape=(cfg.sats_obs_max,), dtype=np.float32),
             "nbrs": gym.spaces.Box(-np.inf, np.inf, shape=(cfg.nbrs_obs_max, self.nbr_dim), dtype=np.float32),
             "nbrs_mask": gym.spaces.Box(0.0, 1.0, shape=(cfg.nbrs_obs_max,), dtype=np.float32),
         }
@@ -295,11 +316,17 @@ class SaginParallelEnv(ParallelEnv):
         self._act_space = gym.spaces.Dict(
             {
                 "accel": gym.spaces.Box(-1.0, 1.0, shape=(2,), dtype=np.float32),
-                "bw_logits": gym.spaces.Box(
-                    -cfg.bw_logit_scale, cfg.bw_logit_scale, shape=(cfg.users_obs_max,), dtype=np.float32
+                "bw_alloc": gym.spaces.Box(
+                    0.0,
+                    1.0,
+                    shape=(cfg.users_obs_max,),
+                    dtype=np.float32,
                 ),
-                "sat_logits": gym.spaces.Box(
-                    -cfg.sat_logit_scale, cfg.sat_logit_scale, shape=(cfg.sats_obs_max,), dtype=np.float32
+                "sat_select_mask": gym.spaces.Box(
+                    0.0,
+                    1.0,
+                    shape=(cfg.sats_obs_max,),
+                    dtype=np.float32,
                 ),
             }
         )
@@ -326,8 +353,8 @@ class SaginParallelEnv(ParallelEnv):
         return {
             agent: {
                 "accel": np.zeros(2, dtype=np.float32),
-                "bw_logits": np.zeros(self.cfg.users_obs_max, dtype=np.float32),
-                "sat_logits": np.zeros(self.cfg.sats_obs_max, dtype=np.float32),
+                "bw_alloc": np.zeros(self.cfg.users_obs_max, dtype=np.float32),
+                "sat_select_mask": np.zeros(self.cfg.sats_obs_max, dtype=np.float32),
             }
             for agent in self.agents
         }
@@ -435,6 +462,10 @@ class SaginParallelEnv(ParallelEnv):
         self.gu_drop = np.zeros((cfg.num_gu,), dtype=np.float32)
         self.uav_drop = np.zeros((cfg.num_uav,), dtype=np.float32)
         self.sat_drop = np.zeros((cfg.num_sat,), dtype=np.float32)
+        self.last_exec_bw_alloc = np.zeros((cfg.num_uav, cfg.users_obs_max), dtype=np.float32)
+        self.last_exec_sat_select_mask = np.zeros((cfg.num_uav, cfg.sats_obs_max), dtype=np.float32)
+        sat_k = max(int(getattr(cfg, "sat_num_select", cfg.N_RF) or cfg.N_RF), 0)
+        self.last_exec_sat_indices = np.full((cfg.num_uav, sat_k), -1, dtype=np.int64)
         self.last_energy_cost = np.zeros((cfg.num_uav,), dtype=np.float32)
         self.last_sat_processed = np.zeros((cfg.num_sat,), dtype=np.float32)
         self.last_sat_incoming = np.zeros((cfg.num_sat,), dtype=np.float32)
@@ -474,6 +505,15 @@ class SaginParallelEnv(ParallelEnv):
         self.last_reward_parts = {
             "service_ratio": 0.0,
             "drop_ratio": 0.0,
+            "arrival_ref": self._arrival_ref(),
+            "x_acc": 0.0,
+            "x_rel": 0.0,
+            "g_pre": 0.0,
+            "d_pre": 0.0,
+            "processed_ratio_eval": 0.0,
+            "drop_ratio_eval": 0.0,
+            "pre_backlog_steps_eval": 0.0,
+            "D_sys_report": 0.0,
             "drop_sum": 0.0,
             "drop_sum_active": 0.0,
             "gu_drop_sum": 0.0,
@@ -581,9 +621,12 @@ class SaginParallelEnv(ParallelEnv):
             "reward_raw": 0.0,
         }
         self._cached_candidates: List[List[int]] = [[] for _ in range(cfg.num_uav)]
+        self._cached_assoc = -np.ones((cfg.num_gu,), dtype=np.int32)
         self._cached_eta = np.zeros((cfg.num_uav, cfg.users_obs_max), dtype=np.float32)
+        self._cached_bw_valid_mask = np.zeros((cfg.num_uav, cfg.users_obs_max), dtype=np.float32)
         self._cached_sat_obs = np.zeros((cfg.num_uav, cfg.sats_obs_max, self.sat_dim), dtype=np.float32)
         self._cached_sat_mask = np.zeros((cfg.num_uav, cfg.sats_obs_max), dtype=np.float32)
+        self._cached_sat_valid_mask = np.zeros((cfg.num_uav, cfg.sats_obs_max), dtype=np.float32)
         self._cached_global_state = None
         self._invalidate_step_caches()
         self._refresh_uav_cache()
@@ -597,9 +640,16 @@ class SaginParallelEnv(ParallelEnv):
         self._init_state()
         # Prime candidates and eta for initial observations
         assoc = self._associate_users()
+        self._cached_assoc = assoc.copy()
         self._cached_candidates = self._build_candidate_users(assoc)
+        self._cached_bw_valid_mask = self._build_bw_valid_mask(assoc, self._cached_candidates)
         dummy_actions = self._dummy_actions()
-        _, self._cached_eta = self._compute_access_rates(assoc, self._cached_candidates, dummy_actions)
+        _, self._cached_eta = self._compute_access_rates(
+            assoc,
+            self._cached_candidates,
+            dummy_actions,
+            record_exec=False,
+        )
         sat_pos, sat_vel = self._get_orbit_states()
         visible = self._visible_sats_sorted(sat_pos)
         self._cache_sat_obs(sat_pos, sat_vel, visible)
@@ -631,6 +681,17 @@ class SaginParallelEnv(ParallelEnv):
         prev_scale = self._queue_arrival_scale(float(getattr(self, "prev_arrival_sum", 0.0)))
         self.prev_q_norm_active = float(np.clip(self.prev_queue_sum_active / prev_scale, 0.0, 1.0))
         self.prev_centroid_dist_mean = self._compute_centroid_stats()[1]
+        cached_assoc = getattr(self, "_cached_assoc", None)
+        step_assoc = np.asarray(cached_assoc, dtype=np.int32) if cached_assoc is not None else np.zeros((0,), dtype=np.int32)
+        if step_assoc.shape != (cfg.num_gu,):
+            step_assoc = self._associate_users()
+        step_candidates = [list(cand) for cand in getattr(self, "_cached_candidates", [[] for _ in range(cfg.num_uav)])]
+        if len(step_candidates) != cfg.num_uav:
+            step_candidates = self._build_candidate_users(step_assoc)
+        step_visible = [list(vis) for vis in getattr(self, "last_visible_candidates", [[] for _ in range(cfg.num_uav)])]
+        if len(step_visible) != cfg.num_uav:
+            sat_pos_pre, _ = self._get_orbit_states()
+            step_visible = self._visible_sats_sorted(sat_pos_pre)
         if cfg.num_gu > 0:
             d2d = np.linalg.norm(self.gu_pos - self.uav_pos[:, None, :], axis=2)
             self.prev_d_min = float(np.min(d2d))
@@ -649,17 +710,15 @@ class SaginParallelEnv(ParallelEnv):
 
         # Compute associations and rates
         profile_start = time.perf_counter()
-        assoc = self._associate_users()
-        candidate_lists = self._build_candidate_users(assoc)
-        access_rates, eta = self._compute_access_rates(assoc, candidate_lists, actions)
+        access_rates, _ = self._compute_access_rates(step_assoc, step_candidates, actions)
         step_profile["assoc_access_time_sec"] = time.perf_counter() - profile_start
 
         # Update GU queues
         profile_start = time.perf_counter()
-        gu_outflow = self._update_gu_queues(access_rates, assoc)
+        gu_outflow = self._update_gu_queues(access_rates, step_assoc)
 
         # Backhaul selection and rates
-        sat_selection = self._select_satellites(sat_pos, sat_vel, actions, visible)
+        sat_selection = self._select_satellites(sat_pos, sat_vel, actions, step_visible)
         self._update_energy(sat_selection)
         rate_matrix, sat_loads = self._compute_backhaul_rates(sat_pos, sat_vel, sat_selection)
         self.last_sat_selection = [list(sel) for sel in sat_selection]
@@ -673,9 +732,20 @@ class SaginParallelEnv(ParallelEnv):
 
         # Cache for obs
         profile_start = time.perf_counter()
-        self._cached_candidates = candidate_lists
-        self._cache_sat_obs(sat_pos, sat_vel, visible)
-        self._cached_eta = eta
+        assoc_next = self._associate_users()
+        candidate_lists_next = self._build_candidate_users(assoc_next)
+        self._cached_assoc = assoc_next.copy()
+        self._cached_candidates = candidate_lists_next
+        self._cached_bw_valid_mask = self._build_bw_valid_mask(assoc_next, candidate_lists_next)
+        _, eta_next = self._compute_access_rates(
+            assoc_next,
+            candidate_lists_next,
+            self._dummy_actions(),
+            record_exec=False,
+        )
+        self._cached_eta = eta_next
+        visible_next = self._visible_sats_sorted(sat_pos)
+        self._cache_sat_obs(sat_pos, sat_vel, visible_next)
         step_profile["obs_time_sec"] = time.perf_counter() - profile_start
 
         # Rewards and done
@@ -1495,12 +1565,14 @@ class SaginParallelEnv(ParallelEnv):
         assoc: np.ndarray,
         candidates: List[List[int]],
         actions: Dict[str, Dict],
+        record_exec: bool = True,
     ) -> Tuple[np.ndarray, np.ndarray]:
         cfg = self.cfg
         rates = np.zeros((cfg.num_gu,), dtype=np.float32)
         eta = np.zeros((cfg.num_uav, cfg.users_obs_max), dtype=np.float32)
         bw_align_sum = 0.0
         bw_align_count = 0
+        exec_bw = np.zeros((cfg.num_uav, cfg.users_obs_max), dtype=np.float32)
 
         for u in range(cfg.num_uav):
             cand = candidates[u]
@@ -1509,24 +1581,25 @@ class SaginParallelEnv(ParallelEnv):
             cand_idx = np.asarray(cand, dtype=np.int32)
             assoc_mask = assoc[cand_idx] == u
             if cfg.enable_bw_action:
-                logits = np.array(actions[self.agents[u]]["bw_logits"], dtype=np.float32)
-                mask = np.zeros((cfg.users_obs_max,), dtype=np.float32)
-                mask[: len(cand)] = assoc_mask.astype(np.float32)
-                logits = logits[: cfg.users_obs_max]
-                logits = logits - np.max(logits)
-                weights = np.exp(logits) * mask
-                denom = np.sum(weights)
-                if denom > 0:
-                    weights = weights / denom
-                    betas = weights[: len(cand)]
+                action_data = actions[self.agents[u]]
+                bw_raw = action_data.get("bw_alloc", action_data.get("bw_logits", np.zeros((cfg.users_obs_max,), dtype=np.float32)))
+                bw_raw = np.asarray(bw_raw, dtype=np.float32)[: cfg.users_obs_max]
+                bw_slot = np.clip(bw_raw[: len(cand)], 0.0, None)
+                betas = bw_slot * assoc_mask.astype(np.float32, copy=False)
+                denom = float(np.sum(betas))
+                if denom > 1e-9:
+                    betas = betas / denom
                 else:
                     betas = np.zeros((len(cand),), dtype=np.float32)
+                    if np.any(assoc_mask):
+                        betas[assoc_mask] = 1.0 / float(np.sum(assoc_mask))
             else:
                 if np.any(assoc_mask):
                     betas = np.zeros((len(cand),), dtype=np.float32)
                     betas[assoc_mask] = 1.0 / float(np.sum(assoc_mask))
                 else:
                     betas = np.zeros((len(cand),), dtype=np.float32)
+            exec_bw[u, : len(cand)] = betas.astype(np.float32, copy=False)
 
             se_values = None
             # Preserve exact behavior when interference/fading are enabled (RNG order matters)
@@ -1594,7 +1667,9 @@ class SaginParallelEnv(ParallelEnv):
                         bw_align_sum += align
                         bw_align_count += 1
 
-        self.last_bw_align = bw_align_sum / max(1, bw_align_count)
+        if record_exec:
+            self.last_exec_bw_alloc = exec_bw
+            self.last_bw_align = bw_align_sum / max(1, bw_align_count)
         return rates, eta
 
     def _update_gu_queues(self, access_rates: np.ndarray, assoc: np.ndarray) -> np.ndarray:
@@ -1637,6 +1712,9 @@ class SaginParallelEnv(ParallelEnv):
     ) -> List[List[int]]:
         cfg = self.cfg
         selections: List[List[int]] = [[] for _ in range(cfg.num_uav)]
+        exec_sat_mask = np.zeros((cfg.num_uav, cfg.sats_obs_max), dtype=np.float32)
+        sat_k = max(int(getattr(cfg, "sat_num_select", cfg.N_RF) or cfg.N_RF), 0)
+        exec_sat_indices = np.full((cfg.num_uav, sat_k), -1, dtype=np.int64)
         for u in range(cfg.num_uav):
             vis = visible[u]
             if not vis:
@@ -1646,44 +1724,44 @@ class SaginParallelEnv(ParallelEnv):
                 dists = [np.linalg.norm(sat_pos[l] - self._uav_ecef(u)) for l in vis]
                 sel = vis[int(np.argmin(dists))]
                 selections[u] = [sel]
+                if sat_k > 0:
+                    exec_sat_mask[u, 0] = 1.0
+                    exec_sat_indices[u, 0] = 0
             else:
-                logits = np.array(actions[self.agents[u]]["sat_logits"], dtype=np.float32)
                 cand = vis[: cfg.sats_obs_max]
                 if not cand:
                     continue
-                valid_logits = logits[: len(cand)].copy()
+                action_data = actions[self.agents[u]]
+                sat_raw = action_data.get(
+                    "sat_select_mask",
+                    action_data.get("sat_logits", np.zeros((cfg.sats_obs_max,), dtype=np.float32)),
+                )
+                sat_raw = np.asarray(sat_raw, dtype=np.float32)[: len(cand)]
+                valid_flags = np.ones((len(cand),), dtype=bool)
                 if cfg.doppler_enabled:
                     for i, l in enumerate(cand):
                         nu = self._doppler(u, l, sat_pos, sat_vel)
                         if abs(nu) > cfg.nu_max:
-                            valid_logits[i] = -1e9
+                            valid_flags[i] = False
 
-                if np.all(valid_logits <= -1e8):
+                valid_slots = np.flatnonzero(valid_flags)
+                if valid_slots.size == 0:
                     continue
-
-                if cfg.sat_select_mode == "sample":
-                    probs = np.exp(valid_logits - np.max(valid_logits))
-                    probs = probs / (np.sum(probs) + 1e-9)
-                    chosen = []
-                    probs = probs.copy()
-                    for _ in range(min(cfg.N_RF, len(cand))):
-                        if probs.sum() <= 0:
-                            break
-                        idx = self.rng.choice(len(cand), p=probs)
-                        chosen.append(cand[idx])
-                        probs[idx] = 0.0
-                        probs = probs / (np.sum(probs) + 1e-9)
-                    selections[u] = chosen
-                else:
-                    order = np.argsort(valid_logits)[::-1]
-                    chosen = []
-                    for idx in order:
-                        if valid_logits[idx] <= -1e8:
-                            continue
-                        chosen.append(cand[idx])
-                        if len(chosen) >= cfg.N_RF:
-                            break
-                    selections[u] = chosen
+                chosen_slots = np.flatnonzero((sat_raw > 0.5) & valid_flags)
+                if chosen_slots.size > cfg.N_RF:
+                    order = np.argsort(-sat_raw[chosen_slots], kind="stable")
+                    chosen_slots = chosen_slots[order[: cfg.N_RF]]
+                if chosen_slots.size == 0:
+                    best_slot = int(valid_slots[int(np.argmax(sat_raw[valid_slots]))])
+                    chosen_slots = np.array([best_slot], dtype=np.int64)
+                chosen_slots = chosen_slots[: cfg.N_RF]
+                selections[u] = [cand[int(idx)] for idx in chosen_slots.tolist()]
+                exec_sat_mask[u, chosen_slots] = 1.0
+                if sat_k > 0:
+                    fill = min(len(chosen_slots), sat_k)
+                    exec_sat_indices[u, :fill] = chosen_slots[:fill]
+        self.last_exec_sat_select_mask = exec_sat_mask
+        self.last_exec_sat_indices = exec_sat_indices
         return selections
 
     def _compute_backhaul_rates(self, sat_pos: np.ndarray, sat_vel: np.ndarray, selections: List[List[int]]) -> Tuple[np.ndarray, np.ndarray]:
@@ -1833,7 +1911,7 @@ class SaginParallelEnv(ParallelEnv):
         queue_penalty_mode = str(getattr(cfg, "queue_penalty_mode", "quadratic") or "quadratic").lower()
         use_arrival_norm_queue = bool(getattr(cfg, "queue_reward_use_arrival_norm", False))
         reward_mode = str(getattr(cfg, "reward_mode", "dense") or "dense").strip().lower()
-        if reward_mode not in {"dense", "throughput_only"}:
+        if reward_mode not in {"dense", "throughput_only", "controllable_flow"}:
             raise ValueError(f"Unsupported reward_mode: {reward_mode}")
 
         if cfg.energy_enabled:
@@ -1888,8 +1966,8 @@ class SaginParallelEnv(ParallelEnv):
                 if assoc_unfair_gu_threshold > 0 and assoc_unfair_max_gu_count >= float(assoc_unfair_gu_threshold):
                     assoc_unfair_step = 1.0
 
-        arrival_ref = float(getattr(self, "effective_task_arrival_rate", cfg.task_arrival_rate))
-        arrival_scale = max(arrival_ref * float(cfg.num_gu) * float(cfg.tau0), 1e-9)
+        arrival_ref = self._arrival_ref()
+        arrival_scale = arrival_ref
         service_norm = outflow_sum / arrival_scale
         drop_norm = drop_sum / arrival_scale
         gu_drop_norm = gu_drop_sum / arrival_scale
@@ -1906,6 +1984,16 @@ class SaginParallelEnv(ParallelEnv):
         gu_drop_ratio_step = gu_drop_sum / max(arrival_sum, 1e-9)
         uav_drop_ratio_step = uav_drop_sum / max(arrival_sum, 1e-9)
         sat_drop_ratio_step = sat_drop_sum / max(arrival_sum, 1e-9)
+        b_pre_t = float(getattr(self, "prev_queue_sum_gu", q_gu) + getattr(self, "prev_queue_sum_uav", q_uav))
+        b_pre_tp1 = q_total_active
+        x_acc = outflow_sum / arrival_ref
+        x_rel = backhaul_sum / arrival_ref
+        g_pre = (b_pre_tp1 - b_pre_t) / arrival_ref
+        d_pre = (gu_drop_sum + uav_drop_sum) / arrival_ref
+        processed_ratio_eval = sat_processed_sum / arrival_ref
+        drop_ratio_eval = drop_sum / arrival_ref
+        pre_backlog_steps_eval = q_total_active / arrival_ref
+        D_sys_report = q_total / max(sat_processed_sum, 1e-9)
 
         queue_norm_scale = self._queue_arrival_scale(arrival_sum)
         q_norm_active = float(np.clip(q_total_active / queue_norm_scale, 0.0, 1.0))
@@ -2087,7 +2175,36 @@ class SaginParallelEnv(ParallelEnv):
         if q_total_active <= q_small:
             tail_eta_accel = tail_eta_accel * tail_eta_accel_gain
 
-        if reward_mode == "throughput_only":
+        if reward_mode == "controllable_flow":
+            term_service = 0.0
+            term_throughput_access = float(getattr(cfg, "reward_w_access", 0.5) or 0.0) * x_acc
+            term_throughput_backhaul = float(getattr(cfg, "reward_w_relay", 0.5) or 0.0) * x_rel
+            term_queue_gu_arrival = 0.0
+            eta_drop_default = 0.0
+            eta_drop_gu = 0.0
+            eta_drop_uav = 0.0
+            eta_drop_sat = 0.0
+            term_drop_gu = 0.0
+            term_drop_uav = 0.0
+            term_drop_sat = 0.0
+            term_drop_step = 0.0
+            term_drop = -float(getattr(cfg, "reward_w_pre_drop", 1.0) or 0.0) * d_pre
+            term_queue = -float(getattr(cfg, "reward_w_pre_growth", 0.2) or 0.0) * max(g_pre, 0.0)
+            term_q_delta = 0.0
+            term_centroid = 0.0
+            term_accel = 0.0
+            term_close_risk = 0.0
+            term_energy = 0.0
+            queue_weight = 0.0
+            q_delta_weight = 0.0
+            crash_weight = 0.0
+            raw_reward = (
+                term_throughput_access
+                + term_throughput_backhaul
+                + term_drop
+                + term_queue
+            )
+        elif reward_mode == "throughput_only":
             throughput_only_access_coef = float(getattr(cfg, "throughput_only_access_coef", 1.0) or 0.0)
             throughput_only_backhaul_coef = float(getattr(cfg, "throughput_only_backhaul_coef", 1.0) or 0.0)
             term_service = 0.0
@@ -2165,7 +2282,7 @@ class SaginParallelEnv(ParallelEnv):
             )
 
         collision_now = self._check_collision()
-        if reward_mode == "throughput_only":
+        if reward_mode in {"throughput_only", "controllable_flow"}:
             collision_penalty = 0.0
             battery_penalty = 0.0
         else:
@@ -2174,7 +2291,7 @@ class SaginParallelEnv(ParallelEnv):
         fail_penalty = collision_penalty + battery_penalty
 
         reward = raw_reward
-        if reward_mode != "throughput_only" and use_reward_tanh:
+        if reward_mode == "dense" and use_reward_tanh:
             reward = math.tanh(raw_reward)
         reward = reward + fail_penalty
 
@@ -2191,6 +2308,15 @@ class SaginParallelEnv(ParallelEnv):
         self.last_reward_parts = {
             "service_ratio": service_ratio,
             "drop_ratio": drop_ratio,
+            "arrival_ref": arrival_ref,
+            "x_acc": x_acc,
+            "x_rel": x_rel,
+            "g_pre": g_pre,
+            "d_pre": d_pre,
+            "processed_ratio_eval": processed_ratio_eval,
+            "drop_ratio_eval": drop_ratio_eval,
+            "pre_backlog_steps_eval": pre_backlog_steps_eval,
+            "D_sys_report": D_sys_report,
             "drop_sum": drop_sum,
             "drop_sum_active": drop_sum_active,
             "gu_drop_sum": gu_drop_sum,
@@ -2683,6 +2809,7 @@ class SaginParallelEnv(ParallelEnv):
         cfg = self.cfg
         sat_obs = np.zeros((cfg.num_uav, cfg.sats_obs_max, self.sat_dim), dtype=np.float32)
         sat_mask = np.zeros((cfg.num_uav, cfg.sats_obs_max), dtype=np.float32)
+        sat_valid_mask = np.zeros((cfg.num_uav, cfg.sats_obs_max), dtype=np.float32)
         for u in range(cfg.num_uav):
             current_sats = set(self.last_sat_selection[u]) if u < len(self.last_sat_selection) else set()
             for i, l in enumerate(visible[u][: cfg.sats_obs_max]):
@@ -2711,8 +2838,11 @@ class SaginParallelEnv(ParallelEnv):
                 sat_obs[u, i, 10] = 1.0 / projected_count
                 sat_obs[u, i, 11] = 1.0 if l in current_sats else 0.0
                 sat_mask[u, i] = 1.0
+                doppler_ok = (not cfg.doppler_enabled) or (abs(nu) <= cfg.nu_max)
+                sat_valid_mask[u, i] = 1.0 if doppler_ok else 0.0
         self._cached_sat_obs = sat_obs
         self._cached_sat_mask = sat_mask
+        self._cached_sat_valid_mask = sat_valid_mask
 
     def _danger_neighbor_obs(self, u: int) -> np.ndarray:
         cfg = self.cfg
@@ -2821,6 +2951,7 @@ class SaginParallelEnv(ParallelEnv):
         # users
         users = np.zeros((cfg.users_obs_max, self.user_dim), dtype=np.float32)
         users_mask = np.zeros((cfg.users_obs_max,), dtype=np.float32)
+        bw_valid_mask = self._cached_bw_valid_mask[u].copy()
         cand = self._cached_candidates[u] if self._cached_candidates else []
         for i, k in enumerate(cand[: cfg.users_obs_max]):
             rel = self.gu_pos[k] - self.uav_pos[u]
@@ -2833,6 +2964,7 @@ class SaginParallelEnv(ParallelEnv):
         # satellites (cached per step)
         sats = self._cached_sat_obs[u].copy()
         sats_mask = self._cached_sat_mask[u].copy()
+        sat_valid_mask = self._cached_sat_valid_mask[u].copy()
 
         # neighbors
         nbrs = np.zeros((cfg.nbrs_obs_max, self.nbr_dim), dtype=np.float32)
@@ -2856,8 +2988,10 @@ class SaginParallelEnv(ParallelEnv):
             "own": own,
             "users": users,
             "users_mask": users_mask,
+            "bw_valid_mask": bw_valid_mask,
             "sats": sats,
             "sats_mask": sats_mask,
+            "sat_valid_mask": sat_valid_mask,
             "nbrs": nbrs,
             "nbrs_mask": nbrs_mask,
         }
