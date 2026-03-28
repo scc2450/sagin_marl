@@ -273,5 +273,5 @@ Stage 2/3 资源动作对照：
 **测试**
 ```powershell
 .\.venv\Scripts\Activate.ps1
-python -m pytest tests -q --ignore=codex_restore_pre0316 --import-mode=importlib
+python -m pytest tests -q --import-mode=importlib
 ```

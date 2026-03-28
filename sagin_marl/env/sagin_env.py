@@ -1661,6 +1661,49 @@ class SaginParallelEnv(ParallelEnv):
             candidates[u] = idx.tolist()
         return candidates
 
+    def _compute_access_link_gain_matrix(self) -> np.ndarray:
+        cfg = self.cfg
+        if cfg.num_gu <= 0 or cfg.num_uav <= 0:
+            return np.zeros((cfg.num_gu, cfg.num_uav), dtype=np.float32)
+
+        diff = self.gu_pos[:, None, :] - self.uav_pos[None, :, :]
+        d2d = np.linalg.norm(diff, axis=2)
+        d3d = np.sqrt(d2d * d2d + self._uav_height_sq)
+        phi = np.arcsin(cfg.uav_height / (d3d + 1e-9))
+        pl = channel.pathloss_db(d3d, phi, cfg)
+        gain = 10 ** (-pl / 10.0)
+        if cfg.fading_enabled:
+            gain = gain * channel.rician_power_gain(cfg.rician_K, size=gain.shape, rng=self.rng)
+        return np.asarray(gain, dtype=np.float32)
+
+    def _compute_access_interference_power(
+        self,
+        assoc: np.ndarray,
+        gain_matrix: np.ndarray,
+        gu_band_fraction: np.ndarray,
+    ) -> np.ndarray:
+        cfg = self.cfg
+        if not cfg.interference_enabled or gain_matrix.size == 0:
+            return np.zeros((cfg.num_uav,), dtype=np.float32)
+
+        active = (assoc >= 0) & (gu_band_fraction > 1e-9)
+        if not np.any(active):
+            return np.zeros((cfg.num_uav,), dtype=np.float32)
+
+        active_idx = np.flatnonzero(active)
+        active_gain = gain_matrix[active_idx]
+        total_received = cfg.gu_tx_power * np.sum(active_gain, axis=0, dtype=np.float64)
+
+        serving_uav = assoc[active_idx]
+        same_cell = np.zeros((cfg.num_uav,), dtype=np.float64)
+        np.add.at(
+            same_cell,
+            serving_uav,
+            cfg.gu_tx_power * gain_matrix[active_idx, serving_uav].astype(np.float64, copy=False),
+        )
+        interference = np.maximum(total_received - same_cell, 0.0)
+        return interference.astype(np.float32, copy=False)
+
     def _compute_access_rates(
         self,
         assoc: np.ndarray,
@@ -1674,6 +1717,10 @@ class SaginParallelEnv(ParallelEnv):
         bw_align_sum = 0.0
         bw_align_count = 0
         exec_bw = np.zeros((cfg.num_uav, cfg.users_obs_max), dtype=np.float32)
+        gu_band_fraction = np.zeros((cfg.num_gu,), dtype=np.float32)
+        cand_idx_by_u: List[np.ndarray] = [np.zeros((0,), dtype=np.int32) for _ in range(cfg.num_uav)]
+        assoc_mask_by_u: List[np.ndarray] = [np.zeros((0,), dtype=bool) for _ in range(cfg.num_uav)]
+        betas_by_u: List[np.ndarray] = [np.zeros((0,), dtype=np.float32) for _ in range(cfg.num_uav)]
 
         for u in range(cfg.num_uav):
             cand = candidates[u]
@@ -1702,57 +1749,55 @@ class SaginParallelEnv(ParallelEnv):
                     betas = np.zeros((len(cand),), dtype=np.float32)
             exec_bw[u, : len(cand)] = betas.astype(np.float32, copy=False)
 
-            se_values = None
-            # Preserve exact behavior when interference/fading are enabled (RNG order matters)
-            if cfg.interference_enabled or cfg.fading_enabled:
-                se_values = np.zeros((len(cand),), dtype=np.float32)
-                for i, k in enumerate(cand):
-                    d2d = np.linalg.norm(self.uav_pos[u] - self.gu_pos[k])
-                    d3d = math.sqrt(d2d**2 + cfg.uav_height**2)
-                    phi = math.asin(cfg.uav_height / (d3d + 1e-9))
-                    pl = channel.pathloss_db(np.array([d3d]), np.array([phi]), cfg)[0]
-                    gain = 10 ** (-pl / 10.0)
-                    if cfg.fading_enabled:
-                        gain *= channel.rician_power_gain(cfg.rician_K, size=1, rng=self.rng)[0]
+            cand_idx_by_u[u] = cand_idx
+            assoc_mask_by_u[u] = assoc_mask
+            betas_by_u[u] = betas.astype(np.float32, copy=False)
+            if np.any(assoc_mask):
+                gu_band_fraction[cand_idx[assoc_mask]] = betas[assoc_mask].astype(np.float32, copy=False)
 
-                    interference = 0.0
-                    if cfg.interference_enabled:
-                        for j in range(cfg.num_gu):
-                            if assoc[j] >= 0 and assoc[j] != u:
-                                d2d_j = np.linalg.norm(self.uav_pos[u] - self.gu_pos[j])
-                                d3d_j = math.sqrt(d2d_j**2 + cfg.uav_height**2)
-                                phi_j = math.asin(cfg.uav_height / (d3d_j + 1e-9))
-                                pl_j = channel.pathloss_db(np.array([d3d_j]), np.array([phi_j]), cfg)[0]
-                                gain_j = 10 ** (-pl_j / 10.0)
-                                if cfg.fading_enabled:
-                                    gain_j *= channel.rician_power_gain(cfg.rician_K, size=1, rng=self.rng)[0]
-                                interference += cfg.gu_tx_power * gain_j
+        gain_matrix = self._compute_access_link_gain_matrix()
+        interference_by_u = self._compute_access_interference_power(assoc, gain_matrix, gu_band_fraction)
 
-                    snr = channel.snr_linear(cfg.gu_tx_power, gain, cfg.noise_density, cfg.b_acc, interference)
-                    se = channel.spectral_efficiency(snr)
-                    if assoc_mask[i]:
-                        rate = betas[i] * cfg.b_acc * se
-                        rates[k] = rate
-                    eta[u, i] = se
-                    se_values[i] = se
-            else:
-                gu_pos = self.gu_pos[cand_idx]
-                uav_pos = self.uav_pos[u]
-                d2d = np.linalg.norm(gu_pos - uav_pos, axis=1)
-                d3d = np.sqrt(d2d * d2d + self._uav_height_sq)
-                phi = np.arcsin(cfg.uav_height / (d3d + 1e-9))
-                pl = channel.pathloss_db(d3d, phi, cfg)
-                gain = 10 ** (-pl / 10.0)
+        for u in range(cfg.num_uav):
+            cand_idx = cand_idx_by_u[u]
+            if cand_idx.size == 0:
+                continue
 
-                snr = channel.snr_linear(cfg.gu_tx_power, gain, cfg.noise_density, cfg.b_acc)
-                se = channel.spectral_efficiency(snr)
-                rate = betas * cfg.b_acc * se
-                if np.any(assoc_mask):
-                    rates[cand_idx[assoc_mask]] = rate[assoc_mask].astype(np.float32)
-                eta[u, : len(cand)] = se.astype(np.float32)
-                se_values = se.astype(np.float32)
+            assoc_mask = assoc_mask_by_u[u]
+            betas = betas_by_u[u]
+            gain = gain_matrix[cand_idx, u].astype(np.float32, copy=False)
+            interference = float(interference_by_u[u])
 
-            if cfg.enable_bw_action and se_values is not None and len(cand) > 0:
+            # Keep eta as a channel-quality feature on the reference full band.
+            ref_snr = channel.snr_linear(
+                cfg.gu_tx_power,
+                gain,
+                cfg.noise_density,
+                cfg.b_acc,
+                interference,
+            )
+            se_values = np.asarray(channel.spectral_efficiency(ref_snr), dtype=np.float32)
+            eta[u, : cand_idx.size] = se_values
+
+            if np.any(assoc_mask):
+                assoc_slots = np.flatnonzero(assoc_mask)
+                assoc_idx = cand_idx[assoc_slots]
+                beta_active = betas[assoc_slots].astype(np.float32, copy=False)
+                eff_bw = np.maximum(beta_active * cfg.b_acc, 1e-12).astype(np.float32, copy=False)
+                eff_interference = (
+                    beta_active * interference if cfg.interference_enabled else np.zeros_like(beta_active)
+                )
+                eff_snr = channel.snr_linear(
+                    cfg.gu_tx_power,
+                    gain[assoc_slots],
+                    cfg.noise_density,
+                    eff_bw,
+                    eff_interference,
+                )
+                eff_rate = eff_bw * channel.spectral_efficiency(eff_snr)
+                rates[assoc_idx] = np.asarray(eff_rate, dtype=np.float32)
+
+            if cfg.enable_bw_action and len(cand) > 0:
                 if np.any(assoc_mask):
                     active_idx = cand_idx[assoc_mask]
                     q_norm = self.gu_queue[active_idx] / max(cfg.queue_max_gu, 1e-9)
@@ -1772,6 +1817,25 @@ class SaginParallelEnv(ParallelEnv):
             self.last_exec_bw_alloc = exec_bw
             self.last_bw_align = bw_align_sum / max(1, bw_align_count)
         return rates, eta
+
+    def _projected_sat_connection_count(self, u: int, sat_indices: np.ndarray) -> np.ndarray:
+        sat_idx = np.asarray(sat_indices, dtype=np.int32)
+        if sat_idx.size == 0:
+            return np.zeros((0,), dtype=np.float32)
+
+        load_count = self.last_sat_connection_counts[sat_idx].astype(np.float32, copy=False)
+        if u < len(self.last_sat_selection):
+            current = np.asarray(self.last_sat_selection[u], dtype=np.int32)
+        else:
+            current = np.zeros((0,), dtype=np.int32)
+        projected_add = (~np.isin(sat_idx, current)).astype(np.float32, copy=False)
+        return np.maximum(load_count + projected_add, 1.0).astype(np.float32, copy=False)
+
+    def _projected_sat_bandwidth(self, u: int, sat_indices: np.ndarray) -> np.ndarray:
+        projected_count = self._projected_sat_connection_count(u, sat_indices)
+        if projected_count.size == 0:
+            return projected_count
+        return (self.cfg.b_sat_total / projected_count).astype(np.float32, copy=False)
 
     def _update_gu_queues(self, access_rates: np.ndarray, assoc: np.ndarray) -> np.ndarray:
         cfg = self.cfg
@@ -2820,7 +2884,8 @@ class SaginParallelEnv(ParallelEnv):
         if cfg.atm_loss_enabled:
             atm_loss = channel.atmospheric_loss_db(elev, cfg.atm_loss_db)
             gain = gain * (10 ** (-atm_loss / 10.0))
-        snr = channel.snr_linear(cfg.uav_tx_power, gain, cfg.noise_density, cfg.b_sat_total)
+        projected_bw = self._projected_sat_bandwidth(u, sat_idx)
+        snr = channel.snr_linear(cfg.uav_tx_power, gain, cfg.noise_density, projected_bw)
         se = np.asarray(channel.spectral_efficiency(snr), dtype=np.float32)
         queue_norm = (self.sat_queue[sat_idx] / max(cfg.queue_max_sat, 1e-9)).astype(np.float32, copy=False)
 
@@ -3033,7 +3098,12 @@ class SaginParallelEnv(ParallelEnv):
         sat_valid_mask = np.zeros((cfg.num_uav, cfg.sats_obs_max), dtype=np.float32)
         for u in range(cfg.num_uav):
             current_sats = set(self.last_sat_selection[u]) if u < len(self.last_sat_selection) else set()
-            for i, l in enumerate(visible[u][: cfg.sats_obs_max]):
+            sat_idx = np.asarray(visible[u][: cfg.sats_obs_max], dtype=np.int32)
+            if sat_idx.size == 0:
+                continue
+            projected_count = self._projected_sat_connection_count(u, sat_idx)
+            projected_bw = self._projected_sat_bandwidth(u, sat_idx)
+            for i, l in enumerate(sat_idx):
                 rel_pos = sat_pos[l] - self._uav_ecef(u)
                 rel_vel = sat_vel[l] - self._uav_vel_ecef(u)
                 nu = self._doppler(u, l, sat_pos, sat_vel)
@@ -3044,7 +3114,7 @@ class SaginParallelEnv(ParallelEnv):
                     atm_loss = channel.atmospheric_loss_db(theta, cfg.atm_loss_db)
                     gain *= 10 ** (-atm_loss / 10.0)
                 gain *= cfg.uav_tx_gain * cfg.sat_rx_gain
-                snr = channel.snr_linear(cfg.uav_tx_power, gain, cfg.noise_density, cfg.b_sat_total)
+                snr = channel.snr_linear(cfg.uav_tx_power, gain, cfg.noise_density, projected_bw[i])
                 if cfg.doppler_observed and cfg.doppler_atten_enabled:
                     chi = channel.doppler_attenuation(np.array([nu]), cfg.subcarrier_spacing)[0]
                     snr = snr * chi
@@ -3054,9 +3124,8 @@ class SaginParallelEnv(ParallelEnv):
                 sat_obs[u, i, 7] = channel.spectral_efficiency(snr)
                 sat_obs[u, i, 8] = self.sat_queue[l] / cfg.queue_max_sat
                 load_count = float(self.last_sat_connection_counts[l]) if l < self.last_sat_connection_counts.size else 0.0
-                projected_count = max(load_count + (0.0 if l in current_sats else 1.0), 1.0)
                 sat_obs[u, i, 9] = load_count / max(float(cfg.num_uav), 1.0)
-                sat_obs[u, i, 10] = 1.0 / projected_count
+                sat_obs[u, i, 10] = 1.0 / float(projected_count[i])
                 sat_obs[u, i, 11] = 1.0 if l in current_sats else 0.0
                 sat_mask[u, i] = 1.0
                 doppler_ok = (not cfg.doppler_enabled) or (abs(nu) <= cfg.nu_max)
