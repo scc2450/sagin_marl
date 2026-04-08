@@ -259,6 +259,16 @@ class SaginConfig:
     baseline_cluster_stop_radius: float = 20.0
     baseline_cluster_speed_tol: float = 2.0
     baseline_cluster_vel_gain: float = 1.0
+    baseline_lyapunov_v: float = 2.0
+    baseline_lyapunov_urgency_alpha: float = 1.0
+    baseline_lyapunov_drift_weight: float = 1.2
+    baseline_lyapunov_action_cost: float = 0.03
+    baseline_lyapunov_ema_beta: float = 0.6
+    baseline_lyapunov_bw_temp: float = 0.55
+    baseline_lyapunov_bw_floor: float = 0.01
+    baseline_lyapunov_bw_service_scale: float = 1.0
+    baseline_lyapunov_sat_drift_weight: float = 0.6
+    baseline_lyapunov_sat_switch_bias: float = 0.1
 
     # Reward shaping
     reward_mode: str = "dense"  # "controllable_flow", "dense", or "throughput_only"

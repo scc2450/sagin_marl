@@ -18,6 +18,7 @@ from sagin_marl.rl.baselines import (
     cluster_center_accel_policy,
     cluster_center_queue_aware_policy,
     centroid_accel_policy,
+    lyapunov_queue_aware_policy_step,
     queue_aware_policy,
     queue_aware_bw_policy,
     queue_aware_sat_policy,
@@ -171,6 +172,21 @@ def _render_colored_frame(env: SaginParallelEnv) -> np.ndarray:
                 zorder=2,
             )
 
+            queues = env.gu_queue[gu_mask]
+            for idx in range(len(gu_xy)):
+                x = gu_xy[idx, 0]
+                y = gu_xy[idx, 1]
+                q_val = queues[idx]
+                ax.annotate(
+                    f"{q_val/1e6:.1f}M", 
+                    (x, y), 
+                    xytext=(5, 4),
+                    textcoords="offset points",
+                    color=uav_colors[uav_idx], 
+                    fontsize=8,
+                    fontweight="bold",
+                    zorder=4,
+                )
         if np.any(~connected_mask):
             gu_xy = env.gu_pos[~connected_mask]
             ax.scatter(
@@ -256,6 +272,7 @@ def _render_colored_frame(env: SaginParallelEnv) -> np.ndarray:
 
     fig.canvas.draw()
     w, h = fig.canvas.get_width_height()
+    w, h = 2*w, 2*h  # double the resolution for Mac
     try:
         rgba = np.asarray(fig.canvas.buffer_rgba())
         rgba = rgba.reshape((h, w, 4))
@@ -292,6 +309,7 @@ def main():
             "cluster_center_queue_aware",
             "centroid",
             "queue_aware",
+            "lyapunov",
             "uniform_bw",
             "random_bw",
             "queue_aware_bw",
@@ -342,20 +360,28 @@ def main():
 
     frames = []
     done = False
+    baseline_state = None
     while not done:
         frame = _render_colored_frame(env)
         frames.append(frame)
 
         obs_list = list(obs.values())
         if use_baseline:
-            accel_actions, bw_logits, sat_logits = _baseline_actions(
-                args.baseline,
-                obs_list,
-                cfg,
-                len(env.agents),
-                env=env,
-                rng=env.rng,
-            )
+            if args.baseline == "lyapunov":
+                accel_actions, bw_logits, sat_logits, baseline_state = lyapunov_queue_aware_policy_step(
+                    obs_list,
+                    cfg,
+                    state=baseline_state,
+                )
+            else:
+                accel_actions, bw_logits, sat_logits = _baseline_actions(
+                    args.baseline,
+                    obs_list,
+                    cfg,
+                    len(env.agents),
+                    env=env,
+                    rng=env.rng,
+                )
         else:
             obs_batch = batch_flatten_obs(obs_list, cfg)
             obs_tensor = torch.tensor(obs_batch, dtype=torch.float32, device=device)

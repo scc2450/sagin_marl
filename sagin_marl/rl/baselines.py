@@ -252,6 +252,205 @@ def _topk_select_mask(scores: np.ndarray, valid_mask: np.ndarray, k: int) -> np.
     out[keep] = 1.0
     return out
 
+
+def _masked_softmax(scores: np.ndarray, valid_mask: np.ndarray, temperature: float) -> np.ndarray:
+    out = np.zeros_like(scores, dtype=np.float32)
+    idx = np.flatnonzero(valid_mask)
+    if idx.size == 0:
+        return out
+    temp = max(float(temperature), 1e-3)
+    logits = np.asarray(scores[idx], dtype=np.float32) / temp
+    logits = logits - float(np.max(logits))
+    exps = np.exp(logits)
+    denom = float(np.sum(exps))
+    if denom <= 1e-9:
+        out[idx] = 1.0 / float(idx.size)
+        return out
+    out[idx] = exps / denom
+    return out
+
+
+def _lyapunov_state_init(num_agents: int, cfg) -> Dict[str, np.ndarray]:
+    return {
+        "pressure_ema": np.zeros((num_agents, cfg.users_obs_max), dtype=np.float32),
+        "virtual_queue": np.zeros((num_agents, cfg.users_obs_max), dtype=np.float32),
+        "service_est": np.zeros((num_agents, cfg.users_obs_max), dtype=np.float32),
+    }
+
+
+def lyapunov_queue_aware_policy_step(
+    obs_list: List[Dict[str, np.ndarray]],
+    cfg,
+    state: Dict[str, np.ndarray] | None = None,
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray, Dict[str, np.ndarray]]:
+    """Lyapunov-inspired three-head heuristic baseline with per-episode state.
+
+    The policy approximates one-step drift-plus-penalty using a per-slot
+    virtual queue over user urgency and lightweight action cost shaping.
+    """
+
+    num_agents = len(obs_list)
+    accel = np.zeros((num_agents, 2), dtype=np.float32)
+    bw_alloc = np.zeros((num_agents, cfg.users_obs_max), dtype=np.float32)
+    sat_select_mask = np.zeros((num_agents, cfg.sats_obs_max), dtype=np.float32)
+
+    if state is None:
+        state = _lyapunov_state_init(num_agents, cfg)
+    elif (
+        state.get("pressure_ema") is None
+        or state.get("virtual_queue") is None
+        or state.get("service_est") is None
+        or state["pressure_ema"].shape != (num_agents, cfg.users_obs_max)
+    ):
+        state = _lyapunov_state_init(num_agents, cfg)
+
+    pressure_ema = np.asarray(state["pressure_ema"], dtype=np.float32)
+    virtual_queue = np.asarray(state["virtual_queue"], dtype=np.float32)
+    service_est = np.asarray(state["service_est"], dtype=np.float32)
+
+    accel_gain = float(getattr(cfg, "baseline_accel_gain", 2.0))
+    assoc_bonus = float(getattr(cfg, "baseline_assoc_bonus", 0.3))
+    repulse_gain = float(getattr(cfg, "baseline_repulse_gain", 0.0))
+    repulse_radius_factor = float(getattr(cfg, "baseline_repulse_radius_factor", 1.5))
+    repulse_radius = float(cfg.d_safe) * repulse_radius_factor if repulse_radius_factor > 0 else 0.0
+
+    lyap_v = max(float(getattr(cfg, "baseline_lyapunov_v", 2.0) or 0.0), 0.0)
+    lyap_urgency_alpha = max(float(getattr(cfg, "baseline_lyapunov_urgency_alpha", 1.0) or 0.0), 0.0)
+    lyap_drift_w = max(float(getattr(cfg, "baseline_lyapunov_drift_weight", 1.0) or 0.0), 0.0)
+    lyap_action_cost = max(float(getattr(cfg, "baseline_lyapunov_action_cost", 0.05) or 0.0), 0.0)
+    lyap_ema_beta = float(np.clip(getattr(cfg, "baseline_lyapunov_ema_beta", 0.6), 0.0, 0.999))
+    lyap_bw_temp = max(float(getattr(cfg, "baseline_lyapunov_bw_temp", 0.6) or 0.0), 1e-3)
+    lyap_bw_floor = float(np.clip(getattr(cfg, "baseline_lyapunov_bw_floor", 0.02), 0.0, 0.2))
+    lyap_service_scale = max(float(getattr(cfg, "baseline_lyapunov_bw_service_scale", 1.0) or 0.0), 0.0)
+    lyap_sat_drift_w = max(float(getattr(cfg, "baseline_lyapunov_sat_drift_weight", 0.6) or 0.0), 0.0)
+    lyap_sat_switch_bias = max(float(getattr(cfg, "baseline_lyapunov_sat_switch_bias", 0.1) or 0.0), 0.0)
+
+    for i, obs in enumerate(obs_list):
+        accel_vec = np.zeros((2,), dtype=np.float32)
+        users = obs["users"]
+        users_mask = obs["users_mask"] > 0.0
+        bw_valid_mask = np.asarray(obs.get("bw_valid_mask", obs["users_mask"]) > 0.0)
+
+        instant_pressure = np.zeros((cfg.users_obs_max,), dtype=np.float32)
+        if np.any(users_mask):
+            rel = np.asarray(users[users_mask, 0:2], dtype=np.float32)
+            q = np.clip(np.asarray(users[users_mask, 2], dtype=np.float32), 0.0, None)
+            eta = np.clip(np.asarray(users[users_mask, 3], dtype=np.float32), 0.0, 1.0)
+            prev_assoc = np.clip(np.asarray(users[users_mask, 4], dtype=np.float32), 0.0, 1.0)
+
+            pressure_slice = q * (0.5 + eta)
+            if assoc_bonus > 0.0:
+                pressure_slice = pressure_slice * (0.01 + assoc_bonus * prev_assoc)
+            instant_pressure[users_mask] = np.clip(pressure_slice, 0.0, None)
+
+            pressure_ema[i] = lyap_ema_beta * pressure_ema[i] + (1.0 - lyap_ema_beta) * instant_pressure
+            virtual_queue[i] = np.clip(virtual_queue[i] + pressure_ema[i] - service_est[i], 0.0, None)
+            urgency = np.clip(pressure_ema[i] + lyap_drift_w * virtual_queue[i], 0.0, None)
+            nbrs = obs["nbrs"]
+            nbrs_mask = obs["nbrs_mask"] > 0.0
+            if np.any(nbrs_mask):
+                dist_gu = np.linalg.norm(rel, axis=1)
+                rel_nbr = nbrs[nbrs_mask, 0:2]
+                diff = rel[:, None, :] - rel_nbr[None, :, :]
+                dist_nbrs_to_user = np.linalg.norm(diff, axis=-1)
+                min_nbr_dist = np.min(dist_nbrs_to_user, axis=1)
+                ratio = np.exp(lyap_urgency_alpha * (min_nbr_dist - dist_gu))
+                responsibility = np.clip(ratio, 0.0, 1.0) 
+                assert responsibility.shape == urgency[users_mask].shape
+                urgency[users_mask] = urgency[users_mask] * responsibility 
+                
+            urgency_sum = float(np.sum(urgency[users_mask]))
+            if urgency_sum > 1e-6:
+                vec = (rel * urgency[users_mask, None]).sum(axis=0) / (urgency_sum + 1e-9)
+                accel_vec = accel_vec + vec * accel_gain
+
+            if cfg.enable_bw_action:
+                base_scores = lyap_v * urgency - lyap_action_cost * (instant_pressure > 0.0).astype(np.float32)
+                bw_scores = np.full((cfg.users_obs_max,), -1e6, dtype=np.float32)
+                valid_slots = bw_valid_mask & users_mask
+                bw_scores[valid_slots] = base_scores[valid_slots]
+                probs = _masked_softmax(bw_scores, valid_slots, lyap_bw_temp)
+                if lyap_bw_floor > 0.0 and np.any(valid_slots):
+                    count = float(np.sum(valid_slots))
+                    probs = (1.0 - lyap_bw_floor * count) * probs
+                    probs[valid_slots] = probs[valid_slots] + lyap_bw_floor
+                    denom = float(np.sum(probs[valid_slots]))
+                    if denom > 1e-9:
+                        probs[valid_slots] = probs[valid_slots] / denom
+                bw_alloc[i] = probs.astype(np.float32, copy=False)
+
+                eta_slot = np.zeros((cfg.users_obs_max,), dtype=np.float32)
+                eta_slot[users_mask] = 0.5 + eta
+                service_est[i] = lyap_service_scale * bw_alloc[i] * eta_slot
+            else:
+                service_est[i].fill(0.0)
+        else:
+            pressure_ema[i].fill(0.0)
+            virtual_queue[i].fill(0.0)
+            service_est[i].fill(0.0)
+
+        if not cfg.fixed_satellite_strategy:
+            sats = obs["sats"]
+            sats_mask = obs["sats_mask"] > 0.0
+            sat_valid_mask = np.asarray(obs.get("sat_valid_mask", obs["sats_mask"]) > 0.0)
+            if np.any(sats_mask):
+                base_sat_scores = _sat_heuristic_score(sats, sats_mask, cfg)
+                sat_scores = np.asarray(base_sat_scores, dtype=np.float32)
+                q_active = float(np.mean(instant_pressure[users_mask])) if np.any(users_mask) else 0.0
+                qsat = np.zeros((cfg.sats_obs_max,), dtype=np.float32)
+                qsat[sats_mask] = np.clip(np.asarray(sats[sats_mask, 8], dtype=np.float32), 0.0, None)
+                sat_scores = sat_scores + lyap_sat_drift_w * (q_active - qsat)
+                if lyap_sat_switch_bias > 0.0:
+                    stay = np.zeros((cfg.sats_obs_max,), dtype=np.float32)
+                    stay[sats_mask] = np.clip(np.asarray(sats[sats_mask, 11], dtype=np.float32), 0.0, 1.0)
+                    sat_scores = sat_scores + lyap_sat_switch_bias * stay
+                sat_select_mask[i] = _topk_select_mask(
+                    sat_scores,
+                    sat_valid_mask,
+                    max(int(getattr(cfg, "sat_num_select", cfg.N_RF) or cfg.N_RF), 0),
+                )
+
+        if repulse_gain > 0.0 and repulse_radius > 0.0:
+            nbrs = obs["nbrs"]
+            nbrs_mask = obs["nbrs_mask"] > 0.0
+            if np.any(nbrs_mask):
+                rel_nbr_pos = nbrs[nbrs_mask, 0:2]
+                rel_nbr_vel = nbrs[nbrs_mask, 2:4]
+                dist_norm = np.linalg.norm(rel_nbr_pos, axis=1)
+                dist = dist_norm * cfg.map_size
+                mask = (dist > 1e-6) & (dist < repulse_radius)
+                if np.any(mask):
+                    rel_sel = rel_nbr_pos[mask]
+                    vel_sel = rel_nbr_vel[mask]
+                    dist_sel = dist[mask]
+                    dist_norm_sel = dist_norm[mask]
+
+                    direction = rel_sel / dist_norm_sel[:, None]
+                    approach_speed = np.sum(vel_sel * direction, axis=1)
+                    spring_strength = (1.0 / dist_sel - 1.0 / repulse_radius)
+                    damper_strength = np.where(approach_speed < 0, -approach_speed, 0.0)
+                    strength = spring_strength + damper_strength
+                    accel_vec = accel_vec - repulse_gain * (direction * strength[:, None]).sum(axis=0)
+
+        accel_vec = accel_vec + _baseline_energy_term(obs, cfg)
+        # accel[i] = np.clip(accel_vec, -1.0, 1.0)
+        accel[i] = np.sqrt(2) * accel_vec / max(np.linalg.norm(accel_vec), 1.0)
+
+    next_state = {
+        "pressure_ema": pressure_ema.astype(np.float32, copy=False),
+        "virtual_queue": virtual_queue.astype(np.float32, copy=False),
+        "service_est": service_est.astype(np.float32, copy=False),
+    }
+    return accel, bw_alloc, sat_select_mask, next_state
+
+
+def lyapunov_queue_aware_policy(
+    obs_list: List[Dict[str, np.ndarray]],
+    cfg,
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    accel, bw_alloc, sat_select_mask, _ = lyapunov_queue_aware_policy_step(obs_list, cfg, state=None)
+    return accel, bw_alloc, sat_select_mask
+
 def queue_aware_policy(
     obs_list: List[Dict[str, np.ndarray]],
     cfg,

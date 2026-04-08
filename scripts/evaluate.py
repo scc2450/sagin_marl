@@ -21,6 +21,7 @@ from sagin_marl.rl.baselines import (
     cluster_center_accel_policy,
     cluster_center_queue_aware_policy,
     centroid_accel_policy,
+    lyapunov_queue_aware_policy_step,
     queue_aware_policy,
     random_accel_policy,
     zero_accel_policy,
@@ -260,6 +261,7 @@ def main():
             "cluster_center_queue_aware",
             "centroid", 
             "queue_aware", 
+            "lyapunov",
             "uniform_bw", 
             "random_bw", 
             "queue_aware_bw", 
@@ -473,12 +475,25 @@ def main():
             term_close_risk_sum = 0.0
             centroid_dist_sum = 0.0
             ep_start = time.perf_counter()
+            baseline_state = None
             while not done:
                 if use_baseline:
                     obs_list = list(obs.values())
-                    accel_actions, bw_logits, sat_logits = _baseline_actions(
-                        args.baseline, obs_list, cfg, len(env.agents), env=env, rng=env.rng
-                    )
+                    if args.baseline == "lyapunov":
+                        accel_actions, bw_logits, sat_logits, baseline_state = lyapunov_queue_aware_policy_step(
+                            obs_list,
+                            cfg,
+                            state=baseline_state,
+                        )
+                    else:
+                        accel_actions, bw_logits, sat_logits = _baseline_actions(
+                            args.baseline,
+                            obs_list,
+                            cfg,
+                            len(env.agents),
+                            env=env,
+                            rng=env.rng,
+                        )
                     actions = assemble_actions(
                         cfg, env.agents, accel_actions, bw_logits=bw_logits, sat_logits=sat_logits
                     )

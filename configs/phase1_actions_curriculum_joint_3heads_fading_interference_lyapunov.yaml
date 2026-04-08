@@ -1,0 +1,225 @@
+# Joint 3-head training: accel + bw + sat are all trainable.
+# Variant:
+#   - Keeps the same joint curriculum as the base config.
+#   - Enables access-link fading and average-overlap interference.
+#   - Intended for direct comparison against the base joint config.
+seed: 42
+map_size: 1500.0
+tau0: 1.0
+T_steps: 400
+
+num_uav: 3
+num_gu: 20
+num_sat: 144
+walker_num_planes: 6
+sat_state_max: 9
+
+users_obs_max: 20
+sats_obs_max: 6
+visible_sats_max: 6
+visible_sats_min: null
+nbrs_obs_max: 4
+danger_nbr_enabled: true
+
+uav_height: 100.0
+sat_height: 500000.0
+theta_min_deg: 5.0
+v_max: 30.0
+a_max: 5.0
+d_safe: 20.0
+boundary_mode: reflect
+
+candidate_mode: "nearest"
+candidate_k: 20
+assoc_unfair_gu_threshold: 15
+
+uav_spawn_curriculum_enabled: false
+uav_spawn_radius_start: 300.0
+uav_spawn_radius_end: 900.0
+uav_spawn_curriculum_steps: 100
+uav_spawn_full_random_final: true
+uav_safe_random_init_enabled: true
+uav_init_boundary_margin_steps: 3.0
+uav_init_speed_frac: 0.2
+uav_init_min_spacing: 20.0
+
+task_arrival_rate: 1.2e6
+task_arrival_poisson: true
+traffic_level: 2
+traffic_level_nav_ratio: 0.08
+traffic_level_easy_ratio: 0.5
+traffic_level_hard_ratio: 1.0
+arrival_ramp_steps: 0
+arrival_ramp_start: 0.0
+arrival_ramp_use_global: false
+# Queue refs are fixed offline rollout estimates (bits/step).
+# SAT max-queue sizing uses calibrated active satellites with trainable sat selection.
+queue_max_gu_steps: 50.0
+queue_max_uav_steps: 100.0
+queue_max_sat_steps: 150.0
+queue_max_gu: 6.0e7
+queue_max_uav: 8.0e8
+queue_max_sat: 1.18e9
+queue_init_frac: 0.0
+queue_init_uav_frac: 0.0
+queue_init_sat_frac: 0.0
+queue_init_gu_steps: 4.0
+queue_init_uav_steps: 8.0
+queue_init_sat_steps: 12.0
+queue_ref_gu_per_step: 2.40e7
+queue_ref_uav_per_step: 2.40e7
+queue_ref_sat_per_step: 2.36e7
+queue_ref_sat_active_count: 3.0
+
+gu_tx_power: 0.18
+uav_tx_gain: 63.1
+sat_rx_gain: 63.1
+b_acc: 1.0e7
+b_sat_total: 1.5e7
+sat_cpu_freq: 1.8e10
+noise_density: 4.0e-21
+pathloss_mode: prob_los
+pl_threshold_db: 140.0
+
+doppler_observed: true
+doppler_enabled: false
+energy_enabled: false
+fading_enabled: true
+interference_enabled: true
+
+enable_bw_action: true
+fixed_satellite_strategy: false
+sat_select_mode: sample
+N_RF: 2
+sat_candidate_mode: elevation
+append_action_masks_to_obs: true
+arrival_ref_mode: expected_arrival
+bw_policy: dirichlet
+bw_alpha_floor: 0.2
+sat_policy: masked_categorical
+sat_num_select: 2
+
+# Lyapunov heuristic baseline (used with: scripts/evaluate.py --baseline lyapunov)
+# Keep these explicit here for reproducible baseline sweeps.
+baseline_accel_gain: 2.0
+baseline_assoc_bonus: 1.0
+baseline_repulse_gain: 0.6
+baseline_repulse_radius_factor: 2.5e1
+baseline_energy_low: 0.3
+baseline_energy_weight: 1.0
+
+baseline_lyapunov_v: 2.0
+baseline_lyapunov_urgency_alpha: 30.0
+baseline_lyapunov_drift_weight: 2.0
+baseline_lyapunov_action_cost: 0.03
+baseline_lyapunov_ema_beta: 0.5
+baseline_lyapunov_bw_temp: 0.55
+baseline_lyapunov_bw_floor: 0.01
+baseline_lyapunov_bw_service_scale: 1.0e7
+baseline_lyapunov_sat_drift_weight: 0.6
+baseline_lyapunov_sat_switch_bias: 0.1
+
+train_accel: true
+train_bw: true
+train_sat: true
+train_shared_backbone: true
+exec_accel_source: policy
+exec_bw_source: policy
+exec_sat_source: policy
+exec_teacher_actor_path: null
+exec_teacher_deterministic: true
+
+avoidance_enabled: true
+avoidance_eta: 3.5
+avoidance_alert_factor: 2.0
+avoidance_prealert_factor: 6.0
+avoidance_prealert_closing_speed: 20.0
+avoidance_prealert_mode: distance
+avoidance_repulse_mode: linear
+avoidance_repulse_clip: true
+avoidance_closing_gain_enabled: true
+avoidance_closing_gain_cap: 2.0
+avoidance_closing_gain_top1_only: true
+avoidance_adaptive_enabled: false
+avoidance_collision_target: 0.05
+avoidance_adaptive_gain: 1.0
+avoidance_adaptive_ema_beta: 0.9
+avoidance_eta_min: 1.0
+avoidance_eta_max: 5.0
+eta_crash: 0.0
+
+reward_mode: controllable_flow
+reward_w_access: 0.5
+reward_w_relay: 0.5
+reward_w_pre_backlog: 0.08
+reward_w_pre_drop: 1.0
+reward_w_pre_growth: 0.0
+reward_stage1_assoc_centroid_enabled: true
+reward_stage1_assoc_centroid_weight_init: 0.15
+reward_stage1_assoc_centroid_weight_mid: 0.05
+reward_stage1_assoc_centroid_weight_floor: 0.0
+reward_stage1_assoc_centroid_hold_ratio: 0.30
+reward_stage1_assoc_centroid_mid_ratio: 0.70
+reward_stage3_sat_overlap_enabled: true
+reward_stage3_sat_overlap_weight_init: 0.10
+reward_stage3_sat_overlap_weight_mid: 0.03
+reward_stage3_sat_overlap_weight_floor: 0.0
+reward_stage3_sat_overlap_hold_ratio: 0.40
+reward_stage3_sat_overlap_mid_ratio: 0.80
+
+input_norm_enabled: true
+gamma: 0.9975
+gae_lambda: 0.95
+reward_norm_enabled: false
+reward_norm_clip: 5.0
+reward_tanh_enabled: false
+lr_decay_enabled: false
+lr_final_factor: 0.1
+actor_lr: 1.0e-4
+critic_lr: 2.0e-4
+kl_stop: true
+target_kl: 0.02
+actor_hidden: 256
+actor_encoder_type: set_pool
+actor_set_embed_dim: 64
+critic_hidden: 256
+
+imitation_enabled: false
+imitation_coef: 0.0
+imitation_coef_final: 0.0
+imitation_coef_decay_start_update: 0
+imitation_coef_decay_updates: 0
+imitation_accel: false
+imitation_bw: false
+imitation_sat: false
+danger_imitation_enabled: true
+danger_imitation_coef: 0.1
+danger_imitation_trigger_mode: intervention_threshold
+danger_imitation_close_risk_thresh: 0.05
+danger_imitation_intervention_thresh: 0.05
+
+buffer_size: 400
+num_mini_batch: 4
+ppo_epochs: 5
+adv_clip: 5.0
+entropy_coef: 0.001
+
+early_stop_enabled: false
+checkpoint_eval_enabled: true
+checkpoint_eval_interval_updates: 50
+checkpoint_eval_start_update: 200
+checkpoint_eval_episodes: 20
+checkpoint_eval_episode_seed_base: 42000
+checkpoint_eval_fixed_policy: queue_aware
+checkpoint_eval_sat_drop_early_stop_enabled: false
+checkpoint_eval_sat_drop_worsen_delta: 5.0e-4
+checkpoint_eval_front_queue_rel_improve_tol: 0.05
+checkpoint_eval_worsen_patience: 2
+checkpoint_eval_early_stop_enabled: true
+checkpoint_eval_reward_early_stop_enabled: true
+checkpoint_eval_reward_patience: 5
+checkpoint_eval_reward_min_delta_rel: 0.005
+checkpoint_eval_reward_collision_threshold: 0.01
+checkpoint_eval_model_collision_threshold: 0.0
+checkpoint_eval_reward_tie_rel_tol: 0.05
+checkpoint_eval_use_sat_overlap: true
