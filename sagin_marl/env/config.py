@@ -269,6 +269,23 @@ class SaginConfig:
     baseline_lyapunov_bw_service_scale: float = 1.0
     baseline_lyapunov_sat_drift_weight: float = 0.6
     baseline_lyapunov_sat_switch_bias: float = 0.1
+    baseline_lyapunov_mode: str = "urgency"  # "urgency" or "dpp"
+    dpp_accel_num_candidates: int = 9
+    dpp_accel_step_scale: float = 0.6
+    dpp_shared_accel_index: bool = False
+    dpp_gu_max_select: int = 6
+    dpp_access_weight: float = 1.0
+    dpp_backhaul_weight: float = 1.0
+    dpp_accel_cost: float = 0.08
+    dpp_smoothness: float = 0.05
+    dpp_dist_penalty: float = 0.10
+    dpp_bw_temp: float = 0.55
+    dpp_bw_floor: float = 0.01
+    dpp_sat_queue_gap_weight: float = 1.0
+    dpp_sat_candidate_topm: int = 4
+    dpp_sat_enum_max_subsets: int = 64
+    dpp_sat_subset_penalty: float = 0.02
+    dpp_sat_contention_weight: float = 0.15
 
     # Reward shaping
     reward_mode: str = "dense"  # "controllable_flow", "dense", or "throughput_only"

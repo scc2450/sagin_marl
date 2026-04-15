@@ -101,6 +101,7 @@ sat_num_select: 2
 
 # Lyapunov heuristic baseline (used with: scripts/evaluate.py --baseline lyapunov)
 # Keep these explicit here for reproducible baseline sweeps.
+baseline_lyapunov_mode: dpp
 baseline_accel_gain: 2.0
 baseline_assoc_bonus: 1.0
 baseline_repulse_gain: 0.6
@@ -118,6 +119,23 @@ baseline_lyapunov_bw_floor: 0.01
 baseline_lyapunov_bw_service_scale: 1.0e7
 baseline_lyapunov_sat_drift_weight: 0.6
 baseline_lyapunov_sat_switch_bias: 0.1
+
+dpp_accel_num_candidates: 9
+dpp_accel_step_scale: 0.6
+dpp_shared_accel_index: false
+dpp_gu_max_select: 6
+dpp_access_weight: 1.0
+dpp_backhaul_weight: 1.0
+dpp_accel_cost: 0.08
+dpp_smoothness: 0.05
+dpp_dist_penalty: 0.1
+dpp_bw_temp: 0.55
+dpp_bw_floor: 0.01
+dpp_sat_queue_gap_weight: 1.0
+dpp_sat_candidate_topm: 4
+dpp_sat_enum_max_subsets: 64
+dpp_sat_subset_penalty: 0.02
+dpp_sat_contention_weight: 0.15
 
 train_accel: true
 train_bw: true

@@ -82,6 +82,74 @@ def _init_eval_tb_layout(writer: SummaryWriter, tag_prefix: str) -> None:
     writer.add_custom_scalars(layout)
 
 
+def _build_lyapunov_env_callbacks(env, cfg) -> dict:
+    """Build environment callbacks for topology-aware DPP baseline.
+    
+    These callbacks allow the DPP baseline to recompute link qualities and 
+    visibility after simulating acceleration effects on UAV position.
+    """
+    if env is None:
+        return {}
+    
+    def compute_access_rates(agent_id: int, accel_vec: np.ndarray, obs: dict, rel_next: np.ndarray):
+        """
+        Compute GU-UAV link qualities and rates after acceleration.
+        
+        Returns:
+        - eta: (K,) spectral efficiency per GU
+        - rates: (K,) achievable rate per GU
+        """
+        try:
+            # Simulate new position after acceleration
+            own = np.asarray(obs["own"], dtype=np.float32)
+            rel_original = obs["users"][:cfg.users_obs_max, :2]
+            original_eta = obs["users"][:cfg.users_obs_max, 3]
+            vel_abs = own[2:4] * cfg.v_max
+            delta_pos_abs = vel_abs * cfg.tau0 + 0.5 * np.asarray(accel_vec, dtype=np.float32) * cfg.a_max * (cfg.tau0**2)
+            
+            H = getattr(cfg, "uav_height", 100.0) # 无人机高度
+            d2_old = np.sum(rel_original**2, axis=1) + H**2
+            d2_new = np.sum(rel_next**2, axis=1) + H**2
+            # Get current GU association to compute rates
+            users = obs["users"]
+            candidates = []
+            for g in range(cfg.num_gu):
+                if g < len(users) and users[g, 4] == agent_id:  # user[g].assoc == agent_id
+                    candidates.append(g)
+            
+            if not candidates:
+                candidates = list(range(min(cfg.num_gu, cfg.users_obs_max)))
+            
+            snr_old = 2.0**(original_eta) - 1.0
+            snr_new = (d2_old / np.maximum(d2_new, 1e-9)) * np.maximum(snr_old, 0.0)
+            
+            eta = np.log2(1.0 + snr_new)
+            rates = 0.5 * eta
+            return eta, rates
+        except:
+            # Fallback: return obs values
+            return np.clip(obs["users"][:cfg.users_obs_max, 3], 0.0, 1.0), None
+    
+    def check_sat_visibility(agent_id: int, accel_vec: np.ndarray, obs: dict):
+        """
+        Check which satellites remain visible after acceleration.
+        
+        Returns:
+        - valid_sat_mask: (L,) boolean mask of visible satellites
+        """
+        try:
+            # Placeholder: return current visibility mask
+            sat_mask = obs.get("sats_mask", np.ones((cfg.sats_obs_max,), dtype=bool))
+            return sat_mask > 0.5
+        except:
+            return np.ones((cfg.sats_obs_max,), dtype=bool)
+    
+    return {
+        "compute_access_rates": compute_access_rates,
+        "check_sat_visibility": check_sat_visibility,
+    }
+
+
 def _baseline_actions(
     baseline: str,
     obs_list,
@@ -480,10 +548,13 @@ def main():
                 if use_baseline:
                     obs_list = list(obs.values())
                     if args.baseline == "lyapunov":
+                        # Build environment callbacks for topology-aware DPP baseline
+                        env_callbacks = _build_lyapunov_env_callbacks(env, cfg) if env is not None else None
                         accel_actions, bw_logits, sat_logits, baseline_state = lyapunov_queue_aware_policy_step(
                             obs_list,
                             cfg,
                             state=baseline_state,
+                            env_callbacks=env_callbacks,
                         )
                     else:
                         accel_actions, bw_logits, sat_logits = _baseline_actions(

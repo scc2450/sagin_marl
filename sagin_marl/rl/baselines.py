@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from typing import Dict, List, Tuple
+from itertools import combinations
+from typing import Callable, Dict, List, Optional, Tuple
 
 import numpy as np
 
@@ -275,18 +276,399 @@ def _lyapunov_state_init(num_agents: int, cfg) -> Dict[str, np.ndarray]:
         "pressure_ema": np.zeros((num_agents, cfg.users_obs_max), dtype=np.float32),
         "virtual_queue": np.zeros((num_agents, cfg.users_obs_max), dtype=np.float32),
         "service_est": np.zeros((num_agents, cfg.users_obs_max), dtype=np.float32),
+        "prev_accel": np.zeros((num_agents, 2), dtype=np.float32),
+        "dpp_access_term": np.zeros((num_agents,), dtype=np.float32),
+        "dpp_backhaul_term": np.zeros((num_agents,), dtype=np.float32),
+        "dpp_reg_term": np.zeros((num_agents,), dtype=np.float32),
+        "dpp_objective_term": np.zeros((num_agents,), dtype=np.float32),
     }
+
+
+def _baseline_repulse_term(obs: Dict[str, np.ndarray], cfg) -> np.ndarray:
+    repulse_gain = float(getattr(cfg, "baseline_repulse_gain", 0.0))
+    repulse_radius_factor = float(getattr(cfg, "baseline_repulse_radius_factor", 1.5))
+    repulse_radius = float(cfg.d_safe) * repulse_radius_factor if repulse_radius_factor > 0 else 0.0
+    if repulse_gain <= 0.0 or repulse_radius <= 0.0:
+        return np.zeros((2,), dtype=np.float32)
+
+    nbrs = obs["nbrs"]
+    nbrs_mask = obs["nbrs_mask"] > 0.0
+    if not np.any(nbrs_mask):
+        return np.zeros((2,), dtype=np.float32)
+
+    rel_nbr_pos = np.asarray(nbrs[nbrs_mask, 0:2], dtype=np.float32)
+    rel_nbr_vel = np.asarray(nbrs[nbrs_mask, 2:4], dtype=np.float32)
+    dist_norm = np.linalg.norm(rel_nbr_pos, axis=1)
+    dist = dist_norm * cfg.map_size
+    mask = (dist > 1e-6) & (dist < repulse_radius)
+    if not np.any(mask):
+        return np.zeros((2,), dtype=np.float32)
+
+    rel_sel = rel_nbr_pos[mask]
+    vel_sel = rel_nbr_vel[mask]
+    dist_sel = dist[mask]
+    dist_norm_sel = dist_norm[mask]
+
+    direction = rel_sel / dist_norm_sel[:, None]
+    approach_speed = np.sum(vel_sel * direction, axis=1)
+    spring_strength = (1.0 / dist_sel - 1.0 / repulse_radius)
+    damper_strength = np.where(approach_speed < 0.0, -approach_speed, 0.0)
+    strength = spring_strength + damper_strength
+    return (-repulse_gain * (direction * strength[:, None]).sum(axis=0)).astype(np.float32, copy=False)
+
+
+def _generate_accel_candidates(cfg) -> np.ndarray:
+    num = max(int(getattr(cfg, "dpp_accel_num_candidates", 9) or 9), 1)
+    step = float(np.clip(getattr(cfg, "dpp_accel_step_scale", 0.6), 0.0, 1.0))
+    if num == 1 or step <= 1e-9:
+        return np.zeros((1, 2), dtype=np.float32)
+
+    candidates = [np.zeros((2,), dtype=np.float32)]
+    for k in range(num - 1):
+        theta = 2.0 * np.pi * float(k) / float(num - 1)
+        candidates.append(np.asarray([np.cos(theta), np.sin(theta)], dtype=np.float32) * step)
+    return np.asarray(candidates, dtype=np.float32)
+
+
+def _predict_users_rel_after_accel(obs: Dict[str, np.ndarray], cfg, accel_vec: np.ndarray) -> np.ndarray:
+    users = np.asarray(obs["users"], dtype=np.float32)
+    rel = users[:, 0:2].copy()
+    own = np.asarray(obs["own"], dtype=np.float32)
+    vel_abs = own[2:4] * cfg.v_max
+    delta_pos_abs = vel_abs * cfg.tau0 + 0.5 * np.asarray(accel_vec, dtype=np.float32) * cfg.a_max * (cfg.tau0**2)
+    delta_rel_norm = delta_pos_abs / max(float(cfg.map_size), 1e-6)
+    rel = rel - delta_rel_norm[None, :]
+    return rel.astype(np.float32, copy=False)
+
+
+def _predict_topology_after_accel(
+    obs: Dict[str, np.ndarray], 
+    cfg, 
+    accel_vec: np.ndarray,
+    agent_id: int = 0,
+) -> Dict[str, np.ndarray]:
+    """
+    Complete topology snapshot after applying acceleration.
+    
+    Uses env_callbacks (stored temporarily in cfg._dpp_env_callbacks_temp) to 
+    compute actual link qualities, visibility under new position. Falls back to 
+    heuristic approximations if callbacks unavailable.
+    
+    Returns Dict with:
+    - rel_next: new relative positions (K × 2)
+    - eta: link quality per user (K,) - recomputed based on new position
+    - rate_approx: approximate service rates per user (K,)
+    - sat_visible_mask: valid satellites after move (L,)
+    - sat_rate_per_user: backhaul rate if routed through each sat (K × L) approx
+    """
+    users = np.asarray(obs["users"], dtype=np.float32)
+    rel_next = _predict_users_rel_after_accel(obs, cfg, accel_vec)
+    
+    # Get env_callbacks from cfg if available (set temporarily by lyapunov_queue_aware_policy_step)
+    env_cbs = getattr(cfg, "_dpp_env_callbacks_temp", {}) or {}
+    if not env_cbs:
+        env_cbs = {}
+    
+    # If compute_access_rates callback available, use it for topology-aware link prediction
+    if "compute_access_rates" in env_cbs and callable(env_cbs.get("compute_access_rates")):
+        try:
+            eta_new, rate_new = env_cbs["compute_access_rates"](agent_id, accel_vec, obs, rel_next)
+            eta = np.clip(np.asarray(eta_new, dtype=np.float32), 0.0, 2.0)[:cfg.users_obs_max]
+            rate_approx = np.clip(np.asarray(rate_new, dtype=np.float32), 0.0, None)[:cfg.users_obs_max]
+        except (ValueError, IndexError, TypeError):
+            eta = _approx_eta_from_distance(rel_next, cfg)
+            rate_approx = 0.5 * eta
+    else:
+        # Fallback: approximate eta from distance
+        eta = _approx_eta_from_distance(rel_next, cfg)
+        rate_approx = 0.5 * eta
+    
+    # SAT visibility 
+    if "check_sat_visibility" in env_cbs and callable(env_cbs.get("check_sat_visibility")):
+        try:
+            sat_visible = env_cbs["check_sat_visibility"](agent_id, accel_vec, obs)
+            sat_visible_mask = np.asarray(sat_visible, dtype=bool)[:cfg.sats_obs_max]
+        except (ValueError, IndexError, TypeError):
+            sat_visible_mask = obs.get("sats_mask", np.ones((cfg.sats_obs_max,), dtype=bool)) > 0.5
+    else:
+        sat_visible_mask = obs.get("sats_mask", np.ones((cfg.sats_obs_max,), dtype=bool)) > 0.5
+    
+    # SAT rates
+    if "compute_backhaul_rates" in env_cbs and callable(env_cbs.get("compute_backhaul_rates")):
+        try:
+            # Note: compute_backhaul rates would need sat selections, which we don't have yet
+            # So we skip for now and use approximation
+            sat_rate_per_user = np.ones((cfg.users_obs_max, cfg.sats_obs_max), dtype=np.float32) * 0.1
+            sat_rate_per_user[:, ~sat_visible_mask] = 0.0
+        except:
+            sat_rate_per_user = np.ones((cfg.users_obs_max, cfg.sats_obs_max), dtype=np.float32) * 0.1
+            sat_rate_per_user[:, ~sat_visible_mask] = 0.0
+    else:
+        sat_rate_per_user = np.ones((cfg.users_obs_max, cfg.sats_obs_max), dtype=np.float32) * 0.1
+        sat_rate_per_user[:, ~sat_visible_mask] = 0.0
+    
+    return {
+        "rel_next": rel_next.astype(np.float32, copy=False),
+        "eta": eta.astype(np.float32, copy=False),
+        "rate_approx": rate_approx.astype(np.float32, copy=False),
+        "sat_visible_mask": sat_visible_mask.astype(bool, copy=False),
+        "sat_rate_per_user": sat_rate_per_user.astype(np.float32, copy=False),
+    }
+
+
+def _approx_eta_from_distance(rel_next: np.ndarray, cfg) -> np.ndarray:
+    """Heuristic approximation of link quality (eta) based on distance."""
+    dist = np.linalg.norm(rel_next, axis=1)
+    range_norm = np.clip(dist / 0.5, 0.0, 1.0)  # close = 0, far = 1
+    eta = np.clip(0.8 * (1.0 - 0.9 * range_norm) + 0.1, 0.1, 1.0)
+    return eta.astype(np.float32, copy=False)
+
+
+def _dpp_allocate_bw(scores: np.ndarray, valid_mask: np.ndarray, cfg) -> np.ndarray:
+    probs = _masked_softmax(scores, valid_mask, float(getattr(cfg, "dpp_bw_temp", 0.55) or 0.55))
+    count = int(np.sum(valid_mask))
+    if count <= 0:
+        return probs
+
+    floor = float(np.clip(getattr(cfg, "dpp_bw_floor", 0.0), 0.0, 0.2))
+    floor = min(floor, 0.99 / float(count))
+    if floor > 0.0:
+        probs = (1.0 - floor * float(count)) * probs
+        probs[valid_mask] = probs[valid_mask] + floor
+        denom = float(np.sum(probs[valid_mask]))
+        if denom > 1e-9:
+            probs[valid_mask] = probs[valid_mask] / denom
+    return probs.astype(np.float32, copy=False)
+
+
+def _dpp_sat_selection(obs: Dict[str, np.ndarray], cfg, own_q_norm: float) -> Tuple[np.ndarray, float]:
+    sat_sel = np.zeros((cfg.sats_obs_max,), dtype=np.float32)
+    if cfg.fixed_satellite_strategy:
+        return sat_sel, 0.0
+
+    sats = obs["sats"]
+    sats_mask = obs["sats_mask"] > 0.0
+    sat_valid_mask = np.asarray(obs.get("sat_valid_mask", obs["sats_mask"]) > 0.0)
+    if not np.any(sats_mask):
+        return sat_sel, 0.0
+
+    base_sat_scores = _sat_heuristic_score(sats, sats_mask, cfg)
+    sat_scores = np.asarray(base_sat_scores, dtype=np.float32)
+    qsat = np.zeros((cfg.sats_obs_max,), dtype=np.float32)
+    qsat[sats_mask] = np.clip(np.asarray(sats[sats_mask, 8], dtype=np.float32), 0.0, None)
+    se = np.zeros((cfg.sats_obs_max,), dtype=np.float32)
+    bw_ratio = np.zeros((cfg.sats_obs_max,), dtype=np.float32)
+    se[sats_mask] = np.clip(np.asarray(sats[sats_mask, 7], dtype=np.float32), 0.0, None)
+    bw_ratio[sats_mask] = np.clip(np.asarray(sats[sats_mask, 10], dtype=np.float32), 0.0, 1.0)
+    backhaul_proxy = 0.5 * _minmax_normalize(se) + 0.5 * bw_ratio
+    gap = np.clip(own_q_norm - qsat, 0.0, None)
+
+    gap_w = float(max(getattr(cfg, "dpp_sat_queue_gap_weight", 1.0) or 0.0, 0.0))
+    sat_scores = sat_scores + gap_w * gap * backhaul_proxy
+
+    topm = int(getattr(cfg, "dpp_sat_candidate_topm", cfg.sats_obs_max) or cfg.sats_obs_max)
+    topm = max(min(topm, cfg.sats_obs_max), 1)
+    valid_idx = np.flatnonzero(sat_valid_mask)
+    if valid_idx.size > topm:
+        order = valid_idx[np.argsort(sat_scores[valid_idx])[::-1]]
+        keep = order[:topm]
+        topm_mask = np.zeros_like(sat_valid_mask, dtype=bool)
+        topm_mask[keep] = True
+        sat_valid_mask = sat_valid_mask & topm_mask
+
+    max_select = max(int(getattr(cfg, "sat_num_select", cfg.N_RF) or cfg.N_RF), 0)
+    if max_select <= 0:
+        return sat_sel, 0.0
+
+    valid_idx = np.flatnonzero(sat_valid_mask)
+    if valid_idx.size == 0:
+        return sat_sel, 0.0
+
+    enum_budget = max(int(getattr(cfg, "dpp_sat_enum_max_subsets", 64) or 64), 1)
+    subset_penalty = float(max(getattr(cfg, "dpp_sat_subset_penalty", 0.02) or 0.0, 0.0))
+    contention_w = float(max(getattr(cfg, "dpp_sat_contention_weight", 0.15) or 0.0, 0.0))
+
+    candidate_subsets: List[Tuple[int, ...]] = []
+    for k in range(1, min(max_select, valid_idx.size) + 1):
+        for comb in combinations(valid_idx.tolist(), k):
+            candidate_subsets.append(comb)
+            if len(candidate_subsets) >= enum_budget:
+                break
+        if len(candidate_subsets) >= enum_budget:
+            break
+
+    if not candidate_subsets:
+        sat_sel = _topk_select_mask(sat_scores, sat_valid_mask, max_select)
+        backhaul_term = float(np.sum(gap * backhaul_proxy * sat_sel))
+        return sat_sel.astype(np.float32, copy=False), backhaul_term
+
+    best_subset: Tuple[int, ...] = tuple()
+    best_score = -1e30
+    best_backhaul = 0.0
+    for subset in candidate_subsets:
+        idx = np.asarray(subset, dtype=np.int32)
+        sel = np.zeros((cfg.sats_obs_max,), dtype=np.float32)
+        sel[idx] = 1.0
+        backhaul_term = float(np.sum(gap * backhaul_proxy * sel))
+        contention_penalty = float(np.sum((1.0 - bw_ratio[idx]) * sel[idx]))
+        score = float(np.sum(sat_scores[idx])) + backhaul_term
+        score = score - subset_penalty * float(len(subset) ** 2)
+        score = score - contention_w * contention_penalty
+        if score > best_score:
+            best_score = score
+            best_subset = subset
+            best_backhaul = backhaul_term
+
+    if len(best_subset) == 0:
+        return sat_sel, 0.0
+    sat_sel[np.asarray(best_subset, dtype=np.int32)] = 1.0
+    return sat_sel.astype(np.float32, copy=False), best_backhaul
+
+
+def _dpp_one_agent(
+    obs: Dict[str, np.ndarray],
+    cfg,
+    prev_accel: np.ndarray,
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, float, float, float, float]:
+    accel_candidates = _generate_accel_candidates(cfg)
+    users_mask = obs["users_mask"] > 0.0
+    bw_valid_mask = np.asarray(obs.get("bw_valid_mask", obs["users_mask"]) > 0.0)
+    users = np.asarray(obs["users"], dtype=np.float32)
+    own_q_norm = float(np.clip(obs["own"][5], 0.0, None))
+
+    assoc_bonus = float(getattr(cfg, "baseline_assoc_bonus", 0.3))
+    max_users = int(getattr(cfg, "dpp_gu_max_select", 6) or 6)
+    max_users = max(min(max_users, cfg.users_obs_max), 1)
+    accel_gain = float(getattr(cfg, "baseline_accel_gain", 2.0))
+    dpp_v = float(max(getattr(cfg, "baseline_lyapunov_v", 2.0) or 0.0, 0.0))
+    access_w = float(max(getattr(cfg, "dpp_access_weight", 1.0) or 0.0, 0.0))
+    backhaul_w = float(max(getattr(cfg, "dpp_backhaul_weight", 1.0) or 0.0, 0.0))
+    accel_cost = float(max(getattr(cfg, "dpp_accel_cost", 0.08) or 0.0, 0.0))
+    smooth_w = float(max(getattr(cfg, "dpp_smoothness", 0.0) or 0.0, 0.0))
+    dist_penalty = float(max(getattr(cfg, "dpp_dist_penalty", 0.1) or 0.0, 0.0))
+    service_scale = float(max(getattr(cfg, "baseline_lyapunov_bw_service_scale", 1.0) or 0.0, 0.0))
+
+    best_score = -1e30
+    best_accel = np.zeros((2,), dtype=np.float32)
+    best_bw = np.zeros((cfg.users_obs_max,), dtype=np.float32)
+    best_sat = np.zeros((cfg.sats_obs_max,), dtype=np.float32)
+    best_pressure = np.zeros((cfg.users_obs_max,), dtype=np.float32)
+    best_service = np.zeros((cfg.users_obs_max,), dtype=np.float32)
+    best_access_term = 0.0
+    best_backhaul_term = 0.0
+    best_reg_term = 0.0
+
+    def _eval_candidate(cand: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, float, float, float, float]:
+        pressure = np.zeros((cfg.users_obs_max,), dtype=np.float32)
+        service = np.zeros((cfg.users_obs_max,), dtype=np.float32)
+        bw = np.zeros((cfg.users_obs_max,), dtype=np.float32)
+
+        # IMPROVED: Use complete topology prediction which may recalculate link qualities
+        #           if env_callbacks are available. Otherwise falls back to approximation.
+        topo = _predict_topology_after_accel(obs, cfg, cand)
+        rel_next = topo["rel_next"]
+        eta_updated = topo["eta"]  # NEW: Updated link qualities after position change
+        sat_visible_mask = topo["sat_visible_mask"]  # NEW: Updated sat visibility
+        
+        potential_score = - 5e5 * np.mean(np.linalg.norm(rel_next, axis=1))  # heuristic potential score based on average distance to users after move
+        if np.any(users_mask):
+            q = np.clip(np.asarray(users[users_mask, 2], dtype=np.float32), 0.0, None)
+            # IMPROVED: Use updated eta from topology instead of stale obs["users"][:,3]
+            eta_obs = np.clip(np.asarray(users[users_mask, 3], dtype=np.float32), 0.0, 1.0)
+            eta_new = np.clip(eta_updated[users_mask], 0.0, 1.0)
+            # Blend old and new (old has established signal, new accounts for move)
+            eta_blend = 0.4 * eta_obs + 0.6 * eta_new
+            prev_assoc = np.clip(np.asarray(users[users_mask, 4], dtype=np.float32), 0.0, 1.0)
+            rel_dist = np.linalg.norm(rel_next[users_mask], axis=1)
+            gap = np.clip(q - own_q_norm, 0.0, None)
+            rate_proxy = np.clip(0.5 + eta_blend, 0.0, 2.0)
+            assoc_term = 1.0 + assoc_bonus * prev_assoc
+
+            score_slice = gap * rate_proxy * assoc_term - dist_penalty * rel_dist
+            pressure_slice = q * rate_proxy * assoc_term
+            pressure[users_mask] = np.clip(pressure_slice, 0.0, None)
+
+            valid_users = users_mask & bw_valid_mask
+            if np.any(valid_users):
+                candidate_scores = np.full((cfg.users_obs_max,), -1e6, dtype=np.float32)
+                candidate_scores[users_mask] = score_slice
+                rank_mask = _topk_select_mask(candidate_scores, valid_users, max_users) > 0.0
+                bw_scores = np.full((cfg.users_obs_max,), -1e6, dtype=np.float32)
+                bw_scores[rank_mask] = dpp_v * candidate_scores[rank_mask]
+                bw = _dpp_allocate_bw(bw_scores, rank_mask, cfg)
+
+                eta_slot = np.zeros((cfg.users_obs_max,), dtype=np.float32)
+                gap_slot = np.zeros((cfg.users_obs_max,), dtype=np.float32)
+                eta_slot[users_mask] = rate_proxy
+                gap_slot[users_mask] = gap
+                service = service_scale * bw * eta_slot
+                access_term = float(np.sum(gap_slot * service))
+            else:
+                access_term = potential_score
+        else:
+            access_term = potential_score
+
+        # IMPROVED: Apply updated sat_visible_mask to SAT selection
+        sat_sel, backhaul_term = _dpp_sat_selection(obs, cfg, own_q_norm)
+        # Mask out non-visible satellites 
+        if np.any(~sat_visible_mask):
+            sat_sel[~sat_visible_mask] = 0.0
+
+        reg_term = accel_cost * float(np.dot(cand, cand)) + smooth_w * float(np.sum((cand - prev_accel) ** 2))
+        score = access_w * access_term + backhaul_w * backhaul_term - reg_term
+        return bw, sat_sel, pressure, service, access_term, backhaul_term, reg_term, score
+
+    use_shared_idx = bool(getattr(cfg, "dpp_shared_accel_index", False))
+    selected_idx = -1
+    if use_shared_idx:
+        idx = int(np.clip(getattr(cfg, "dpp_shared_accel_selected_idx", -1), -1, len(accel_candidates) - 1))
+        if idx >= 0:
+            selected_idx = idx
+
+    iter_candidates = enumerate(accel_candidates) if selected_idx < 0 else [(selected_idx, accel_candidates[selected_idx])]
+    for cand_idx, cand in iter_candidates:
+        bw, sat_sel, pressure, service, access_term, backhaul_term, reg_term, score = _eval_candidate(cand)
+
+        if score > best_score:
+            best_score = score
+            best_accel = cand.astype(np.float32, copy=False)
+            best_bw = bw.astype(np.float32, copy=False)
+            best_sat = sat_sel.astype(np.float32, copy=False)
+            best_pressure = pressure.astype(np.float32, copy=False)
+            best_service = service.astype(np.float32, copy=False)
+            best_access_term = access_term
+            best_backhaul_term = backhaul_term
+            best_reg_term = reg_term
+    best_accel = best_accel * accel_gain
+    return (
+        best_accel,
+        best_bw,
+        best_sat,
+        best_pressure,
+        best_service,
+        float(best_access_term),
+        float(best_backhaul_term),
+        float(best_reg_term),
+        float(best_score),
+    )
 
 
 def lyapunov_queue_aware_policy_step(
     obs_list: List[Dict[str, np.ndarray]],
     cfg,
     state: Dict[str, np.ndarray] | None = None,
+    env_callbacks: Optional[Dict[str, Callable]] | None = None,
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, Dict[str, np.ndarray]]:
     """Lyapunov-inspired three-head heuristic baseline with per-episode state.
 
     The policy approximates one-step drift-plus-penalty using a per-slot
     virtual queue over user urgency and lightweight action cost shaping.
+    
+    If env_callbacks is provided, enables topology-aware DPP mode with complete
+    link quality recalculation after position changes. Callbacks should include:
+    - compute_access_rates(agent_id, accel_vec, obs) -> (eta, rate_vector)
+    - compute_backhaul_rates(agent_id, accel_vec, obs, sat_selections) -> (rates, counts)
+    - check_sat_visibility(agent_id, accel_vec, obs) -> valid_sat_mask
     """
 
     num_agents = len(obs_list)
@@ -300,6 +682,7 @@ def lyapunov_queue_aware_policy_step(
         state.get("pressure_ema") is None
         or state.get("virtual_queue") is None
         or state.get("service_est") is None
+        or state.get("prev_accel") is None
         or state["pressure_ema"].shape != (num_agents, cfg.users_obs_max)
     ):
         state = _lyapunov_state_init(num_agents, cfg)
@@ -307,6 +690,68 @@ def lyapunov_queue_aware_policy_step(
     pressure_ema = np.asarray(state["pressure_ema"], dtype=np.float32)
     virtual_queue = np.asarray(state["virtual_queue"], dtype=np.float32)
     service_est = np.asarray(state["service_est"], dtype=np.float32)
+    prev_accel = np.asarray(state["prev_accel"], dtype=np.float32)
+    dpp_access_term = np.asarray(state.get("dpp_access_term", np.zeros((num_agents,), dtype=np.float32)), dtype=np.float32)
+    dpp_backhaul_term = np.asarray(state.get("dpp_backhaul_term", np.zeros((num_agents,), dtype=np.float32)), dtype=np.float32)
+    dpp_reg_term = np.asarray(state.get("dpp_reg_term", np.zeros((num_agents,), dtype=np.float32)), dtype=np.float32)
+    dpp_objective_term = np.asarray(state.get("dpp_objective_term", np.zeros((num_agents,), dtype=np.float32)), dtype=np.float32)
+
+    mode = str(getattr(cfg, "baseline_lyapunov_mode", "urgency") or "urgency").strip().lower()
+    if mode == "dpp":
+        lyap_ema_beta = float(np.clip(getattr(cfg, "baseline_lyapunov_ema_beta", 0.6), 0.0, 0.999))
+        shared_accel = bool(getattr(cfg, "dpp_shared_accel_index", False))
+        
+        # Store env_callbacks temporarily in cfg for _dpp_one_agent and _predict_topology_after_accel to use
+        _dpp_env_callbacks = env_callbacks or {}
+        setattr(cfg, "_dpp_env_callbacks_temp", _dpp_env_callbacks)
+        
+        if shared_accel:
+            cands = _generate_accel_candidates(cfg)
+            score_sum = np.zeros((len(cands),), dtype=np.float32)
+            for k in range(len(cands)):
+                setattr(cfg, "dpp_shared_accel_selected_idx", k)
+                for i, obs in enumerate(obs_list):
+                    _, _, _, _, _, _, _, _, score_i = _dpp_one_agent(obs, cfg, prev_accel[i])
+                    score_sum[k] = score_sum[k] + float(score_i)
+            best_k = int(np.argmax(score_sum)) if len(cands) > 0 else -1
+            setattr(cfg, "dpp_shared_accel_selected_idx", best_k)
+
+        for i, obs in enumerate(obs_list):
+            accel_i, bw_i, sat_i, pressure_i, service_i, access_i, backhaul_i, reg_i, obj_i = _dpp_one_agent(
+                obs,
+                cfg,
+                prev_accel[i],
+            )
+
+            pressure_ema[i] = lyap_ema_beta * pressure_ema[i] + (1.0 - lyap_ema_beta) * pressure_i
+            virtual_queue[i] = np.clip(virtual_queue[i] + pressure_ema[i] - service_est[i], 0.0, None)
+            service_est[i] = service_i
+            dpp_access_term[i] = float(access_i)
+            dpp_backhaul_term[i] = float(backhaul_i)
+            dpp_reg_term[i] = float(reg_i)
+            dpp_objective_term[i] = float(obj_i)
+
+            accel_vec = accel_i + _baseline_repulse_term(obs, cfg) + _baseline_energy_term(obs, cfg)
+            accel[i] = np.clip(accel_vec, -1.0, 1.0)
+            if cfg.enable_bw_action:
+                bw_alloc[i] = bw_i
+            if not cfg.fixed_satellite_strategy:
+                sat_select_mask[i] = sat_i
+            prev_accel[i] = accel[i]
+
+        next_state = {
+            "pressure_ema": pressure_ema.astype(np.float32, copy=False),
+            "virtual_queue": virtual_queue.astype(np.float32, copy=False),
+            "service_est": service_est.astype(np.float32, copy=False),
+            "prev_accel": prev_accel.astype(np.float32, copy=False),
+            "dpp_access_term": dpp_access_term.astype(np.float32, copy=False),
+            "dpp_backhaul_term": dpp_backhaul_term.astype(np.float32, copy=False),
+            "dpp_reg_term": dpp_reg_term.astype(np.float32, copy=False),
+            "dpp_objective_term": dpp_objective_term.astype(np.float32, copy=False),
+        }
+        if hasattr(cfg, "dpp_shared_accel_selected_idx"):
+            setattr(cfg, "dpp_shared_accel_selected_idx", -1)
+        return accel, bw_alloc, sat_select_mask, next_state
 
     accel_gain = float(getattr(cfg, "baseline_accel_gain", 2.0))
     assoc_bonus = float(getattr(cfg, "baseline_assoc_bonus", 0.3))
@@ -411,35 +856,22 @@ def lyapunov_queue_aware_policy_step(
                 )
 
         if repulse_gain > 0.0 and repulse_radius > 0.0:
-            nbrs = obs["nbrs"]
-            nbrs_mask = obs["nbrs_mask"] > 0.0
-            if np.any(nbrs_mask):
-                rel_nbr_pos = nbrs[nbrs_mask, 0:2]
-                rel_nbr_vel = nbrs[nbrs_mask, 2:4]
-                dist_norm = np.linalg.norm(rel_nbr_pos, axis=1)
-                dist = dist_norm * cfg.map_size
-                mask = (dist > 1e-6) & (dist < repulse_radius)
-                if np.any(mask):
-                    rel_sel = rel_nbr_pos[mask]
-                    vel_sel = rel_nbr_vel[mask]
-                    dist_sel = dist[mask]
-                    dist_norm_sel = dist_norm[mask]
-
-                    direction = rel_sel / dist_norm_sel[:, None]
-                    approach_speed = np.sum(vel_sel * direction, axis=1)
-                    spring_strength = (1.0 / dist_sel - 1.0 / repulse_radius)
-                    damper_strength = np.where(approach_speed < 0, -approach_speed, 0.0)
-                    strength = spring_strength + damper_strength
-                    accel_vec = accel_vec - repulse_gain * (direction * strength[:, None]).sum(axis=0)
+            accel_vec = accel_vec + _baseline_repulse_term(obs, cfg)
 
         accel_vec = accel_vec + _baseline_energy_term(obs, cfg)
         # accel[i] = np.clip(accel_vec, -1.0, 1.0)
         accel[i] = np.sqrt(2) * accel_vec / max(np.linalg.norm(accel_vec), 1.0)
+        prev_accel[i] = accel[i]
 
     next_state = {
         "pressure_ema": pressure_ema.astype(np.float32, copy=False),
         "virtual_queue": virtual_queue.astype(np.float32, copy=False),
         "service_est": service_est.astype(np.float32, copy=False),
+        "prev_accel": prev_accel.astype(np.float32, copy=False),
+        "dpp_access_term": np.zeros((num_agents,), dtype=np.float32),
+        "dpp_backhaul_term": np.zeros((num_agents,), dtype=np.float32),
+        "dpp_reg_term": np.zeros((num_agents,), dtype=np.float32),
+        "dpp_objective_term": np.zeros((num_agents,), dtype=np.float32),
     }
     return accel, bw_alloc, sat_select_mask, next_state
 
