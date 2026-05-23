@@ -973,6 +973,16 @@ def main() -> None:
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--num_envs", type=int, default=64)
     parser.add_argument("--rollout_env_steps", type=int, default=250)
+    parser.add_argument(
+        "--structured_env_backend",
+        default=None,
+        help="Override cfg.structured_env_backend, e.g. 'python' for Mac/CPU smoke runs.",
+    )
+    parser.add_argument(
+        "--structured_env_tensor_backend",
+        default=None,
+        help="Override cfg.structured_env_tensor_backend, e.g. 'cpu' when CUDA is unavailable.",
+    )
     parser.add_argument("--reward_mode", default="positive_weighted_workload_level")
     parser.add_argument("--cold_critic_lr", type=float, default=None)
     parser.add_argument("--cold_critic_epochs", type=int, default=None)
@@ -1036,6 +1046,20 @@ def main() -> None:
     run_dir.mkdir(parents=True, exist_ok=True)
     cfg = load_config(args.config)
     _force_joint_config(cfg, reward_mode=str(args.reward_mode))
+    if args.structured_env_backend is not None:
+        cfg.structured_env_backend = str(args.structured_env_backend)
+    if args.structured_env_tensor_backend is not None:
+        cfg.structured_env_tensor_backend = str(args.structured_env_tensor_backend)
+    env_backend_l = str(getattr(cfg, "structured_env_backend", "") or "").strip().lower()
+    env_tensor_backend_l = str(getattr(cfg, "structured_env_tensor_backend", "") or "").strip().lower()
+    if (
+        (env_backend_l in {"python", "cpu", "mac", "legacy"} or env_tensor_backend_l == "cpu")
+        and str(getattr(cfg, "safety_shield_solver", "") or "").strip().upper() == "NATIVE_CUDA"
+    ):
+        # The native fused shield is a CUDA kernel.  Keep Mac smoke runs
+        # dependency-light by disabling it instead of requiring cvxpy.
+        cfg.safety_shield_enabled = False
+        cfg.safety_shield_solver = "CLARABEL"
     if bool(args.disable_danger_imitation):
         cfg.danger_imitation_enabled = False
         cfg.danger_imitation_coef = 0.0
@@ -1141,10 +1165,15 @@ def main() -> None:
                 stage_best_updates[int(stage_id)] = int(update_prev)
     completed_updates = int(start_update)
     try:
-        learner.bind_native_runtime_contract(group)
-        sync_native = getattr(learner, "_sync_native_actor_cuda_bindings_after_update", None)
-        if callable(sync_native):
-            sync_native()
+        group_is_native = all(
+            hasattr(group, attr)
+            for attr in ("native_rollout_runtime", "begin_native_main_kernel_rollout", "native_rollout_program")
+        )
+        if group_is_native:
+            learner.bind_native_runtime_contract(group)
+            sync_native = getattr(learner, "_sync_native_actor_cuda_bindings_after_update", None)
+            if callable(sync_native):
+                sync_native()
         if resume_state is not None:
             _restore_rng_state_payload(resume_state.get("rng_state"), device)
             print(

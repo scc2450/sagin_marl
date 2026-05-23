@@ -14,7 +14,12 @@ from torch.utils.cpp_extension import load
 
 
 _EXTENSION = None
-_CACHE_ROOT = Path(os.environ.get("SAGIN_MARL_NATIVE_CUDA_CACHE", r"D:\sagin_marl_native_cuda_cache"))
+_DEFAULT_CACHE_ROOT = (
+    Path(r"D:\sagin_marl_native_cuda_cache")
+    if os.name == "nt"
+    else Path(os.environ.get("XDG_CACHE_HOME", str(Path.home() / ".cache"))) / "sagin_marl_native_cuda_cache"
+)
+_CACHE_ROOT = Path(os.environ.get("SAGIN_MARL_NATIVE_CUDA_CACHE", str(_DEFAULT_CACHE_ROOT)))
 _NINJA_READY = False
 _MSVC_READY = False
 _MSVC_VERSION_READY = False

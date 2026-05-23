@@ -469,6 +469,9 @@ def _stage_gae_native_dense(
 ) -> tuple[torch.Tensor, torch.Tensor] | None:
     if device.type != "cuda":
         return None
+    cfg = getattr(learner, "cfg", None)
+    if str(getattr(cfg, "structured_env_backend", "native") or "native").strip().lower() != "native":
+        return None
     durations = getattr(stage_batch, "duration", None)
     if torch.is_tensor(durations) and not bool(torch.all(durations.reshape(-1).to(device=device) == 1).item()):
         return None

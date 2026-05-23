@@ -376,6 +376,9 @@ struct ActorPackedAbi {
   int nfp;
 };
 
+__constant__ RuntimePackedAbi cActorRuntimeAbi;
+__constant__ ActorPackedAbi cActorAbi;
+
 RuntimePackedAbi pack_runtime_abi(
     const TensorVec& float_tensors,
     const TensorVec& long_tensors,
@@ -449,6 +452,11 @@ ActorPackedAbi pack_actor_abi(
     out.fp[idx] = actor_float_params[static_cast<size_t>(idx)];
   }
   return out;
+}
+
+void copy_actor_abi_to_symbols(const RuntimePackedAbi& runtime, const ActorPackedAbi& actor, cudaStream_t stream) {
+  C10_CUDA_CHECK(cudaMemcpyToSymbolAsync(cActorRuntimeAbi, &runtime, sizeof(RuntimePackedAbi), 0, cudaMemcpyHostToDevice, stream));
+  C10_CUDA_CHECK(cudaMemcpyToSymbolAsync(cActorAbi, &actor, sizeof(ActorPackedAbi), 0, cudaMemcpyHostToDevice, stream));
 }
 
 __device__ __forceinline__ int64_t ip(const RuntimePackedAbi& a, int idx, int64_t default_value = 0) {
@@ -2149,7 +2157,9 @@ __device__ void block_competition_layer(
   __syncthreads();
 }
 
-__global__ void actor_accel_live_kernel(RuntimePackedAbi runtime, ActorPackedAbi actor, int64_t active_idx, bool deterministic, int64_t rng_step) {
+__global__ void actor_accel_live_kernel(int64_t active_idx, bool deterministic, int64_t rng_step) {
+  const RuntimePackedAbi& runtime = cActorRuntimeAbi;
+  const ActorPackedAbi& actor = cActorAbi;
   const int num_envs = static_cast<int>(ip(runtime, kParamNumEnvs));
   const int num_uav = static_cast<int>(ip(runtime, kParamNumUav));
   const int row = blockIdx.x;
@@ -2346,7 +2356,9 @@ __global__ void actor_accel_live_kernel(RuntimePackedAbi runtime, ActorPackedAbi
   }
 }
 
-__global__ void actor_sat_live_kernel(RuntimePackedAbi runtime, ActorPackedAbi actor, bool deterministic, int64_t rng_step) {
+__global__ void actor_sat_live_kernel(bool deterministic, int64_t rng_step) {
+  const RuntimePackedAbi& runtime = cActorRuntimeAbi;
+  const ActorPackedAbi& actor = cActorAbi;
   const int num_envs = static_cast<int>(ip(runtime, kParamNumEnvs));
   const int num_uav = static_cast<int>(ip(runtime, kParamNumUav));
   const int row = blockIdx.x;
@@ -2645,12 +2657,12 @@ __global__ void actor_sat_live_kernel(RuntimePackedAbi runtime, ActorPackedAbi a
 }
 
 __global__ void actor_sat_select_from_logits_kernel(
-    RuntimePackedAbi runtime,
-    ActorPackedAbi actor,
     const float* item_logits,
     const float* count_logits,
     bool deterministic,
     int64_t rng_step) {
+  const RuntimePackedAbi& runtime = cActorRuntimeAbi;
+  const ActorPackedAbi& actor = cActorAbi;
   const int num_envs = static_cast<int>(ip(runtime, kParamNumEnvs));
   const int num_uav = static_cast<int>(ip(runtime, kParamNumUav));
   const int row = blockIdx.x;
@@ -2786,11 +2798,11 @@ __global__ void actor_sat_select_from_logits_kernel(
 }
 
 __global__ void actor_accel_write_from_mean_kernel(
-    RuntimePackedAbi runtime,
-    ActorPackedAbi actor,
     const float* mean,
     bool deterministic,
     int64_t rng_step) {
+  const RuntimePackedAbi& runtime = cActorRuntimeAbi;
+  const ActorPackedAbi& actor = cActorAbi;
   const int num_envs = static_cast<int>(ip(runtime, kParamNumEnvs));
   const int num_uav = static_cast<int>(ip(runtime, kParamNumUav));
   const int row = blockIdx.x * blockDim.x + threadIdx.x;
@@ -2821,15 +2833,13 @@ __global__ void actor_accel_write_from_mean_kernel(
 }
 
 __device__ bool actor_restore_bw_macro_row_if_needed(
-    RuntimePackedAbi runtime,
+    const RuntimePackedAbi& runtime,
     int row,
     int history_slot,
     int num_uav,
     int num_gu);
 
 __global__ void actor_bw_write_from_params_kernel(
-    RuntimePackedAbi runtime,
-    ActorPackedAbi actor,
     const float* det_mean_in,
     const float* kappa_in,
     const float* tau_in,
@@ -2838,6 +2848,8 @@ __global__ void actor_bw_write_from_params_kernel(
     bool deterministic,
     int64_t rng_step,
     int64_t history_slot64) {
+  const RuntimePackedAbi& runtime = cActorRuntimeAbi;
+  const ActorPackedAbi& actor = cActorAbi;
   const int num_envs = static_cast<int>(ip(runtime, kParamNumEnvs));
   const int num_uav = static_cast<int>(ip(runtime, kParamNumUav));
   const int num_gu = static_cast<int>(ip(runtime, kParamNumGu));
@@ -3289,7 +3301,7 @@ __device__ int actor_bw_macro_start_slot_for_env(const RuntimePackedAbi& runtime
 }
 
 __device__ bool actor_restore_bw_macro_row_if_needed(
-    RuntimePackedAbi runtime,
+    const RuntimePackedAbi& runtime,
     int row,
     int history_slot,
     int num_uav,
@@ -3359,12 +3371,12 @@ __device__ bool actor_restore_bw_macro_row_if_needed(
 }
 
 __global__ void actor_bw_prepare_macro_start_mask_kernel(
-    RuntimePackedAbi runtime,
     bool* start_mask,
     int64_t history_slot64,
     int num_uav,
     int num_gu,
     int row_count) {
+  const RuntimePackedAbi& runtime = cActorRuntimeAbi;
   const int row = blockIdx.x;
   if (row >= row_count || start_mask == nullptr) return;
   const int interval = max(static_cast<int>(ip(runtime, kParamAccessBwDecisionInterval, 1)), 1);
@@ -3383,7 +3395,9 @@ __global__ void actor_bw_prepare_macro_start_mask_kernel(
   }
 }
 
-__global__ void actor_bw_live_kernel(RuntimePackedAbi runtime, ActorPackedAbi actor, bool deterministic, int64_t rng_step, int64_t history_slot64) {
+__global__ void actor_bw_live_kernel(bool deterministic, int64_t rng_step, int64_t history_slot64) {
+  const RuntimePackedAbi& runtime = cActorRuntimeAbi;
+  const ActorPackedAbi& actor = cActorAbi;
   const int num_envs = static_cast<int>(ip(runtime, kParamNumEnvs));
   const int num_uav = static_cast<int>(ip(runtime, kParamNumUav));
   const int num_gu = static_cast<int>(ip(runtime, kParamNumGu));
@@ -3672,10 +3686,11 @@ void launch_actor_kernel(
   const dim3 grid(which == 0 || which == 1 || which == 2 ? row_count : num_envs);
   const dim3 block(which == 2 ? 256 : 128);
   cudaStream_t stream = at::cuda::getCurrentCUDAStream(device_anchor.device().index());
+  copy_actor_abi_to_symbols(runtime, actor, stream);
   if (which == 0) {
-    actor_accel_live_kernel<<<grid, block, 0, stream>>>(runtime, actor, active_idx, deterministic, rng_step);
+    actor_accel_live_kernel<<<grid, block, 0, stream>>>(active_idx, deterministic, rng_step);
   } else if (which == 1) {
-    actor_sat_live_kernel<<<grid, block, 0, stream>>>(runtime, actor, deterministic, rng_step);
+    actor_sat_live_kernel<<<grid, block, 0, stream>>>(deterministic, rng_step);
   } else {
     const int num_gu = static_cast<int>(runtime.ip[kParamNumGu]);
     const int select_k = static_cast<int>(runtime.ip[kParamSatNumSelect]);
@@ -3696,7 +3711,7 @@ void launch_actor_kernel(
     if (kFLiveBwOldLogprob < runtime.nf && runtime.f[kFLiveBwOldLogprob] != nullptr && runtime.f_numel[kFLiveBwOldLogprob] >= num_envs) {
       C10_CUDA_CHECK(cudaMemsetAsync(runtime.f[kFLiveBwOldLogprob], 0, sizeof(float) * static_cast<size_t>(num_envs), stream));
     }
-    actor_bw_live_kernel<<<grid, block, 0, stream>>>(runtime, actor, deterministic, rng_step, history_slot);
+    actor_bw_live_kernel<<<grid, block, 0, stream>>>(deterministic, rng_step, history_slot);
   }
   C10_CUDA_KERNEL_LAUNCH_CHECK();
 }
@@ -3893,6 +3908,7 @@ void actor_sat_live_fused_launcher(
                                 .contiguous();
 
   cudaStream_t stream = at::cuda::getCurrentCUDAStream(float_tensors.at(0).device().index());
+  copy_actor_abi_to_symbols(runtime, actor, stream);
   const dim3 grid(row_count);
   const dim3 block(128);
   const size_t shared_bytes =
@@ -3900,8 +3916,6 @@ void actor_sat_live_fused_launcher(
       sizeof(bool) * static_cast<size_t>(kMaxItems + kMaxSubset) +
       sizeof(float) * static_cast<size_t>(kMaxSubset);
   actor_sat_select_from_logits_kernel<<<grid, block, shared_bytes, stream>>>(
-      runtime,
-      actor,
       item_logits.data_ptr<float>(),
       count_logits.data_ptr<float>(),
       deterministic,
@@ -4085,9 +4099,10 @@ void actor_accel_live_fused_launcher(
   mean = mean.contiguous();
 
   cudaStream_t stream = at::cuda::getCurrentCUDAStream(float_tensors.at(0).device().index());
+  copy_actor_abi_to_symbols(runtime, actor, stream);
   const dim3 block(128);
   const dim3 grid((row_count + static_cast<int>(block.x) - 1) / static_cast<int>(block.x));
-  actor_accel_write_from_mean_kernel<<<grid, block, 0, stream>>>(runtime, actor, mean.data_ptr<float>(), deterministic, rng_step);
+  actor_accel_write_from_mean_kernel<<<grid, block, 0, stream>>>(mean.data_ptr<float>(), deterministic, rng_step);
   C10_CUDA_KERNEL_LAUNCH_CHECK();
 }
 
@@ -4130,6 +4145,7 @@ void actor_bw_live_fused_launcher(
   const c10::cuda::CUDAGuard guard(float_tensors.at(0).device());
   const c10::InferenceMode inference_guard(true);
   cudaStream_t stream = at::cuda::getCurrentCUDAStream(float_tensors.at(0).device().index());
+  copy_actor_abi_to_symbols(runtime, actor, stream);
   if (kFLiveBwOldLogprob < runtime.nf && runtime.f[kFLiveBwOldLogprob] != nullptr && runtime.f_numel[kFLiveBwOldLogprob] >= num_envs) {
     C10_CUDA_CHECK(cudaMemsetAsync(runtime.f[kFLiveBwOldLogprob], 0, sizeof(float) * static_cast<size_t>(num_envs), stream));
   }
@@ -4142,7 +4158,6 @@ void actor_bw_live_fused_launcher(
     const dim3 prep_grid(row_count);
     const dim3 prep_block(256);
     actor_bw_prepare_macro_start_mask_kernel<<<prep_grid, prep_block, 0, stream>>>(
-        runtime,
         start_mask.data_ptr<bool>(),
         history_slot,
         num_uav,
@@ -4353,8 +4368,6 @@ void actor_bw_live_fused_launcher(
       sizeof(float) * static_cast<size_t>(2 * kMaxItems);
   const int64_t* row_index_ptr = row_indices.defined() ? row_indices.data_ptr<int64_t>() : nullptr;
   actor_bw_write_from_params_kernel<<<grid, block, shared_bytes, stream>>>(
-      runtime,
-      actor,
       det_mean.data_ptr<float>(),
       kappa.data_ptr<float>(),
       tau.data_ptr<float>(),

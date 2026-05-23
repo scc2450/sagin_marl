@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import copy
-from dataclasses import fields, is_dataclass
+from dataclasses import fields, is_dataclass, replace
 from itertools import product
 import math
 import time
@@ -28,6 +28,7 @@ from .structured_buffer import (
     StructuredRolloutViews,
     StructuredStageTrainingBatch,
 )
+from .structured_types import LocalBwState
 from .native_actor_cuda import NativeActorCudaBinding, build_native_actor_cuda_binding
 
 def _explained_variance(pred: torch.Tensor, target: torch.Tensor) -> float:
@@ -5296,7 +5297,16 @@ class StructuredMAPPO:
         *,
         horizon: int,
         deterministic: bool = False,
-    ) -> list[StructuredBatchStepResult]:
+    ) -> list[Any]:
+        if not self._can_use_native_tensor_policy_rollout(drivers):
+            return [
+                self.collect_env_steps(
+                    drivers,
+                    buffer,
+                    deterministic=deterministic,
+                )
+                for _ in range(int(horizon))
+            ]
         structured_env_tensor_device = self._structured_env_tensor_device()
         if structured_env_tensor_device is None:
             raise RuntimeError("native tensor rollout executor requires a structured env tensor device.")
@@ -5308,6 +5318,225 @@ class StructuredMAPPO:
             buffer=buffer,
             deterministic=deterministic,
         )
+
+    @staticmethod
+    def _python_structured_driver_list(drivers: Any) -> list[Any]:
+        source = getattr(drivers, "drivers", None)
+        if source is None:
+            if isinstance(drivers, Sequence) and not isinstance(drivers, (str, bytes, bytearray)):
+                source = drivers
+            elif hasattr(drivers, "__len__") and hasattr(drivers, "__getitem__"):
+                source = [drivers[index] for index in range(int(len(drivers)))]
+            else:
+                source = [drivers]
+        driver_list = list(source)
+        required = (
+            "begin_step",
+            "build_local_accel_states",
+            "run_accel_stage",
+            "build_sat_stage_snapshot",
+            "decode_sat_subset_actions",
+            "run_sat_stage",
+            "build_bw_stage_snapshot",
+            "execute_stage_bw_and_prepare_next_accel",
+        )
+        if not driver_list or not all(all(hasattr(driver, name) for name in required) for driver in driver_list):
+            raise RuntimeError("Python structured rollout requires StructuredControlDriver-like objects.")
+        return driver_list
+
+    @staticmethod
+    def _env_batch_tensor(
+        value: Any,
+        *,
+        device: torch.device,
+        dtype: torch.dtype = torch.float32,
+    ) -> torch.Tensor | None:
+        if value is None:
+            return None
+        tensor = value if torch.is_tensor(value) else torch.as_tensor(value)
+        return tensor.to(device=device, dtype=dtype).unsqueeze(0)
+
+    @staticmethod
+    def _sat_local_with_row_subset_members(local_state: Any, row_count: int) -> Any:
+        members = getattr(local_state, "subset_members", None)
+        if not torch.is_tensor(members) or members.ndim != 2:
+            return local_state
+        expanded = members.unsqueeze(0).expand(max(int(row_count), 1), -1, -1).contiguous()
+        return replace(local_state, subset_members=expanded)
+
+    def _collect_env_steps_python_policy(
+        self,
+        drivers: Sequence[Any],
+        buffer: StructuredRolloutBuffer | None,
+        deterministic: bool = False,
+    ) -> list[Any]:
+        """Collect one structured env step through the portable Python driver.
+
+        This path intentionally mirrors the three policy stages used by the
+        native rollout, but executes one environment at a time.  It is a Mac/CPU
+        compatibility path for smoke tests and debugging.
+        """
+
+        driver_list = self._python_structured_driver_list(drivers)
+        if self.actor is None:
+            raise RuntimeError("Python structured rollout requires an actor.")
+        if self.critic is None:
+            raise RuntimeError("Python structured rollout requires a critic.")
+        results: list[Any] = []
+        for env_index, driver in enumerate(driver_list):
+            set_tensor_device = getattr(driver, "set_tensor_device", None)
+            if callable(set_tensor_device):
+                set_tensor_device(self.device)
+
+            accel_world = driver.begin_step()
+            accel_local = _collate_dataclass(driver.build_local_accel_states(accel_world), self.device)
+            accel_value = self._stage_value_eval_from_batch(0, accel_world).detach().reshape(1)
+            accel_out = self.actor.act_accel(accel_local, deterministic=deterministic)
+            num_agents = int(accel_out.action.shape[0])
+            accel_action = accel_out.action.detach()
+            accel_logprob_per_agent = accel_out.logprob.detach().reshape(1, num_agents)
+            accel_logprob = accel_logprob_per_agent.sum(dim=1)
+
+            sat_world = driver.run_accel_stage(accel_action.detach().cpu().numpy())
+            sat_stage_state = None
+            export_sat_stage_state = getattr(driver, "export_sat_stage_state", None)
+            if callable(export_sat_stage_state):
+                try:
+                    sat_stage_state = export_sat_stage_state()
+                except Exception:
+                    sat_stage_state = None
+            sat_snapshot = driver.build_sat_stage_snapshot(sat_world)
+            if sat_snapshot.local_state is None:
+                raise RuntimeError("Python structured rollout could not build SAT local state.")
+            sat_local = self._sat_local_with_row_subset_members(sat_snapshot.local_state, num_agents)
+            sat_value = self._stage_value_eval_from_batch(1, sat_world).detach().reshape(1)
+            sat_out = self.actor.act_sat(sat_local, deterministic=deterministic)
+            sat_logprob_per_agent = sat_out.logprob.detach().reshape(1, num_agents)
+            sat_logprob = sat_logprob_per_agent.sum(dim=1)
+            sat_subset_index = sat_out.subset_index.detach().to(dtype=torch.long)
+            sat_action = driver.decode_sat_subset_actions(
+                [],
+                sat_subset_index.detach().cpu().numpy().reshape(-1),
+            )
+
+            bw_world = driver.run_sat_stage(sat_action)
+            bw_stage_state = None
+            export_bw_stage_state = getattr(driver, "export_bw_stage_state", None)
+            if callable(export_bw_stage_state):
+                try:
+                    bw_stage_state = export_bw_stage_state()
+                except Exception:
+                    bw_stage_state = None
+            bw_snapshot = driver.build_bw_stage_snapshot(bw_world)
+            bw_local = LocalBwState(
+                ego_features=bw_snapshot.ego_features,
+                selected_sat_tokens=bw_snapshot.selected_sat_tokens,
+                selected_sat_mask=bw_snapshot.selected_sat_mask,
+                gu_tokens=bw_snapshot.gu_tokens,
+                gu_mask=bw_snapshot.gu_mask,
+                bw_valid_mask=bw_snapshot.bw_valid_mask,
+            )
+            bw_value = self._stage_value_eval_from_batch(2, bw_world).detach().reshape(1)
+            bw_out = self.actor.act_bw(bw_local, deterministic=deterministic)
+            bw_action = bw_out.action.detach()
+            bw_logprob_per_agent = bw_out.logprob.detach().reshape(1, num_agents)
+            bw_logprob = bw_logprob_per_agent.sum(dim=1)
+            bw_ref_action = bw_out.det_mean.detach()
+
+            step_result, next_world = driver.execute_stage_bw_and_prepare_next_accel(
+                bw_action.detach().cpu().numpy(),
+                bw_proxy_base_action=bw_ref_action.detach().cpu().numpy(),
+            )
+            results.append(step_result)
+
+            if buffer is None:
+                continue
+            reward = torch.as_tensor([float(getattr(step_result, "team_reward", 0.0))], dtype=torch.float32, device=self.device)
+            terminated = torch.as_tensor([bool(getattr(step_result, "terminated", False))], dtype=torch.bool, device=self.device)
+            truncated = torch.as_tensor([bool(getattr(step_result, "truncated", False))], dtype=torch.bool, device=self.device)
+            buffer.add_env_step_batch(
+                accel_world_batch=accel_world,
+                sat_world_batch=sat_world,
+                bw_world_batch=bw_world,
+                next_world_batch=next_world,
+                accel_local_batch=accel_local,
+                sat_local_batch=sat_local,
+                bw_local_batch=bw_local,
+                accel_actions=accel_action.reshape(1, num_agents, -1),
+                accel_latent_actions=(
+                    None
+                    if accel_out.latent_action is None
+                    else accel_out.latent_action.detach().reshape(1, num_agents, -1)
+                ),
+                sat_actions=sat_subset_index.reshape(1, num_agents),
+                bw_actions=bw_action.reshape(1, num_agents, -1),
+                accel_old_logprobs=accel_logprob,
+                sat_old_logprobs=sat_logprob,
+                sat_old_logprobs_per_agent=sat_logprob_per_agent,
+                bw_old_logprobs=bw_logprob,
+                bw_old_logprobs_per_agent=bw_logprob_per_agent,
+                accel_values=accel_value,
+                sat_values=sat_value,
+                bw_values=bw_value,
+                rewards=reward,
+                terminated=terminated,
+                truncated=truncated,
+                accel_danger_imitation_targets=self._env_batch_tensor(
+                    getattr(step_result, "danger_imitation_target", None),
+                    device=self.device,
+                ),
+                accel_danger_imitation_masks=self._env_batch_tensor(
+                    getattr(step_result, "danger_imitation_mask", None),
+                    device=self.device,
+                ),
+                sat_stage_states=[sat_stage_state],
+                bw_stage_states=[bw_stage_state],
+                bw_access_rewards=torch.as_tensor(
+                    [float(getattr(step_result, "bw_access_reward", 0.0))],
+                    dtype=torch.float32,
+                    device=self.device,
+                ),
+                bw_weighted_workload_delta_rewards=torch.as_tensor(
+                    [float(getattr(step_result, "bw_weighted_workload_delta_reward", 0.0))],
+                    dtype=torch.float32,
+                    device=self.device,
+                ),
+                bw_weighted_workload_level_rewards=torch.as_tensor(
+                    [float(getattr(step_result, "bw_weighted_workload_level_reward", 0.0))],
+                    dtype=torch.float32,
+                    device=self.device,
+                ),
+                bw_gu_queue_level_rewards=torch.as_tensor(
+                    [float(getattr(step_result, "bw_gu_queue_level_reward", 0.0))],
+                    dtype=torch.float32,
+                    device=self.device,
+                ),
+                bw_system_queue_level_rewards=torch.as_tensor(
+                    [float(getattr(step_result, "bw_system_queue_level_reward", 0.0))],
+                    dtype=torch.float32,
+                    device=self.device,
+                ),
+                bw_gu_service_queue_rewards=torch.as_tensor(
+                    [float(getattr(step_result, "bw_gu_service_queue_reward", 0.0))],
+                    dtype=torch.float32,
+                    device=self.device,
+                ),
+                bw_flow_proxy_scores=self._env_batch_tensor(
+                    getattr(step_result, "bw_flow_proxy_scores", None),
+                    device=self.device,
+                ),
+                bw_flow_proxy_masks=self._env_batch_tensor(
+                    getattr(step_result, "bw_flow_proxy_mask", None),
+                    device=self.device,
+                ),
+                bw_flow_proxy_deltas=self._env_batch_tensor(
+                    getattr(step_result, "bw_flow_proxy_deltas", None),
+                    device=self.device,
+                ),
+                bw_ref_actions=bw_ref_action.reshape(1, num_agents, -1),
+                env_indices=[int(env_index)],
+            )
+        return results
 
     @torch.no_grad()
     def collect_env_steps(
@@ -5322,6 +5551,14 @@ class StructuredMAPPO:
                 buffer,
                 deterministic=deterministic,
             )
+        try:
+            return self._collect_env_steps_python_policy(
+                drivers,
+                buffer,
+                deterministic=deterministic,
+            )
+        except RuntimeError:
+            raise
         raise RuntimeError(
             "StructuredMAPPO collect_env_steps requires the persistent native main-kernel rollout API; "
             "legacy stage-batch rollout has been removed."

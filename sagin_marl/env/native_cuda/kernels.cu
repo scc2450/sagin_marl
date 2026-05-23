@@ -910,6 +910,7 @@ struct PackedAbi {
 
 __constant__ PackedAbi cBranchSourceAbi;
 __constant__ PackedAbi cBranchTargetAbi;
+__constant__ PackedAbi cLiveAbi;
 
 __host__ PackedAbi pack_abi(
     const TensorVec& float_tensors,
@@ -953,6 +954,10 @@ __host__ PackedAbi pack_abi(
     out.fp[idx] = float_params[static_cast<size_t>(idx)];
   }
   return out;
+}
+
+void copy_live_abi_to_symbol(const PackedAbi& abi, cudaStream_t stream) {
+  C10_CUDA_CHECK(cudaMemcpyToSymbolAsync(cLiveAbi, &abi, sizeof(PackedAbi), 0, cudaMemcpyHostToDevice, stream));
 }
 
 void check_cuda_group(const TensorVec& tensors, at::ScalarType dtype, const char* group_name) {
@@ -2591,7 +2596,7 @@ __device__ float native_safety_pair_margin_device(
   return r_next_proj - (d_required + c_next * c_next / (2.0f * dynamics_denominator(a_safe)));
 }
 
-__device__ void native_safety_project_env(PackedAbi a, int stage_slot, int e) {
+__device__ void native_safety_project_env(const PackedAbi& a, int stage_slot, int e) {
   const int ucount = static_cast<int>(ip(a, kParamNumUav));
   if (ucount <= 1) return;
   const float tau = dynamics_denominator(fp(a, kFpAccelTau0, fp(a, kFpTau0, 1.0f)));
@@ -7161,7 +7166,8 @@ __device__ float lyapunov_relay_gate(const PackedAbi& a, int stage_slot, int e, 
   return best > -1.0e30f ? 0.5f + 0.5f * best : 0.5f;
 }
 
-__global__ void baseline_accel_live_kernel(PackedAbi a, int64_t active_idx, int64_t source_mode64) {
+__global__ void baseline_accel_live_kernel(int64_t active_idx, int64_t source_mode64) {
+  const PackedAbi& a = cLiveAbi;
   const int e = blockIdx.x;
   const int u = blockIdx.y;
   if (e >= ip(a, kParamNumEnvs)) return;
@@ -7323,7 +7329,8 @@ __global__ void baseline_accel_live_kernel(PackedAbi a, int64_t active_idx, int6
   }
 }
 
-__global__ void queue_aware_accel_live_kernel(PackedAbi a, int64_t active_idx) {
+__global__ void queue_aware_accel_live_kernel(int64_t active_idx) {
+  const PackedAbi& a = cLiveAbi;
   const int e = blockIdx.x;
   const int u = blockIdx.y;
   if (e >= ip(a, kParamNumEnvs)) return;
@@ -7406,7 +7413,8 @@ __global__ void queue_aware_accel_live_kernel(PackedAbi a, int64_t active_idx) {
   }
 }
 
-__global__ void queue_aware_bw_live_kernel(PackedAbi a) {
+__global__ void queue_aware_bw_live_kernel() {
+  const PackedAbi& a = cLiveAbi;
   const int e = blockIdx.x;
   const int u = blockIdx.y;
   if (e >= ip(a, kParamNumEnvs)) return;
@@ -7479,7 +7487,8 @@ __global__ void queue_aware_bw_live_kernel(PackedAbi a) {
   }
 }
 
-__global__ void baseline_bw_live_kernel(PackedAbi a, int64_t source_mode64) {
+__global__ void baseline_bw_live_kernel(int64_t source_mode64) {
+  const PackedAbi& a = cLiveAbi;
   const int e = blockIdx.x;
   const int u = blockIdx.y;
   if (e >= ip(a, kParamNumEnvs)) return;
@@ -7716,7 +7725,8 @@ __device__ float baseline_sat_slot_score(
       bw_max);
 }
 
-__global__ void baseline_sat_live_kernel(PackedAbi a, int64_t source_mode64) {
+__global__ void baseline_sat_live_kernel(int64_t source_mode64) {
+  const PackedAbi& a = cLiveAbi;
   const int e = blockIdx.x;
   const int u = blockIdx.y;
   if (e >= ip(a, kParamNumEnvs)) return;
@@ -7820,7 +7830,8 @@ __global__ void baseline_sat_live_kernel(PackedAbi a, int64_t source_mode64) {
   }
 }
 
-__global__ void queue_aware_sat_live_kernel(PackedAbi a) {
+__global__ void queue_aware_sat_live_kernel() {
+  const PackedAbi& a = cLiveAbi;
   const int e = blockIdx.x;
   const int u = blockIdx.y;
   if (e >= ip(a, kParamNumEnvs)) return;
@@ -7953,7 +7964,8 @@ __global__ void queue_aware_sat_live_kernel(PackedAbi a) {
   }
 }
 
-__global__ void cluster_center_accel_live_kernel(PackedAbi a, int64_t active_idx) {
+__global__ void cluster_center_accel_live_kernel(int64_t active_idx) {
+  const PackedAbi& a = cLiveAbi;
   const int e = blockIdx.x;
   if (e >= ip(a, kParamNumEnvs)) return;
   const int ucount = static_cast<int>(ip(a, kParamNumUav));
@@ -8285,7 +8297,8 @@ __device__ int sat_macro_start_slot_for_env(const PackedAbi& a, int slot, int e)
   return macro_start_slot_for_env(a, slot, e, interval);
 }
 
-__global__ void apply_bw_macro_live_kernel(PackedAbi a, int64_t slot64, int64_t bw_source_mode) {
+__global__ void apply_bw_macro_live_kernel(int64_t slot64, int64_t bw_source_mode) {
+  const PackedAbi& a = cLiveAbi;
   const int e = static_cast<int>(blockIdx.x);
   const int ecount = static_cast<int>(ip(a, kParamNumEnvs));
   if (e >= ecount) return;
@@ -8571,7 +8584,8 @@ __global__ void prepare_branch_replay_from_history_kernel(
   }
 }
 
-__global__ void prepare_initial_accel_live_kernel(PackedAbi a, int64_t slot64, int64_t active_idx) {
+__global__ void prepare_initial_accel_live_kernel(int64_t slot64, int64_t active_idx) {
+  const PackedAbi& a = cLiveAbi;
   const int e = blockIdx.x;
   if (e >= ip(a, kParamNumEnvs)) return;
   const int slot = static_cast<int>(slot64);
@@ -8605,7 +8619,8 @@ __global__ void prepare_initial_accel_live_kernel(PackedAbi a, int64_t slot64, i
   if (threadIdx.x == 0 && has_i(a, kIMarker)) a.i[kIMarker][0] = 1;
 }
 
-__global__ void accel_to_sat_live_kernel(PackedAbi a, int64_t slot, int64_t active_idx, int64_t accel_source_mode) {
+__global__ void accel_to_sat_live_kernel(int64_t slot, int64_t active_idx, int64_t accel_source_mode) {
+  const PackedAbi& a = cLiveAbi;
   const int e = blockIdx.x;
   if (e >= ip(a, kParamNumEnvs)) return;
   const int ucount = static_cast<int>(ip(a, kParamNumUav));
@@ -8713,7 +8728,8 @@ __global__ void accel_to_sat_live_kernel(PackedAbi a, int64_t slot, int64_t acti
   (void)slot;
 }
 
-__global__ void sat_to_bw_live_kernel(PackedAbi a, int64_t slot, int64_t sat_source_mode) {
+__global__ void sat_to_bw_live_kernel(int64_t slot, int64_t sat_source_mode) {
+  const PackedAbi& a = cLiveAbi;
   const int e = blockIdx.x;
   if (e >= ip(a, kParamNumEnvs)) return;
   const int ucount = static_cast<int>(ip(a, kParamNumUav));
@@ -8858,7 +8874,6 @@ __global__ void sat_to_bw_live_kernel(PackedAbi a, int64_t slot, int64_t sat_sou
 }
 
 __global__ void finish_commit_prepare_live_kernel(
-    PackedAbi a,
     int64_t slot64,
     int64_t active_idx,
     bool rollout_tail,
@@ -8867,6 +8882,7 @@ __global__ void finish_commit_prepare_live_kernel(
     int64_t bw_source_mode,
     float* finish_profile_out,
     int finish_profile_stride) {
+  const PackedAbi& a = cLiveAbi;
   const int e = blockIdx.x;
   if (e >= ip(a, kParamNumEnvs)) return;
   const int slot = static_cast<int>(slot64);
@@ -9899,33 +9915,34 @@ void launch_phase(
     return;
   }
   cudaStream_t stream = at::cuda::getCurrentCUDAStream();
+  copy_live_abi_to_symbol(abi, stream);
   dim3 grid(static_cast<unsigned int>(num_envs));
   dim3 block(128);
   const int num_uav = static_cast<int>(int_params[kParamNumUav]);
   dim3 source_row_grid(static_cast<unsigned int>(num_envs), static_cast<unsigned int>(num_uav > 0 ? num_uav : 1));
   dim3 source_block(kSourceBlockMaxThreads);
   if (phase == 1) {
-    prepare_initial_accel_live_kernel<<<grid, block, 0, stream>>>(abi, slot, active_idx);
+    prepare_initial_accel_live_kernel<<<grid, block, 0, stream>>>(slot, active_idx);
   } else if (phase == 2) {
-    accel_to_sat_live_kernel<<<grid, block, 0, stream>>>(abi, slot, active_idx, accel_source_mode);
+    accel_to_sat_live_kernel<<<grid, block, 0, stream>>>(slot, active_idx, accel_source_mode);
   } else if (phase == 15) {
-    baseline_accel_live_kernel<<<source_row_grid, source_block, 0, stream>>>(abi, active_idx, accel_source_mode);
+    baseline_accel_live_kernel<<<source_row_grid, source_block, 0, stream>>>(active_idx, accel_source_mode);
   } else if (phase == 11) {
-    queue_aware_accel_live_kernel<<<source_row_grid, source_block, 0, stream>>>(abi, active_idx);
+    queue_aware_accel_live_kernel<<<source_row_grid, source_block, 0, stream>>>(active_idx);
   } else if (phase == 12) {
-    cluster_center_accel_live_kernel<<<grid, source_block, 0, stream>>>(abi, active_idx);
+    cluster_center_accel_live_kernel<<<grid, source_block, 0, stream>>>(active_idx);
   } else if (phase == 16) {
-    baseline_sat_live_kernel<<<source_row_grid, source_block, 0, stream>>>(abi, sat_source_mode);
+    baseline_sat_live_kernel<<<source_row_grid, source_block, 0, stream>>>(sat_source_mode);
   } else if (phase == 13) {
-    queue_aware_sat_live_kernel<<<source_row_grid, source_block, 0, stream>>>(abi);
+    queue_aware_sat_live_kernel<<<source_row_grid, source_block, 0, stream>>>();
   } else if (phase == 17) {
-    baseline_bw_live_kernel<<<source_row_grid, source_block, 0, stream>>>(abi, bw_source_mode);
+    baseline_bw_live_kernel<<<source_row_grid, source_block, 0, stream>>>(bw_source_mode);
   } else if (phase == 14) {
-    queue_aware_bw_live_kernel<<<source_row_grid, source_block, 0, stream>>>(abi);
+    queue_aware_bw_live_kernel<<<source_row_grid, source_block, 0, stream>>>();
   } else if (phase == 3) {
-    sat_to_bw_live_kernel<<<grid, block, 0, stream>>>(abi, slot, sat_source_mode);
+    sat_to_bw_live_kernel<<<grid, block, 0, stream>>>(slot, sat_source_mode);
   } else if (phase == 5) {
-    apply_bw_macro_live_kernel<<<grid, block, 0, stream>>>(abi, slot, bw_source_mode);
+    apply_bw_macro_live_kernel<<<grid, block, 0, stream>>>(slot, bw_source_mode);
   } else if (phase == 4) {
     const int num_sat = static_cast<int>(int_params[kParamNumSat]);
     const int num_gu = static_cast<int>(int_params[kParamNumGu]);
@@ -9942,7 +9959,6 @@ void launch_phase(
             (num_gu > 0 ? num_gu : 0)) *
         sizeof(float);
     finish_commit_prepare_live_kernel<<<grid, block, finish_shared_bytes, stream>>>(
-        abi,
         slot,
         active_idx,
         rollout_tail,
