@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import copy
+import itertools
 import multiprocessing as mp
 from dataclasses import replace
 from multiprocessing.connection import Connection
@@ -33,8 +35,8 @@ def _collect_step_stats(env: SaginParallelEnv) -> Dict[str, object]:
 
     num_agents = len(getattr(env, 'agents', []))
     default_accel = np.zeros((num_agents, 2), dtype=np.float32)
-    default_bw = np.zeros((num_agents, getattr(env.cfg, 'users_obs_max', 0)), dtype=np.float32)
-    sat_k = max(int(getattr(env.cfg, 'sat_num_select', env.cfg.N_RF) or env.cfg.N_RF), 0)
+    default_bw = np.zeros((num_agents, getattr(env.cfg, 'num_gu', 0)), dtype=np.float32)
+    sat_k = max(int(getattr(env.cfg, 'sat_action_select_k', getattr(env.cfg, 'sat_num_select', env.cfg.N_RF)) or env.cfg.N_RF), 0)
     default_sat_mask = np.zeros((num_agents, getattr(env.cfg, 'sats_obs_max', 0)), dtype=np.float32)
     default_sat_indices = np.full((num_agents, sat_k), -1, dtype=np.int64)
     parts = getattr(env, 'last_reward_parts', None) or {}
@@ -107,6 +109,149 @@ def _collect_step_stats(env: SaginParallelEnv) -> Dict[str, object]:
     }
 
 
+def _copy_action_dict(actions: Dict[str, Dict]) -> Dict[str, Dict]:
+    copied: Dict[str, Dict] = {}
+    for agent, action in actions.items():
+        copied_action: Dict[str, object] = {}
+        for key, value in action.items():
+            if isinstance(value, np.ndarray):
+                copied_action[key] = np.asarray(value).copy()
+            else:
+                copied_action[key] = copy.deepcopy(value)
+        copied[agent] = copied_action
+    return copied
+
+
+def _combo_mask(num_slots: int, combo: tuple[int, ...]) -> np.ndarray:
+    mask = np.zeros((num_slots,), dtype=np.float32)
+    for idx in combo:
+        mask[int(idx)] = 1.0
+    return mask
+
+
+def _selected_sat_slots(
+    env: SaginParallelEnv,
+    u: int,
+    cand: list[int],
+    sat_raw: np.ndarray,
+    sat_pos: np.ndarray,
+    sat_vel: np.ndarray,
+) -> tuple[list[int], np.ndarray]:
+    cfg = env.cfg
+    sat_raw = np.asarray(sat_raw, dtype=np.float32)[: len(cand)]
+    valid_flags = np.ones((len(cand),), dtype=bool)
+    if cfg.doppler_enabled and len(cand) > 0:
+        cand_idx = np.asarray(cand, dtype=np.int32)
+        raw_nu = env._doppler_many(u, cand_idx, sat_pos, sat_vel)
+        nu_eff, _ = env._effective_doppler_array(u, cand_idx, raw_nu)
+        valid_flags = np.abs(nu_eff) <= cfg.nu_max
+    valid_slots = np.flatnonzero(valid_flags)
+    if valid_slots.size == 0:
+        return [], valid_flags
+    chosen_slots = np.flatnonzero((sat_raw > 0.5) & valid_flags)
+    if chosen_slots.size > cfg.N_RF:
+        order = np.argsort(-sat_raw[chosen_slots], kind='stable')
+        chosen_slots = chosen_slots[order[: cfg.N_RF]]
+    if chosen_slots.size == 0:
+        best_slot = int(valid_slots[int(np.argmax(sat_raw[valid_slots]))])
+        chosen_slots = np.array([best_slot], dtype=np.int64)
+    chosen_slots = chosen_slots[: cfg.N_RF]
+    return [int(x) for x in chosen_slots.tolist()], valid_flags
+
+
+def _collect_train_reward_stats(env: SaginParallelEnv) -> Dict[str, object]:
+    num_uav = max(int(getattr(env.cfg, 'num_uav', 0) or 0), 0)
+    return {
+        'reward_parts': dict(getattr(env, 'last_reward_parts', {}) or {}),
+        'assoc_centroid_dist_norms': np.asarray(
+            getattr(env, 'last_assoc_centroid_dist_norms', np.zeros((num_uav,), dtype=np.float32)),
+            dtype=np.float32,
+        ),
+        'sat_overlap_uav': np.asarray(
+            getattr(env, 'last_sat_overlap_uav', np.zeros((num_uav,), dtype=np.float32)),
+            dtype=np.float32,
+        ),
+    }
+
+
+def _maybe_collect_sat_counterfactual_rows(
+    env: SaginParallelEnv,
+    actions: Dict[str, Dict],
+    sample_prob: float,
+) -> List[Dict[str, object]]:
+    if sample_prob <= 0.0 or bool(getattr(env.cfg, 'fixed_satellite_strategy', False)):
+        return []
+    cfg = env.cfg
+    sat_k = max(int(getattr(cfg, 'sat_action_select_k', getattr(cfg, 'sat_num_select', cfg.N_RF)) or cfg.N_RF), 0)
+    if sat_k <= 0:
+        return []
+    sat_pos, sat_vel = env._get_orbit_states()
+    visible = [list(v) for v in getattr(env, 'last_visible_candidates', [])]
+    if len(visible) != cfg.num_uav:
+        visible = env._visible_sats_sorted(sat_pos)
+
+    from ..rl.policy import batch_flatten_obs
+
+    rows: List[Dict[str, object]] = []
+    for u, agent in enumerate(env.agents):
+        if np.random.random() >= float(sample_prob):
+            continue
+        cand = visible[u][: cfg.sats_obs_max]
+        if not cand:
+            continue
+        action_data = actions[agent]
+        sat_raw = action_data.get(
+            'sat_select_mask',
+            action_data.get('sat_logits', np.zeros((cfg.sats_obs_max,), dtype=np.float32)),
+        )
+        chosen_slots, valid_flags = _selected_sat_slots(env, u, cand, sat_raw, sat_pos, sat_vel)
+        valid_slots = np.flatnonzero(valid_flags)
+        if valid_slots.size == 0:
+            continue
+        k = min(sat_k, int(valid_slots.size))
+        if k <= 0 or len(chosen_slots) < k:
+            continue
+        selected_combo = tuple(int(x) for x in chosen_slots[:k])
+        combos = list(itertools.combinations(valid_slots.tolist(), k))
+        if selected_combo not in combos:
+            continue
+        alternatives: List[Dict[str, object]] = []
+        for combo in combos:
+            combo_tuple = tuple(int(x) for x in combo)
+            if combo_tuple == selected_combo:
+                continue
+            actions_cf = _copy_action_dict(actions)
+            actions_cf[agent]['sat_select_mask'] = _combo_mask(cfg.sats_obs_max, combo_tuple)
+            env_cf = copy.deepcopy(env)
+            try:
+                obs_cf, rewards_cf, terms_cf, truncs_cf, _ = env_cf.step(actions_cf)
+                obs_cf_step = batch_flatten_obs(list(obs_cf.values()), cfg).astype(np.float32, copy=False)
+                alternatives.append(
+                    {
+                        'combo_slots': np.asarray(combo_tuple, dtype=np.int64),
+                        'reward': float(list(rewards_cf.values())[0]),
+                        'terminated': bool(list(terms_cf.values())[0]),
+                        'truncated': bool(list(truncs_cf.values())[0]),
+                        'next_state': np.asarray(env_cf.get_global_state(), dtype=np.float32),
+                        'next_obs_step': obs_cf_step,
+                        'train_reward_stats': _collect_train_reward_stats(env_cf),
+                    }
+                )
+            finally:
+                close_fn = getattr(env_cf, 'close', None)
+                if callable(close_fn):
+                    close_fn()
+        if alternatives:
+            rows.append(
+                {
+                    'uav': int(u),
+                    'selected_slots': np.asarray(selected_combo, dtype=np.int64),
+                    'alternatives': alternatives,
+                }
+            )
+    return rows
+
+
 def _worker(remote: Connection, cfg: SaginConfig, seed_offset: int) -> None:
     env_cfg = replace(cfg, seed=int(cfg.seed) + int(seed_offset))
     env = SaginParallelEnv(env_cfg)
@@ -121,8 +266,18 @@ def _worker(remote: Connection, cfg: SaginConfig, seed_offset: int) -> None:
             elif cmd == 'step':
                 actions = data['actions']
                 auto_reset = bool(data.get('auto_reset', True))
+                sat_cf_request = dict(data.get('sat_cf_request', {}) or {})
+                sat_cf_rows = _maybe_collect_sat_counterfactual_rows(
+                    env,
+                    actions,
+                    float(sat_cf_request.get('sample_prob', 0.0) or 0.0),
+                )
                 obs, rewards, terms, truncs, infos = env.step(actions)
+                post_step_obs = copy.deepcopy(obs)
                 stats = _collect_step_stats(env)
+                if sat_cf_rows:
+                    stats['sat_cf_credit_rows'] = sat_cf_rows
+                stats['post_step_obs'] = post_step_obs
                 stats['post_step_global_state'] = np.asarray(env.get_global_state(), dtype=np.float32)
                 if auto_reset and _done_from_flags(terms, truncs):
                     obs, _ = env.reset()
@@ -167,7 +322,7 @@ class SyncVecSaginEnv:
         self.last_state_batch = np.stack(state_batch, axis=0).astype(np.float32, copy=False)
         return obs_batch, infos_batch
 
-    def step(self, action_batch, auto_reset: bool = True):
+    def step(self, action_batch, auto_reset: bool = True, sat_cf_request: Dict[str, object] | None = None):
         if len(action_batch) != self.num_envs:
             raise ValueError(f'Expected {self.num_envs} action dicts, got {len(action_batch)}')
         obs_batch = []
@@ -178,8 +333,17 @@ class SyncVecSaginEnv:
         stats_batch: List[Dict[str, object]] = []
         state_batch = []
         for env, actions in zip(self.envs, action_batch):
+            sat_cf_rows = _maybe_collect_sat_counterfactual_rows(
+                env,
+                actions,
+                float((sat_cf_request or {}).get('sample_prob', 0.0) or 0.0),
+            )
             obs, rewards, terms, truncs, infos = env.step(actions)
+            post_step_obs = copy.deepcopy(obs)
             stats = _collect_step_stats(env)
+            if sat_cf_rows:
+                stats['sat_cf_credit_rows'] = sat_cf_rows
+            stats['post_step_obs'] = post_step_obs
             stats['post_step_global_state'] = np.asarray(env.get_global_state(), dtype=np.float32)
             if auto_reset and _done_from_flags(terms, truncs):
                 obs, _ = env.reset()
@@ -236,11 +400,20 @@ class SubprocVecSaginEnv:
         self.last_state_batch = np.stack(state_batch, axis=0).astype(np.float32, copy=False)
         return list(obs_batch), list(infos_batch)
 
-    def step(self, action_batch, auto_reset: bool = True):
+    def step(self, action_batch, auto_reset: bool = True, sat_cf_request: Dict[str, object] | None = None):
         if len(action_batch) != self.num_envs:
             raise ValueError(f'Expected {self.num_envs} action dicts, got {len(action_batch)}')
         for remote, actions in zip(self._remotes, action_batch):
-            remote.send(('step', {'actions': actions, 'auto_reset': bool(auto_reset)}))
+            remote.send(
+                (
+                    'step',
+                    {
+                        'actions': actions,
+                        'auto_reset': bool(auto_reset),
+                        'sat_cf_request': dict(sat_cf_request or {}),
+                    },
+                )
+            )
         results = [remote.recv() for remote in self._remotes]
         obs_batch, rewards_batch, terms_batch, truncs_batch, infos_batch, stats_batch, state_batch = zip(*results)
         self.last_step_stats = list(stats_batch)
@@ -269,7 +442,7 @@ class SubprocVecSaginEnv:
         self._procs.clear()
 
 
-def make_vec_env(cfg: SaginConfig, num_envs: int, backend: str = 'subproc'):
+def make_vec_env(cfg: SaginConfig, num_envs: int, backend: str = 'sync'):
     if int(num_envs) <= 1:
         raise ValueError('num_envs must be > 1 for vectorized environments.')
     backend_l = str(backend).lower()

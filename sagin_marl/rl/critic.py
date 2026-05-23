@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Tuple
+from typing import Dict, Tuple
 
 import torch
 import torch.nn as nn
@@ -14,6 +14,9 @@ from .policy import (
     USER_OBS_DIM,
     flat_obs_dim,
 )
+
+
+VALUE_HEAD_NAMES = ("accel", "bw", "sat")
 
 
 def _make_encoder(in_dim: int, hidden_dim: int, use_input_norm: bool) -> nn.Sequential:
@@ -82,6 +85,14 @@ class CriticNet(nn.Module):
         embed_dim = int(getattr(cfg, "critic_set_embed_dim", getattr(cfg, "actor_set_embed_dim", 64)))
         if embed_dim <= 0:
             raise ValueError("critic_set_embed_dim must be positive")
+        self.value_agg = str(getattr(cfg, "critic_value_agg", "agent_mean") or "agent_mean").strip().lower()
+        if self.value_agg not in ("agent_mean", "pooled_feature"):
+            raise ValueError("critic_value_agg must be one of: agent_mean, pooled_feature")
+        self.multihead_value_enabled = bool(getattr(cfg, "critic_multihead_value_enabled", False))
+        self.head_feature_mode = str(getattr(cfg, "critic_head_feature_mode", "shared_full") or "shared_full")
+        self.head_feature_mode = self.head_feature_mode.strip().lower()
+        if self.head_feature_mode not in ("shared_full",):
+            raise ValueError("critic_head_feature_mode must be one of: shared_full")
 
         self.state_norm = nn.LayerNorm(state_dim) if use_input_norm else nn.Identity()
         self.global_fc1 = nn.Linear(state_dim, hidden_dim)
@@ -103,7 +114,15 @@ class CriticNet(nn.Module):
 
         self.derived_dim = 25
         self.value_fc1 = nn.Linear(2 * hidden_dim + self.derived_dim, hidden_dim)
-        self.value_fc2 = nn.Linear(hidden_dim, 1)
+        if self.multihead_value_enabled:
+            self.value_feature_gates = nn.ModuleDict({name: nn.Identity() for name in VALUE_HEAD_NAMES})
+            self.value_heads = nn.ModuleDict({name: nn.Linear(hidden_dim, 1) for name in VALUE_HEAD_NAMES})
+        else:
+            self.value_fc2 = nn.Linear(hidden_dim, 1)
+        if self.value_agg == "pooled_feature":
+            self.value_pool_fc1 = nn.Linear(2 * hidden_dim, hidden_dim)
+            if not self.multihead_value_enabled:
+                self.value_pool_fc2 = nn.Linear(hidden_dim, 1)
 
     def _split_obs_step(
         self, obs_step: torch.Tensor
@@ -265,16 +284,7 @@ class CriticNet(nn.Module):
         ]
         return torch.stack(stats, dim=-1)
 
-    def forward(self, state: torch.Tensor, obs_step: torch.Tensor) -> torch.Tensor:
-        if state.ndim != 2:
-            raise ValueError(f"Expected state tensor with shape [B, S], got {tuple(state.shape)}")
-        if obs_step.ndim != 3:
-            raise ValueError(f"Expected obs_step tensor with shape [B, N, D], got {tuple(obs_step.shape)}")
-        if state.shape[0] != obs_step.shape[0]:
-            raise ValueError(
-                f"State batch size {state.shape[0]} does not match obs_step batch size {obs_step.shape[0]}"
-            )
-
+    def _build_agent_value_features(self, state: torch.Tensor, obs_step: torch.Tensor) -> torch.Tensor:
         own, danger_nbr, users, users_mask, bw_valid_mask, sats, sats_mask, sat_valid_mask, nbrs, nbrs_mask = (
             self._split_obs_step(obs_step)
         )
@@ -317,5 +327,63 @@ class CriticNet(nn.Module):
         )
         g_ctx_expanded = g_ctx.unsqueeze(1).expand(-1, obs_step.shape[1], -1)
         value_input = torch.cat([g_ctx_expanded, local_ctx, derived], dim=-1)
-        agent_values = self.value_fc2(F.relu(self.value_fc1(value_input))).squeeze(-1)
-        return agent_values.mean(dim=1)
+        return F.relu(self.value_fc1(value_input))
+
+    def _apply_head_feature_gate(self, head_name: str, agent_value_features: torch.Tensor) -> torch.Tensor:
+        if head_name not in VALUE_HEAD_NAMES:
+            raise KeyError(f"Unknown value head: {head_name}")
+        if self.head_feature_mode == "shared_full":
+            return self.value_feature_gates[head_name](agent_value_features)
+        raise ValueError(f"Unsupported critic_head_feature_mode: {self.head_feature_mode}")
+
+    def _forward_scalar_value_from_features(self, agent_value_features: torch.Tensor) -> torch.Tensor:
+        if self.value_agg == "agent_mean":
+            agent_values = self.value_fc2(agent_value_features).squeeze(-1)
+            return agent_values.mean(dim=1)
+
+        pooled_features = torch.cat(
+            [agent_value_features.mean(dim=1), agent_value_features.amax(dim=1)],
+            dim=-1,
+        )
+        pooled_hidden = F.relu(self.value_pool_fc1(pooled_features))
+        return self.value_pool_fc2(pooled_hidden).squeeze(-1)
+
+    def _forward_head_values_from_features(self, agent_value_features: torch.Tensor) -> Dict[str, torch.Tensor]:
+        head_values: Dict[str, torch.Tensor] = {}
+        for head_name in VALUE_HEAD_NAMES:
+            gated_features = self._apply_head_feature_gate(head_name, agent_value_features)
+            if self.value_agg == "agent_mean":
+                agent_values = self.value_heads[head_name](gated_features).squeeze(-1)
+                head_values[head_name] = agent_values.mean(dim=1)
+                continue
+
+            pooled_features = torch.cat(
+                [gated_features.mean(dim=1), gated_features.amax(dim=1)],
+                dim=-1,
+            )
+            pooled_hidden = F.relu(self.value_pool_fc1(pooled_features))
+            head_values[head_name] = self.value_heads[head_name](pooled_hidden).squeeze(-1)
+        return head_values
+
+    def forward_heads(self, state: torch.Tensor, obs_step: torch.Tensor) -> Dict[str, torch.Tensor]:
+        agent_value_features = self._build_agent_value_features(state, obs_step)
+        if not self.multihead_value_enabled:
+            shared_value = self._forward_scalar_value_from_features(agent_value_features)
+            return {head_name: shared_value for head_name in VALUE_HEAD_NAMES}
+        return self._forward_head_values_from_features(agent_value_features)
+
+    def forward(self, state: torch.Tensor, obs_step: torch.Tensor) -> torch.Tensor:
+        if state.ndim != 2:
+            raise ValueError(f"Expected state tensor with shape [B, S], got {tuple(state.shape)}")
+        if obs_step.ndim != 3:
+            raise ValueError(f"Expected obs_step tensor with shape [B, N, D], got {tuple(obs_step.shape)}")
+        if state.shape[0] != obs_step.shape[0]:
+            raise ValueError(
+                f"State batch size {state.shape[0]} does not match obs_step batch size {obs_step.shape[0]}"
+            )
+        agent_value_features = self._build_agent_value_features(state, obs_step)
+        if not self.multihead_value_enabled:
+            return self._forward_scalar_value_from_features(agent_value_features)
+
+        head_values = self._forward_head_values_from_features(agent_value_features)
+        return torch.stack([head_values[head_name] for head_name in VALUE_HEAD_NAMES], dim=-1).mean(dim=-1)

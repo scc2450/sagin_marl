@@ -1,0 +1,595 @@
+﻿# Structured 鐜鍗?GPU 鐩爣鏋舵瀯鏂规锛?026-04-17锛?
+## 1. 鏂囨。鐩殑
+
+鏈枃妗ｇ粰鍑?`structured` 鐜鍦ㄢ€滃彧鏈?1 涓?GPU鈥濈殑鍓嶆彁涓嬶紝鏈€鍚堢悊鐨勭洰鏍囨灦鏋勬柟妗堛€? 
+鍞竴浼樺厛绾у彧鏈変袱鏉★細
+
+1. 鎵ц閫熷害蹇?2. 璁＄畻缁撴灉姝ｇ‘涓旂ǔ瀹?
+鍥犳锛屾湰鏂规鏄庣‘鎷掔粷涓轰簡杩佸氨鐜版湁瀹炵幇鑰屽仛灞€閮ㄤ慨琛ャ€傚鏋滅幇鏈夊璞℃ā鍨嬨€佽繘绋嬫ā鍨嬨€佹帴鍙ｈ竟鐣屼細鎷栨參鎵ц閫熷害鎴栧鍔犻敊璇闄╋紝灏卞簲褰撻噸鏋勶紝鑰屼笉鏄洿缁曟棫缁撴瀯缁х画鎵撹ˉ涓併€?
+## 2. 缁撹鍏堣
+
+鍗?GPU 涓嬶紝`structured` 鐜鐨勫悎鐞嗕富鏋舵瀯搴斿綋鏄細
+
+- 鍗曚釜璁粌杩涚▼
+- 鍗曚釜 CUDA context
+- 涓€涓?GPU 鍘熺敓鐨?batched 鐜鍐呮牳
+- 璁粌鍜屾寮忚瘎浼伴兘璧板悓涓€鏉?GPU 鐜鐑矾寰?- 灏忚剼鏈€氳繃鍏煎灞傚鐢ㄥ悓涓€涓?GPU 鐜鍐呮牳
+- 鐜版湁 CPU `SaginParallelEnv` 浠呬繚鐣欎负鍙傝€冨疄鐜般€佸鐓ф祴璇曞疄鐜板拰鍥為€€璺緞
+
+鎹㈠彞璇濊锛屼富鏋舵瀯涓嶅簲璇ユ槸锛?
+- `subproc` 澶氳繘绋?+ CPU 鐜 step
+- CPU 鐜绠楀畬锛屽啀鎶婄姸鎬佹惉鍒?GPU
+- 姣忎釜 env 涓€涓?Python 瀵硅薄锛屽灞傚啀鎷?batch
+- 涓轰簡鍏煎鑰佽剼鏈€屾妸璁粌鐑矾寰勭户缁粦鍦ㄨ€佹帴鍙ｄ笂
+
+## 3. 褰撳墠瀹炵幇瀛樺湪鐨勯棶棰?
+### 3.1 褰撳墠浠ｇ爜宸茬粡鍋氫簡鍝簺杩囨浮鏀归€?
+鐩歌緝浜庢洿鏃╂湡鐗堟湰锛屽綋鍓嶄粨搴撳凡缁忎笉鍐嶅彧鏈夆€渀SaginParallelEnv.step()` + 澶栧眰鎷?batch鈥濊繖涓€鏉¤矾銆傚凡缁忔柊澧炲苟鎺ュ叆浜嗕互涓嬭繃娓＄粍浠讹細
+
+- `StructuredBatchEnvCore`
+- `StructuredTorchEnvBatch`
+- `StructuredSyncDriverGroup`
+- `GpuStructuredEnvGroup` / `GpuStructuredDriverGroup`
+- `GpuStructuredEnvSlot` / `GpuStructuredDriverSlot`
+- `make_structured_env(...)` / `make_structured_env_group(...)`
+- `make_structured_driver(...)` / `make_structured_driver_group(...)`
+- `StructuredRolloutBuffer.add_env_step_batch(...)`
+- `StructuredRolloutViews` / `build_rollout_views(...)`
+
+鍚屾椂锛?
+- `StructuredMAPPO.collect_env_steps` 宸茬粡鍙互鐩存帴娑堣垂 group/batch 鎺ュ彛
+- `run_structured_training` 宸茬粡鍙互鐩存帴缁戝畾 structured group
+- `structured_eval` 鐨勬爣鍑?actor 姝ｅ紡璇勪及鍏ュ彛宸茬粡澶嶇敤 `StructuredMAPPO.collect_env_steps`
+- 鏍囧噯 `update()` / GAE / bootstrap 涓昏矾寰勫凡缁忎笉鍐嶄緷璧?`transitions()` / `as_stage_batches()` / `latest_next_world_states()`
+- `StructuredBatchEnvCore` 宸茬粡鎸佹湁鑷繁鐨?orbit lookup锛宺untime sync / accel spec / BW 鍚庝笅涓€鏃跺埢 orbit 鎺ㄨ繘涓嶅啀鎶?`env._get_orbit_states()` 褰撶儹璺緞鐪熸簮
+- 浠撳簱涓凡缁忔湁涓€鎵?鈥済roup fast path 瀵圭収 baseline鈥?鐨勬祴璇?
+鍥犳锛屾枃妗ｆ棭鏈熺増鏈噷鈥渟tructured 渚ц繕娌℃湁 batch/group 璺緞鈥濈殑鎻忚堪宸茬粡杩囨椂銆? 
+褰撳墠鐪熷疄鐘舵€佷笉鏄€滃畬鍏ㄦ病鍋氣€濓紝鑰屾槸鈥滃凡缁忓仛鍑轰簡杈冨畬鏁寸殑杩囨浮灞傦紝浣嗚繕娌℃湁杈惧埌鐩爣缁堟€佲€濄€?
+### 3.2 褰撳墠鐨?`GpuStructured*` 璺緞宸茬粡瀹屾垚鈥滃敮涓€ GPU 鍘熺敓涓诲唴鏍糕€濇敹鍙ｏ紝浣嗗吋瀹硅竟鐣屼粛鐒跺瓨鍦?
+鐩告瘮鏇存棭鐗堟湰锛屽綋鍓嶄唬鐮佸凡缁忔弧瓒虫枃妗ｇ 5.1 鑺傚鈥滃敮涓€涓诲唴鏍糕€濈殑鏍稿績瑕佹眰銆?
+鍏稿瀷鐜扮姸鏄細
+
+- `GpuStructuredEnvGroup` / `GpuStructuredDriverGroup` 鐜板湪宸茬粡鏄嫭绔嬬殑 `_StructuredNativeBatchDriverGroup`锛屼笉鍐嶅彧鏄棫 `StructuredSyncDriverGroup` 鐨勭┖鍒悕
+- `_StructuredNativeBatchDriverGroup` 鐜板凡鏀规垚鐩存帴鎸佹湁 `StructuredBatchEnvCore`锛屾瀯閫犳湡涓嶅啀鍏堥€氳繃 `_build_group_driver_env_lists(...)` 鎵归噺鏋勯€犳棫 `SaginParallelEnv` / `StructuredControlDriver`
+- `StructuredBatchEnvCore` 鐜板湪鍏堟寔鏈?kernel slots锛屽啀鎸夐渶 materialize 鍏煎 env/driver shell锛涙棫瀵硅薄宸蹭笉鍐嶆槸鏋勯€犳湡鍓嶇疆鏉′欢
+- `StructuredBatchEnvCore` 鐨勭湡瀹炶繍琛屾椂瀛樺偍宸茬粡鏀跺彛鍒?`_runtime_tensor_state`锛沗runtime_state` 鐜板湪鍙槸 tensor-backed compatibility view锛岃€屼笉鍐嶆槸鐙珛鐨?CPU `np.ndarray` 鐪熸簮
+- `reset_many()`銆乣load_runtime_state_batch()`銆乣export_runtime_state_batch()` 鐜板湪閮藉凡缁忔敼鎴愮敱 `StructuredBatchEnvCore` 鍘熺敓鏋勯€?鍐欏叆/瀵煎嚭 state锛屽啀鎶婃棫 env 褰撲綔鍏煎鎵胯浇灞?- `GpuStructuredEnvGroup` 鐨勬爣鍑?`collect_env_steps()` 涓荤儹璺緞鐜板湪鍙互鍦?`compat env/driver = 0/0` 鐨勬潯浠朵笅璺戦€氾紝杩欒鏄庢棫 env/driver 宸蹭笉鍐嶆槸涓绘墽琛屽墠鎻?
+瀵瑰簲鍏ュ彛鍙锛?
+- `sagin_marl/env/structured_sync_group.py:2247`
+- `sagin_marl/env/structured_sync_group.py:2267`
+- `sagin_marl/env/structured_sync_group.py:2272`
+- `sagin_marl/env/structured_batch_env_core.py:130`
+- `sagin_marl/env/structured_batch_env_core.py:3301`
+- `sagin_marl/env/structured_batch_env_core.py:3695`
+- `sagin_marl/env/structured_batch_env_core.py:3730`
+- `tests/test_structured_multi_env_resume_eval.py:402`
+- `tests/test_structured_mappo_rollout.py:1176`
+
+鎵€浠ワ紝褰撳墠浠ｇ爜鏇村噯纭殑鎻忚堪搴斿綋鏄細
+
+- 宸茬粡鏈夆€滃敮涓€涓诲唴鏍?= `StructuredBatchEnvCore + StructuredTorchEnvBatch`鈥?- 鏃?env/driver 鐜板湪鍙槸鍦ㄨ竟鐣屾寜闇€ materialize 鐨?compatibility shell
+- 浣嗚繖骞朵笉绛変簬鏁翠綋宸茬粡杈惧埌缁堟€侊紱鍓╀綑闂宸茬粡杞Щ鍒扮幆澧?core 鍐呴儴鐨?CPU/GPU 寰€杩斻€佸吋瀹?璇婃柇杈圭晫銆佸伐鍘傜粺涓€鏀跺彛鍜?`subproc` 闄嶇骇
+
+### 3.3 鏍囧噯鍘熺敓鐑矾寰勯噷鐨勫ぇ鍧?CPU/GPU 寰€杩斿凡缁忓熀鏈嬁鎺夛紝浣?reference / compat / fallback 杈圭晫浠嶇劧瀛樺湪
+
+褰撳墠 `StructuredBatchEnvCore` 閲屽凡缁忔妸涓€閮ㄥ垎鐑偣璁＄畻鏀规垚 batched torch 鍑芥暟锛岃€屼笖鐩告瘮鏇存棭鐗堟湰鍙堝墠杩涗簡涓€姝ワ細
+
+- access rate
+- GU/UAV/SAT queue transition
+- backhaul link
+- 閮ㄥ垎 reward / post-stats / safety stats
+- accel fast path
+- sat selection 鍒?BW spec 缁勮
+- orbit lookup 涓?BW 鍚庝笅涓€鏃跺埢杞ㄩ亾鎺ㄨ繘
+- compat/sync group 鐨?BW fast path 鐜板湪涔熷凡缁忔敼鎴愪互 runtime tensor 涓虹湡婧愶紝step 鏈熬涓嶅啀鎶婇檲鏃?env 鏁扮粍鍙嶅悜瑕嗙洊 runtime锛沜ompat env 浠呬綔涓洪暅鍍忎笌 finalize 鎵胯浇
+
+鐩告瘮鏇存棭鐗堟湰锛屽綋鍓嶆爣鍑?native 璁粌/姝ｅ紡璇勪及鐑矾寰勫凡缁忚繘涓€姝ユ敹鍙ｏ細
+
+- `_build_fast_structured_step_results(...)` 鐜板湪宸茬粡鏀寔鐩存帴娑堣垂 batched tensor 鎴?`list[tensor]`锛屼笉鍐嶅洜涓?`list[CUDA tensor]` 璧拌繘 numpy 鍒嗘敮
+- BW fast path 涓殑 `gu/uav/sat queue`銆乣access rate`銆乣bw link`銆乣step status`銆乣flow proxy score` 涓婚摼鐜板湪閮藉彲浠ョ洿鎺ヤ互 batched tensor 褰㈠紡鍦?device 涓婃帹杩?- 闈?cached 鐨?`elevation -> backhaul loss -> bw_link_transition` 閾捐矾涔熷凡缁忔敼鎴?tensor-native锛涙爣鍑?native fast path 涓嶅啀闇€瑕佸厛鎶?elevation 鏁存壒钀藉埌 CPU 鍐嶇畻 loss
+- `flow proxy` 杩欐潯姝ゅ墠浠嶅甫鐫€鏄庢樉 CPU/NumPy 缁勭粐閫昏緫鐨勮緟鍔╅摼璺紝鐜板湪涔熷凡缁忔敼鎴?tensor-native reward / score 璁＄畻锛涘彧鍦ㄦ樉寮忚姹?numpy 杈撳嚭鏃舵墠钀藉洖 host
+
+鍥犳锛屾枃妗ｆ棭鍓嶉偅鍙モ€渀structured_batch_env_core.py` 閲屾爣鍑嗙儹璺緞浠嶇劧瀛樺湪澶ч噺 GPU -> CPU -> GPU 寰€杩斺€濈幇鍦ㄥ凡缁忎笉鍐嶅噯纭€? 
+鏇村噯纭殑鐜扮姸鏄細
+
+- 鏍囧噯 native 璁粌/姝ｅ紡璇勪及涓荤儹璺緞閲岋紝**澶у潡鎵归噺 host copy 宸茬粡鍩烘湰鎷挎帀**
+- 鏂囦欢涓墿浣欑殑 `_compat_numpy_array(...)` / `_tensor_index_numpy(...)` 鐜板湪涓昏闆嗕腑鍦細
+  - helper 鐨?`return_tensors=False` 鍒嗘敮
+  - exact/reference/backward 璺緞
+  - stage-load / export / compat shell materialization
+  - 闈?fast fallback finalize
+- 杩欎簺杈圭晫浠嶇劧璇存槑鈥滄暣鏂囦欢瀹屽叏闆?CPU 鍥炶惤鈥濊繕娌″埌鏋侀檺缁堟€侊紝浣嗗畠浠凡缁忎笉鍐嶆槸鏍囧噯璁粌/姝ｅ紡璇勪及涓昏矾寰勭殑涓昏鐡堕
+
+### 3.4 鏍囧噯璁粌涓庢爣鍑嗘寮忚瘎浼颁富璺緞宸茬粡瀹屾垚鍒囨崲锛屼絾鍏煎涓庤瘖鏂竟鐣屼粛鏈敹骞插噣
+
+褰撳墠璁粌涓昏矾寰勫凡缁忎笉鍙槸鈥滃叆鍙ｅ垏鎹⑩€濄€?
+瀵瑰簲鍏ュ彛鍙锛?
+- `sagin_marl/rl/structured_mappo.py:1411`
+- `sagin_marl/rl/structured_buffer.py:1682`
+- `sagin_marl/rl/structured_buffer.py:1879`
+- `sagin_marl/rl/structured_mappo.py:2158`
+- `sagin_marl/rl/structured_mappo.py:4651`
+- `sagin_marl/rl/structured_train.py:448`
+- `sagin_marl/rl/structured_eval.py:458`
+
+褰撳墠宸茬粡瀹屾垚鐨勪富璺緞鏀归€犲寘鎷細
+
+- `StructuredMAPPO.collect_env_steps` 宸茬洿鎺ュ鎺?group/batch 鎺ュ彛
+- rollout buffer 涓诲瓨鍌ㄥ凡缁忓垏鍒?env-step batch record锛岃€屼笉鏄€愭潯 `StageTransition` append
+- `run_structured_training` 浼氫竴娆℃€ф瀯寤?`StructuredRolloutViews`
+- `StructuredMAPPO.update`銆丟AE銆乥ootstrap 鐨勬爣鍑嗕富璺緞宸茬粡涓嶅啀渚濊禆 `transitions()` / `as_stage_batches()` / `latest_next_world_states()`
+- 鏍囧噯璁粌/姝ｅ紡璇勪及浣跨敤鐨?group 涓昏矾寰勯噷锛宍collect_env_steps` 鐜板湪宸茬粡鐩存帴浼犻€?batched tensor/dataclass 缁?core锛屼笉鍐嶆妸 world state 鎷嗗洖 per-env dataclass锛屼篃涓嶅啀鎶婂姩浣滃厛闄嶆垚 per-env `numpy` 鏁扮粍鍐嶄笅鍙?
+浣嗚繖鏉¤矾寰勫唴閮ㄤ粛淇濈暀鍑犱釜鏄庢樉鐨勮繃娓℃€ц竟鐣岋細
+
+- `step_result`銆乷bs銆乻napshot 绛夊吋瀹规棫璇箟鐨勭粨鏋勪粛娣卞害鍙備笌璁粌/璇勪及缂栨帓
+- `StructuredRolloutBuffer` 鐨勬棫鍏煎鎺ュ彛鐜板凡浠庣敓浜х被绉婚櫎锛歚as_stage_batches()` / `latest_next_world_states()` 鐨勬椿璺冭皟鐢ㄤ负 `0`锛宍run_structured_training` 涔熶笉鍐嶄緷璧?`latest_next_world_states()`锛沗transitions()` / `StageTransition` / `add_stage_transition()` / `copy_prefix_env_steps()` 杩欎簺鏃?materializer / append 鎺ュ彛涔熷凡涓嶅啀瀛樺湪浜?`StructuredRolloutBuffer` 鏈綋銆傚綋鍓嶄粨搴撻噷鍓╀笅鐨勨€渢ransition(s)鈥濆瓧鏍蜂富瑕佹槸璇婃柇 helper 鍛藉悕涓庨槻鍥為€€鏂█鏂囨湰锛岃€屼笉鏄敓浜?buffer API
+- 鑻ュ共鍏煎涓庤瘖鏂矾寰勪粛浼?materialize `step_result`/compat shell锛屽苟涓嶅睘浜庢爣鍑嗚缁冧笌姝ｅ紡璇勪及涓昏矾寰勶紝浣嗕篃璇存槑鏁翠綋缁堟€佽繕娌℃湁瀹屽叏鏀跺共鍑€
+
+鎹㈣█涔嬶紝褰撳墠鐘舵€佹洿鍑嗙‘鍦拌鏄細
+
+- 璁粌 rollout/update 涓昏矾寰勫凡缁忔槑鏄惧畬鎴愪簡涓€杞噸鏋?- 鏍囧噯璁粌涓庢爣鍑?actor 姝ｅ紡璇勪及涓诲叆鍙ｅ凡缁忔敹鍙ｅ埌鍚屼竴鏉?batched `collect_env_steps` 鐑矾寰?- 浣嗏€滅函 batched GPU env + 鏋佽杽鍏煎杈圭晫鈥濈殑缁堟€佽繕娌℃湁杈惧埌
+
+### 3.5 `subproc` 宸茶闄嶇骇涓烘樉寮?opt-in 鐨?reference/backward path锛屼絾瀹炵幇浠嶈淇濈暀
+
+褰撳墠 `subproc` 鐨勫疄鐜板苟娌℃湁琚垹闄わ細
+
+- `SubprocVecSaginEnv` 鐨?worker 浠嶇劧鐩存帴鍦ㄥ瓙杩涚▼涓皟鐢?CPU `env.step()`
+- `StructuredRemoteDriverGroup` 浠嶇劧鏄杩涚▼ worker 鏂规
+- 浠撳簱涓粛淇濈暀涓€鎵规樉寮?`subproc` 鍒嗘敮锛岀敤浜?backward/reference銆佸鐓ц皟璇曚笌鏃?worker 鏂规
+- 浠ュ綋鍓嶄粨搴撶矖鎵锛屼唬鐮侀噷浠嶆湁绾?`60` 澶?`subproc` 寮曠敤
+
+浣嗛粯璁よ涓哄凡缁忓彂鐢熶簡鏈川鍙樺寲锛?
+- structured 涓昏缁?姝ｅ紡璇勪及鍏ュ彛榛樿閮藉凡鍒囧埌 `sync` / native batch 璺緞
+- `scripts/` 涓洿鎺ユ妸 `subproc` 璁句负 CLI 榛樿鍊肩殑椤圭幇鍦ㄥ凡闄嶅埌 `0`
+- `bw_actor_branch_parallel_backend`銆乣sat_clean_parallel_backend` 绛?structured 骞惰鍚庣榛樿鍊肩幇鍦ㄩ兘宸插垏鍒?`sync`
+- `make_vec_env(...)` 鐨勯粯璁?backend 涔熷凡缁忎粠 `subproc` 鏀规垚 `sync`
+
+鍏稿瀷鍏ュ彛鍙锛?
+- `sagin_marl/env/vec_env.py:255`
+- `sagin_marl/env/vec_env.py:374`
+- `sagin_marl/env/structured_vec_env.py:868`
+- `sagin_marl/env/config.py:521`
+- `sagin_marl/env/config.py:575`
+- `scripts/train_structured.py:875`
+- `scripts/evaluate_structured.py:70`
+- `scripts/evaluate_structured_access_control_fixedrule.py:208`
+
+鍥犳锛屾枃妗ｉ噷鈥渀subproc` 涓嶅簲鍐嶆壙鎷?structured 涓昏矾寰勨€濈殑鐩爣鐜板湪宸茬粡婊¤冻銆? 
+褰撳墠浠撳簱鏇村噯纭殑鐘舵€佸簲鎻忚堪涓猴細
+
+- `subproc` 宸蹭笉鍐嶆壙鎷?structured 涓婚粯璁よ矾寰?- 瀹冪幇鍦ㄥ睘浜庢樉寮?opt-in 鐨?backward / reference / CPU baseline / 璋冭瘯璺緞
+- 瀹炵幇浠嶈淇濈暀锛屾槸涓轰簡瀵圭収銆佸吋瀹瑰拰涓撻棬鐨?legacy worker 璋冭瘯锛岃€屼笉鏄綔涓洪粯璁ゆ帹鑽愭灦鏋?
+### 3.6 宸ュ巶灞傚拰鍏煎灞傚凡缁忓畬鎴?structured 涓昏矾鐢辨敹鍙ｏ紝浠呭墿 legacy benchmark/reference 渚嬪
+
+褰撳墠宸茬粡鏈夛細
+
+- `make_structured_env(...)`
+- `make_structured_env_group(...)`
+- `make_structured_driver(...)`
+- `make_structured_driver_group(...)`
+- `GpuStructuredEnvSlot`
+- `GpuStructuredDriverSlot`
+
+鐩告瘮鏇存棭鐗堟湰锛岃繖涓€娈电幇鍦ㄥ凡缁忔槑鏄惧墠杩涳紝涓旀寜闃舵 C 鐨勭洰鏍囧彲浠ュ垽瀹氫负瀹屾垚锛?
+1. 涓诲伐鍘傚凡缁忓彲浠ヤ緷鎹?`backend`銆乣structured_env_tensor_backend`銆乣structured_env_backend` 鍜?`mode(train/eval/script)` 鍋氱粺涓€璺敱銆?2. `scripts/` 鐩綍閲岀殑 structured 涓昏皟鐢ㄦ柟宸茬粡鍩烘湰杩佸埌宸ュ巶鍜?slot/helper锛?   - 绮楁壂 `scripts/` 鐩綍锛屽綋鍓嶅凡鏃犵洿鎺?`SaginParallelEnv(`锛涙棫 benchmark / reference 鑴氭湰鐜板湪涔熷凡鏀硅蛋宸ュ巶鎴栨洿鏄庣‘鐨?reference helper锛岃€屼笉鏄湪鑴氭湰鍏ュ彛鐩存帴 new env
+   - 鐩存帴 `StructuredControlDriver(` 璋冪敤宸查檷鍒?`0`
+   - `make_structured_env* / make_structured_driver*` 鐩稿叧璋冪敤绾?`168` 澶?   - `as_structured_driver(...) / as_structured_drivers(...)` 鐩稿叧璋冪敤绾?`108` 澶?3. slot adapter 鐜板湪涔熶笉鍐嶅湪鏋勯€犳湡鎴?`env -> driver` 瑙ｆ瀽鏃舵€ュ垏 materialize 鏃?`env/driver`锛?   - `make_structured_env(..., mode="script")` 杩斿洖 `GpuStructuredEnvSlot`
+   - `env.driver` 鍜?`as_structured_driver(env)` 浼氬鐢?`GpuStructuredDriverSlot`
+   - 鍙湁鏄惧紡璧版棫 env/driver 椋庢牸鍏煎鎺ュ彛鏃讹紝鎵嶆寜闇€ materialize compatibility shell
+
+鍥犳锛屽綋鍓嶇姸鎬佹洿鍑嗙‘鐨勬弿杩板簲褰撴槸锛?
+- structured 涓昏皟鐢ㄦ柟宸茬粡瀹屾垚缁熶竴宸ュ巶/鍏煎灞傛敹鍙?- 鍏煎灞傚凡缁忎粠鈥滈鏋跺嚭鐜扳€濇帹杩涘埌鈥滈粯璁ゆ噿 materialize鈥?- 闃舵 C 鐨勭洰鏍囩幇鍦ㄥ凡缁忔弧瓒?
+### 3.7 鏃?CPU env 宸查檷绾т负 reference/backward 涓庤竟鐣屽吋瀹规壙杞斤紝鑰屼笉鍐嶆槸榛樿涓诲疄鐜?
+鏂囨。鐩爣鏄 `SaginParallelEnv` 鍙仛锛?
+- gold reference
+- 瀵圭収娴嬭瘯
+- backward path
+
+鑰屽綋鍓嶅疄闄呮儏鍐垫槸锛?
+- reset / export / load 涓婚摼鐜板湪宸茬粡鐢?`StructuredBatchEnvCore` 鍘熺敓 state 涓诲锛屼笉鍐嶆妸 `env.reset()` / `_sync_runtime_state()` / env mirror sync 褰撲綔蹇呰鐪熸簮
+- `GpuStructured*` 鏋勯€犳湡涓庝富鐑矾寰勭幇鍦ㄩ兘涓嶅啀瑕佹眰鍏堝缓绔嬫棫 `SaginParallelEnv` / `StructuredControlDriver`
+- `GpuStructuredEnvSlot` / `GpuStructuredDriverSlot` 鐜板湪涔熶笉鍐嶅湪鏋勯€犳湡鎴?`env -> driver` 瑙ｆ瀽鏃舵€ュ垏 materialize 鏃?env/driver锛沜ompat shell 鍙湪鏄惧紡璧版棫鍏煎鎺ュ彛鏃舵寜闇€鍑虹幇
+- 浣?group/core 鍦?compatibility load/export 鎵胯浇銆乻lot adapter 鏆撮湶鍜岃嫢骞插吋瀹瑰洖鍐欓樁娈典粛浼氭寜闇€渚濊禆 `SaginParallelEnv`
+- orbit lookup銆乤ccel fast path銆乻at selection 鍒?BW spec 缁勮銆丅W 鍚庝笅涓€鏃跺埢杞ㄩ亾鎺ㄨ繘宸茬粡涓嶅啀涓昏鎶婃棫 env cache 褰撶儹璺緞鐪熸簮
+- slot adapter 浠嶄繚鐣欐棫 env 璇箟鍏煎闈紝浣嗗畠鐜板湪灞炰簬杈圭晫鍏煎锛岃€屼笉鏄瀯閫犲墠鎻?- 浠嶆湁鑻ュ共娴嬭瘯銆乴egacy benchmark/reference 鑴氭湰鍜岃瘖鏂矾寰勭洿鎺ュ熀浜?`SaginParallelEnv` / `StructuredControlDriver`
+- 鏍囧噯璁粌 update/GAE 涓昏矾寰勮櫧鐒跺凡缁忎笉鍐嶄緷璧栭€愭潯 transition 鍏煎瑙嗗浘锛屼絾鑴氭湰灞傚拰鍏煎灞備粛骞挎硾鏆撮湶鏃?env/driver 璇箟
+
+鎵€浠ョ幇鍦ㄦ洿鍑嗙‘鐨勫垽鏂槸锛?
+- 鏃?CPU env 鐨勨€滃敮涓€涓诲疄鐜扳€濆湴浣嶅凡缁忚鎷挎帀
+- 瀹冪幇鍦ㄥ凡缁忛檷绾у埌 reference/backward 涓庤竟鐣屽吋瀹规壙杞借鑹诧紝涓嶅啀鏄换浣?structured 涓诲叆鍙ｇ殑榛樿璺緞
+- 褰撳墠鍓╀綑闂涓嶅啀鏄€滄棫 CPU env 浠嶆槸涓诲疄鐜扳€濓紝鑰屾槸鍏煎杈圭晫浠嶅瓨鍦紝浠ュ強绯荤粺楠屾敹宸茬粡琛ラ綈鍚庣暀涓嬬殑杩涗竴姝ユ€ц兘寮哄寲涓庡吋瀹瑰€哄姟娓呯悊
+
+## 4. 璁捐鍘熷垯
+
+### 4.1 閫熷害浼樺厛鍘熷垯
+
+鐪熸鐨勬彁閫熸潵鑷笁浠朵簨锛?
+- 鍑忓皯 Python 寰幆
+- 娑堥櫎 CPU/GPU 寰€杩旀惉杩?- 璁╃幆澧冪儹璺緞鍙樻垚澶у潡 batched tensor 杩愮畻
+
+鈥滄洿澶氳繘绋嬧€濅笉鏄瑕佺洰鏍囷紝鈥滄洿澶х殑 GPU 鎵瑰鐞嗏€濇墠鏄瑕佺洰鏍囥€?
+### 4.2 姝ｇ‘鎬т紭鍏堝師鍒?
+GPU 鏂板疄鐜板繀椤讳互褰撳墠 CPU env 涓哄弬鑰冨疄鐜帮紝閫愰樁娈靛榻愶細
+
+- accel 闃舵
+- sat 闃舵
+- bw 闃舵
+- reward
+- done / truncated
+- next state
+
+鎬ц兘浼樺寲涓嶈兘浠ユ敼鍙樿涔変负浠ｄ环銆?
+### 4.3 涓嶈縼灏辨棫浠ｇ爜鍘熷垯
+
+鏃ф帴鍙ｅ彲浠ヤ繚鐣欙紝浣嗗彧鑳戒綔涓鸿竟鐣屽吋瀹瑰眰銆? 
+鍐呴儴鏍稿績涓嶅簲缁х画琚?`SaginParallelEnv` 鐨勫璞″紡銆丯umPy 寮忋€侀€?env 寮忕粨鏋勭粦姝汇€?
+## 5. 鐩爣鏋舵瀯鎬昏
+
+鎺ㄨ崘鏋舵瀯鍒嗘垚鍥涘眰銆?
+娉ㄦ剰锛氫笅闈㈡弿杩扮殑鏄洰鏍囩粓鎬併€? 
+褰撳墠浠撳簱閲屽凡缁忓嚭鐜颁簡涓€浜涘悓鍚嶆垨杩戝悕缁勪欢锛屼絾瀹冧滑涓殑涓€閮ㄥ垎浠嶆槸杩囨浮瀹炵幇锛屼笉搴旀妸鈥滃綋鍓嶅疄鐜板凡鏈夎繖浜涚被鍚嶁€濊璇讳负鈥滅洰鏍囨灦鏋勫凡缁忚揪鎴愨€濄€?
+### 5.1 绗?0 灞傦細GPU 鍘熺敓鐜鍐呮牳
+
+鏂板涓€涓湡姝ｇ殑 batched GPU 鐜鏍稿績锛屼緥濡傦細
+
+- `StructuredTorchEnvBatch`
+
+瀹冩槸绯荤粺鐨勫敮涓€涓荤幆澧冨唴鏍革紝璐熻矗缁存姢 `E` 涓苟琛岀幆澧冩Ы浣嶇殑鏁存壒鐘舵€併€傚唴閮ㄧ姸鎬佸叏閮ㄤ互 torch tensor 褰㈠紡瀛樺湪浜庣洰鏍?device銆?
+鍏稿瀷鐘舵€佸舰鎬佸涓嬶細
+
+- `uav_pos: [E, U, 2]`
+- `uav_vel: [E, U, 2]`
+- `uav_energy: [E, U]`
+- `gu_pos: [E, G, 2]`
+- `gu_queue: [E, G]`
+- `uav_queue: [E, U]`
+- `sat_queue: [E, S]`
+- `sat_pos/sat_vel: [E, S, 3]` 鎴?`[T, S, 3]` 棰勮绠楄〃
+- `assoc/candidates/visible/selections/masks`
+- `done/reset_mask`
+- device 渚ч殢鏈烘暟鐘舵€?
+瀹冨簲鐩存帴鎻愪緵 batched 闃舵鎺ュ彛锛屼緥濡傦細
+
+- `reset(indices=None, seeds=None)`
+- `begin_step_batch(indices=None)`
+- `apply_accel_stage_batch(actions, indices=None)`
+- `apply_sat_stage_batch(actions, indices=None)`
+- `apply_bw_stage_batch(actions, indices=None)`
+- `get_global_state_batch(indices=None)`
+- `export_runtime_state_batch(indices=None)`
+- `load_runtime_state_batch(...)`
+
+### 5.2 绗?1 灞傦細楂樻€ц兘鎵归噺鎺ュ彛
+
+杩欐槸璁粌鍜屾寮忚瘎浼扮洿鎺ヤ娇鐢ㄧ殑鎺ュ彛灞傦紝涓嶅仛鍗?env 鎷嗗垎锛屼笉鍋?numpy 鍏煎閫€鍖栥€?
+鎺ㄨ崘鎻愪緵锛?
+- `GpuStructuredEnvGroup`
+- `GpuStructuredDriverGroup`
+
+杩欏眰鎺ュ彛鐩存帴闈㈠悜锛?
+- `StructuredMAPPO.collect_env_steps`
+- `run_structured_training`
+- `structured_eval` 鐨勬寮忔壒閲忚瘎浼拌矾寰?
+瑕佹眰锛?
+- 杈撳叆杈撳嚭浼樺厛浣跨敤 batched tensor/dataclass
+- 鐑矾寰勪腑涓嶅仛 per-env Python 寰幆
+- 涓嶅仛 CPU staging
+- 涓嶄负鏃ц剼鏈繚鐣欐棤鎰忎箟鐨勫璞¤涔?
+### 5.3 绗?2 灞傦細鍏煎閫傞厤灞?
+涓轰簡璁╁ぇ閲忚瘎浼?璇婃柇/鍒嗘瀽鑴氭湰涔熻兘璧板悓涓€濂?GPU 鐜鍐呮牳锛岄渶瑕佹彁渚涒€滆竟鐣屽吋瀹瑰眰鈥濓紝鑰屼笉鏄户缁妸鏃?env 褰撴牳蹇冦€?
+鎺ㄨ崘鎻愪緵涓ょ被 wrapper锛?
+- `GpuStructuredEnvSlot`
+- `GpuStructuredDriverSlot`
+
+鐢ㄩ€旓細
+
+- 璁?`num_envs=1` 鎴栧皯閲?env 鐨勮剼鏈户缁娇鐢ㄦ帴杩戝師鏉ョ殑鎺ュ彛
+- 鍏煎 `reset/step/get_global_state`
+- 鍏煎 `begin_step/run_accel_stage/run_sat_stage/execute_stage_bw_and_step`
+
+娉ㄦ剰锛?
+- 杩欐槸鍏煎灞傦紝涓嶆槸涓昏矾寰?- 蹇呰鏃跺厑璁稿皯閲?GPU -> CPU 鎷疯礉
+- 杩欑鎷疯礉鍙厑璁稿嚭鐜板湪璁粌澶栫殑灏忚剼鏈紝涓嶅厑璁告薄鏌撹缁冪儹璺緞
+
+### 5.4 绗?3 灞傦細缁熶竴宸ュ巶灞?
+浠ュ悗鎵€鏈夎皟鐢ㄦ柟閮戒笉搴旂洿鎺?`new SaginParallelEnv(...)` 鎴?`new StructuredControlDriver(...)`銆? 
+缁熶竴閫氳繃宸ュ巶鍒涘缓锛?
+- `make_structured_env(...)`
+- `make_structured_env_group(...)`
+- `make_structured_driver(...)`
+- `make_structured_driver_group(...)`
+
+宸ュ巶鏍规嵁锛?
+- `device`
+- `num_envs`
+- `mode=train/eval/script`
+- `structured_env_backend`
+
+鏉ヨ繑鍥?GPU 鍘熺敓瀹炵幇銆丟PU 鍏煎 wrapper 鎴?CPU 鍙傝€冨疄鐜般€?
+## 6. 鍗?GPU 涓嬩负浠€涔堜笉搴斾互 `subproc` 涓轰富
+
+### 6.1 鍗?GPU 鐨勬牳蹇冨苟琛屾柟寮忔槸鈥滄壒閲忓紶閲忓苟琛屸€濓紝涓嶆槸鈥滃杩涚▼鎶㈠悓涓€鍧楀崱鈥?
+鍦ㄥ彧鏈?1 寮?GPU 鐨勬儏鍐典笅锛屾渶鏈夋晥鐨勫苟琛屾柟寮忔槸锛?
+- 鍗曡繘绋嬪彂璧峰ぇ batch kernel
+- GPU 鍦ㄨ澶囦笂骞惰瀹屾垚澶ч噺鐜妲戒綅鐨勮繍绠?
+鐪熸浼氭嫋鎱㈤€熷害鐨勬槸锛?
+- 姣忎釜 env 鍗曠嫭鍙戝皬 kernel
+- 澶ч噺 Python 寰幆
+- 澶氳繘绋嬩箣闂存潵鍥炰紶鐘舵€?- GPU 涓?CPU 涔嬮棿棰戠箒鍚屾
+
+### 6.2 澶氳繘绋嬪叡浜崟 GPU 寰€寰€涓嶆槸鏀剁泭鏈€澶ц矾寰?
+濡傛灉澶氫釜 worker 閮借纰板悓涓€鍧?GPU锛岄€氬父浼氬紩鍏ワ細
+
+- 澶氫釜 CUDA context
+- 杩涚▼闂村悓姝ュ拰鎷疯礉
+- 璋冨害鎶栧姩
+- 缁撴灉澶嶇幇澶嶆潅搴︿笂鍗?
+鍥犳锛屽崟 GPU 涓昏缁冩灦鏋勪笉搴旇璁℃垚澶氳繘绋嬪叡浜竴鍧?GPU銆?
+### 6.3 `subproc` 鐨勫悎鐞嗗畾浣?
+鍦ㄦ湰椤圭洰閲岋紝`subproc` 鍙簲淇濈暀涓猴細
+
+- CPU 鍙傝€冨疄鐜扮殑骞惰鍥為€€璺緞
+- 鍘嗗彶鑴氭湰涓存椂鍏煎璺緞
+- CPU 鍩哄噯瀵圭収璺緞
+
+瀹冧笉搴斿啀鎵挎媴 structured 涓昏缁冭矾寰勩€?
+## 7. 鍝簺璁＄畻蹇呴』鏁翠綋杩佸埌 GPU
+
+濡傛灉鐩爣鏄€滅幆澧冪湡鍦?GPU 涓婅窇鈥濓紝鍒欎互涓嬭缁冪儹璺緞閮藉簲鏁翠綋杩佸埌 GPU锛?
+- UAV 鍔ㄥ姏瀛︽洿鏂?- 鐢ㄦ埛鍏宠仈
+- candidate users 鏋勯€?- visible satellites 鏋勯€?- access link / access rate 璁＄畻
+- backhaul link / backhaul rate 璁＄畻
+- GU/UAV/SAT 闃熷垪鏇存柊
+- reward 璁＄畻
+- terminated/truncated 鍒ゅ畾
+- obs 鏋勯€?- structured world state / sat snapshot / bw snapshot 鏋勯€?
+鍙互淇濈暀鍦?CPU 鐨勯儴鍒嗭細
+
+- checkpoint 搴忓垪鍖栦笌鍐欑洏
+- 鏃ュ織璁板綍
+- CSV/TensorBoard 鍐欏叆
+- 浣庨鍙鍖?- 鏋佷綆棰?reference audit
+
+姝ｅ紡璇勪及涓嶅簲榛樿淇濈暀鍦?CPU銆?
+## 8. 瀵瑰鎺ュ彛绛栫暐
+
+### 8.1 鍐呴儴鏍稿績鎺ュ彛鍙互澶ф敼
+
+鍐呴儴鏍稿績搴斾互 batched tensor 鎺ュ彛涓轰腑蹇冭璁★紝涓嶉渶瑕佺淮鎸佹棫瀵硅薄鐨勫唴閮ㄧ粨鏋勩€?
+### 8.2 澶栭儴绋冲畾鎺ュ彛搴斿敖閲忔敹鏁?
+寤鸿绋冲畾淇濈暀浠ヤ笅涓ょ被澶栭儴鎺ュ彛銆?
+鍗曠幆澧冨吋瀹规帴鍙ｏ細
+
+- `reset(seed=None)`
+- `step(actions)`
+- `get_global_state()`
+- `close()`
+- `export_runtime_state()`
+- `load_runtime_state(...)`
+
+structured driver 鍏煎鎺ュ彛锛?
+- `begin_step()`
+- `run_accel_stage(...)`
+- `run_sat_stage(...)`
+- `execute_stage_bw_and_step(...)`
+
+### 8.3 璁粌鐑矾寰勪笉鍏佽琚吋瀹规帴鍙ｅ弽鍚戠粦鏋?
+璁粌銆佹寮忚瘎浼般€佹壒閲忛噰鏍峰繀椤荤洿鎺ヨ皟鐢?batch/group 鎺ュ彛銆? 
+鍏煎鎺ュ彛鍙粰鑴氭湰灞備娇鐢紝涓嶈兘瑕佹眰璁粌璺緞涓轰簡鈥滅湅璧锋潵鍍忚繃鍘烩€濊€岄€€鍥炲埌閫?env 瀵硅薄妯″瀷銆?
+## 9. 灏忚剼鏈浣曚篃璧?GPU 璺緞
+
+鐩爣涓嶆槸璁╂瘡涓剼鏈兘鑷繁鐞嗚В batch env锛岃€屾槸璁╄剼鏈€氳繃缁熶竴宸ュ巶鑷劧鎷垮埌 GPU 瀹炵幇銆?
+鎺ㄨ崘瑙勫垯锛?
+- 鎵归噺璇勪及鑴氭湰锛氱洿鎺ユ嬁 `make_structured_env_group(...)`
+- 鍗曠幆澧冭剼鏈細鎷?`make_structured_env(..., num_envs=1)`锛屽疄闄呰繑鍥?`GpuStructuredEnvSlot`
+- 渚濊禆 structured driver 鐨勮剼鏈細鎷?`make_structured_driver(...)` 鎴?`make_structured_driver_group(...)`
+
+杩欐剰鍛崇潃鍚庣画搴旈€愭娑堥櫎浠撳簱閲岀洿鎺ュ啓姝荤殑锛?
+- `env = SaginParallelEnv(cfg)`
+- `driver = StructuredControlDriver(env)`
+
+缁熶竴鏀舵暃鍒板伐鍘傚叆鍙ｃ€?
+## 10. 姝ｇ‘鎬т繚闅滄柟妗?
+### 10.1 CPU 鍙傝€冨疄鐜颁繚鐣欙紝浣嗕笉鍐嶆槸涓昏矾寰?
+褰撳墠 CPU `SaginParallelEnv` 淇濈暀涓猴細
+
+- gold reference
+- 鍥炲綊娴嬭瘯鍙傝€?- 鏁板€煎璁″弬鑰?
+### 10.2 鍒嗛樁娈电瓑浠锋€ч獙璇?
+GPU 鏂板疄鐜板繀椤诲缓绔嬩互涓嬫祴璇曪細
+
+- reset 鍚庣姸鎬佷竴鑷?- accel world / local state 涓€鑷?- sat snapshot 涓€鑷?- bw snapshot 涓€鑷?- step 鍚?reward 涓€鑷?- terminations / truncations 涓€鑷?- next world state 涓€鑷?
+### 10.3 闀?rollout 楠岃瘉
+
+鍥哄畾 seed锛屾瘮杈?CPU 涓?GPU 瀹炵幇锛?
+- episode reward
+- 缁堟鏃跺埢
+- 绱 drop / throughput / backlog
+- 鍏抽敭鐘舵€佽建杩瑰樊寮?
+鎴嚦褰撳墠浠ｇ爜锛岃繖鏉″凡缁忚ˉ榻愶細`validate_structured_fixed_seed_long_rollout(...)` 涓?`scripts/validate_structured_long_rollout_acceptance.py` 宸茬粡褰㈡垚缁熶竴鍥哄畾-seed CPU-vs-native 闀?rollout 楠屾敹鍏ュ彛銆傚畠鍚屾椂淇濈暀涓ユ牸鐨?`exact_passed` 璇婃柇锛屼互鍙婃寜 `10.4` 鏄庣‘鍒楀嚭鐨?episode KPI / 鍏抽敭杞ㄨ抗瀹瑰繊闃堝€肩殑绯荤粺绾?`passed` 鍒ゅ畾锛涢厤濂楀洖褰掗攣浣嶄簬 `tests/test_structured_system_acceptance.py`銆?
+褰撳墠鏇村噯纭殑鐜扮姸鏄細
+
+- CPU native parity锛氬湪 acceptance 灏忛厤缃笂宸茬粡绋冲畾 `passed=1`銆乣exact_passed=1`
+- GPU native parity锛氬湪 acceptance 灏忛厤缃笂涔熷凡缁忚ˉ榻?`passed=1`銆乣exact_passed=1` 鐨勫洖褰掗攣
+- formal 閰嶇疆鐨?GPU 杞婚噺 smoke 鐩墠鍦?canonical numeric exact 鍙ｅ緞涓嬪凡缁忔槸 `passed=1`銆乣exact_passed=1`
+
+杩欓噷鐨?`exact_passed=1` 涓嶆槸 bitwise exact銆傚綋鍓嶉獙鏀跺叆鍙ｉ粯璁や娇鐢?`atol=6e-5, rtol=1e-6`锛岀敤浜庤鐩?GPU/CPU 璁惧闂翠笉鍙伩鍏嶇殑娴偣褰掔害宸紓锛涙渶杩戜竴娆?formal GPU smoke 鐨勬渶澶у樊寮備负 `reward=0`銆乪pisode throughput 绾?`2e-5`銆乼race queue total `32` bits銆乼race backlog 绾?`9.6e-6`銆備篃灏辨槸璇达紝formal GPU 璺緞褰撳墠宸茬粡閫氳繃绯荤粺绾?KPI 涓?canonical numeric exact 楠屾敹锛屼絾浠嶄笉搴旇鎻忚堪涓?bitwise / fieldwise 瀹屽叏鐩稿悓銆?
+### 10.4 鏁板€肩ǔ瀹氭€ц姹?
+瀵逛簬瀹规槗鍥犲苟琛屽綊绾﹂『搴忎骇鐢熷樊寮傜殑閲忥細
+
+- 蹇呰鏃跺厛鍦?`float64` 涓棿鎬佷笂璁＄畻
+- 鍥哄畾褰掔害椤哄簭
+- 鏄庣‘瀹瑰繊闃堝€?
+涓嶈兘鐢ㄢ€淕PU 涓婃湁涓€鐐硅宸甯糕€濇潵鏁疯鍏抽敭璇箟鍋忓樊銆?
+## 11. 鎬ц兘楠屾敹鏍囧噯
+
+鏂版灦鏋勫簲鑷冲皯婊¤冻浠ヤ笅鏍囧噯銆?
+### 11.1 鐑矾寰勭粨鏋勬爣鍑?
+- 璁粌鐑矾寰勪腑涓嶅瓨鍦?CPU env step
+- 璁粌鐑矾寰勪腑涓嶅瓨鍦?per-env Python 涓诲惊鐜?- 璁粌鐑矾寰勪腑涓嶅瓨鍦?CPU staging 鍚庡啀鏁翠綋鎼埌 GPU
+- rollout buffer 灏介噺甯搁┗ GPU
+
+### 11.2 缁撴灉鏍囧噯
+
+- 鍦ㄥ浐瀹?seed 涓嬶紝涓?CPU 鍙傝€冨疄鐜伴€愰樁娈靛榻?- 鏃犳柊澧?NaN / Inf / 闈炴硶 mask / 闈炴硶 index
+- 鏃犺缁冭涔夊洖閫€
+
+### 11.3 閫熷害鏍囧噯
+
+搴斾互鈥滃綋鍓嶆渶浼樺彲鐢ㄤ富璺緞鈥濅负鍩虹嚎杩涜 benchmark锛岃€屼笉鏄笌涓€涓槑鏄句綆鏁堢殑鍘嗗彶璺緞瀵规瘮鍚庤嚜鎴戞弧瓒炽€?
+鑷冲皯瑕佹姤鍛婏細
+
+- samples/sec
+- env steps/sec
+- rollout 闃舵鑰楁椂鎷嗗垎
+- update 闃舵鑰楁椂鎷嗗垎
+- CPU 鍒╃敤鐜囦笌 GPU 鍒╃敤鐜?
+鎴嚦褰撳墠浠ｇ爜锛宍11.3` 鐨勨€滅粺涓€ benchmark 鍙ｅ緞鈥濆凡缁忚惤鍒版寮忓叆鍙ｏ細`run_structured_training()` / `train_structured.py` 宸茬ǔ瀹氳褰?`env_steps`銆乣transition_samples`銆乣env_steps_per_sec`銆乣samples_per_sec`銆乺ollout/update 鍒嗘鑰楁椂锛沗sagin_marl/rl/structured_system_benchmark.py` 涓?`scripts/bench_structured_training_system.py` 鎻愪緵缁熶竴鐨勬寮?benchmark 鍏ュ彛銆?
+浣嗚繖閲岄渶瑕佹妸鈥滃彛寰勫凡鍏峰鈥濆拰鈥滈€熷害鐩爣宸茶揪鏍団€濇槑纭尯鍒嗗紑锛?
+- 褰撳墠鏂囨。骞舵病鏈夊畾涔変竴涓粺涓€鐨勭粷瀵瑰悶鍚愰棬妲涳紝鍥犳涓嶈兘浠呭嚟 benchmark 鍏ュ彛瀛樺湪灏卞绉扳€滈€熷害鏍囧噯宸茬粡閫氳繃鈥?- 褰撳墠 formal 閰嶇疆涓嬶紝CPU benchmark smoke 涓?GPU benchmark smoke 閮藉凡缁忚兘璺戦€氾紱姝ゅ墠闃诲 GPU benchmark 鐨?`CUDA tensor -> np.asarray(...)` 杈圭晫宸茶绉婚櫎
+- 浣嗘渶杩戜竴娆″皬瑙勬ā smoke锛坄num_envs=2, rollout_env_steps=2, num_updates=1`锛変粛鏄剧ず GPU 鎱簬 CPU锛欳PU 绾?`16.88 env_steps/sec`锛孏PU 绾?`6.59 env_steps/sec`銆傝繖涓嶈兘闈犫€滄斁澶ф祴璇曡妯♀€濇潵鎺╃洊锛屽悗缁粛闇€瑕佺户缁?profile 骞跺噺灏戝皬 batch 涓嬬殑 kernel launch銆亀orld/spec 鏋勯€犲拰鍏煎杈圭晫寮€閿€銆?- CPU / GPU 鍒╃敤鐜囬噰鏍锋槸 best-effort锛氬綋杩愯鏃剁幆澧冧笉鏀寔搴曞眰鍒╃敤鐜囪鏁版椂锛宍gpu_util_percent` / `gpu_memory_util_percent` 鍙兘杩斿洖 `NaN`
+- 鍥犳锛屽綋鍓嶆洿鍑嗙‘鐨勭粨璁烘槸锛?*缁熶竴 benchmark 鍙ｅ緞涓庢寮忚剼鏈叆鍙ｅ凡缁忚ˉ榻愶紝浣嗘槸鍚︹€滆揪鏍団€濅粛鍙栧喅浜庡叿浣撴満鍣ㄣ€侀厤缃拰瀹為檯璺戝嚭鏉ョ殑鍚炲悙缁撴灉**
+
+## 12. 鎺ㄨ崘杩佺Щ璺緞
+
+### 12.0 鎴嚦褰撳墠浠ｇ爜鐨勯樁娈靛垽鏂?
+缁撳悎褰撳墠浠撳簱瀹炵幇锛岃緝鍑嗙‘鐨勯樁娈靛垽鏂槸锛?
+- 闃舵 A锛氬凡瀹屾垚銆俙StructuredTorchEnvBatch` 宸插瓨鍦紝reset / accel / sat / BW / orbit / export / load 涓婚摼閮藉凡鍒囧埌 `StructuredBatchEnvCore` 涓诲锛岃€屼笖鈥滃敮涓€ GPU 鍘熺敓涓诲唴鏍糕€濈幇鍦ㄥ凡缁忔敹鍙ｏ細group 鏋勯€犱笉鍐嶅缓绔嬪湪鏃?env/driver 涔嬩笂锛宍_runtime_tensor_state` 鎴愪负鍞竴杩愯鏃跺瓨鍌ㄧ湡婧愶紝`runtime_state` 浠呬綔涓?tensor-backed compatibility view 淇濈暀
+- 闃舵 B锛氬凡瀹屾垚銆俙StructuredMAPPO.collect_env_steps`銆乣run_structured_training`銆乣structured_eval` 鐨勬爣鍑?actor 姝ｅ紡璇勪及涓昏矾寰勭幇鍦ㄩ兘宸茬粡鐩存帴缁戝畾 GPU env group锛岃€屼笖鏍囧噯 group 鐑矾寰勫凡涓嶅啀渚濊禆 per-env dataclass split銆乸er-env `numpy` 鍔ㄤ綔涓嬪彂鎴?`sat_mask_to_ids_many` 杩欑被鏃у洖閫€杈圭晫
+- 闃舵 C锛氬凡瀹屾垚銆俿tructured 涓昏皟鐢ㄦ柟宸茬粡缁熶竴鍒囧埌宸ュ巶涓?slot/helper锛沗scripts/` 涓洿鎺?`SaginParallelEnv(` 涓?`StructuredControlDriver(` 璋冪敤閮藉凡闄嶅埌 `0`锛屾棫 benchmark/reference 鑴氭湰涔熶笉鍐嶅湪鑴氭湰鍏ュ彛鐩存帴 new env/driver
+- 闃舵 D锛氬凡瀹屾垚銆俙subproc` 鍜屾棫 CPU env 鐜板湪閮藉凡閫€鍒版樉寮?opt-in 鐨?reference/backward 涓庡吋瀹硅竟鐣岃鑹诧紝鏂囨。銆佽剼鏈拰榛樿閰嶇疆宸茬粡缁熶竴浠?GPU batch / `sync` / native 璺緞涓轰富
+
+鏇村叿浣撳湴璇达細
+
+- `StructuredTorchEnvBatch` / `StructuredBatchEnvCore` / `GpuStructured*` 宸茬粡瀛樺湪锛屼笖 `StructuredBatchEnvCore` 宸茬粡鎸佹湁鑷繁鐨?orbit lookup锛岃鏄庨樁娈?A 涓嶅啀鏄€滀粠闆跺紑濮嬧€?- `StructuredBatchEnvCore.reset_many()`銆乣load_runtime_state_batch()`銆乣export_runtime_state_batch()` 閮藉凡缁忕敱 core 鍘熺敓 state 閾句富瀵硷紝涓嶅啀鎶?`env.reset()` / `_sync_runtime_state()` / env mirror sync 褰撲綔蹇呰鐪熸簮
+- `GpuStructured*` 鏋勯€犳湡宸茬粡涓嶅啀鍏堟壒閲忔瀯閫犳棫 `SaginParallelEnv/StructuredControlDriver`锛岃€屾槸鍏堝缓绔?kernel core锛屽啀鎸夐渶 materialize compatibility shell锛岃鏄庘€済roup 涓绘灦鏋勫厛寤烘棫瀵硅薄鈥濊繖涓€姝ュ凡缁忚鎷挎帀
+- `StructuredBatchEnvCore` 鐨?`_runtime_tensor_state` 鐜板湪宸茬粡鎴愪负鍞竴瀛樺偍鐪熸簮锛宍runtime_state` 鍙繚鐣?tensor-backed compatibility view锛岃鏄庘€滅幆澧冩牳蹇冧粛淇濈暀 CPU runtime mirror鈥濊繖鏉″垽鏂凡缁忚繃鏃?- 鏍囧噯 native BW fast path 閲岀殑 `elevation -> backhaul loss` 涓?`flow proxy score` 閾捐矾涔熷凡缁忓垏鍒?tensor-native锛涗富鐑矾寰勪腑鐨勫ぇ鍧?`GPU -> CPU -> GPU` 寰€杩旂幇鍦ㄥ凡缁忓熀鏈€€鍑猴紝鍙湪 reference / compat / fallback 杈圭晫淇濈暀
+- `StructuredMAPPO.collect_env_steps`銆乣run_structured_training`銆乣update()`銆丟AE/bootstrap銆佽缁冨悗缁熻宸茬粡鍒囧埌 rollout-native batch view锛屾爣鍑?actor 姝ｅ紡璇勪及涔熷凡澶嶇敤 `collect_env_steps`锛涜繘涓€姝ュ湴锛屾爣鍑?group 涓昏矾寰勯噷 world/action 宸蹭繚鎸?batched tensor/dataclass 褰㈡€侊紝涓嶅啀閫氳繃 `_split_dataclass_by_counts`銆乣_split_tensor_and_numpy_by_counts`銆乣_batch_action_output_to_env_groups` 鎴?`sat_mask_to_ids_many` 杩欑被鏃ц竟鐣屽洖閫€
+- `StructuredRolloutBuffer` 鐨勬棫 compat materializer/append 鎺ュ彛鐜板凡浠庣敓浜х被绉婚櫎锛屾爣鍑嗚缁?姝ｅ紡璇勪及涓昏矾寰勪笉鍐嶆毚闇?`transitions()` / `StageTransition` / `add_stage_transition()` / `copy_prefix_env_steps()` 杩欑被鏃?buffer API
+- `GpuStructuredEnvSlot` / `GpuStructuredDriverSlot` 鍜?`make_structured_*` 宸茬粡瀛樺湪锛屼笖宸ュ巶宸茶兘鎸?`mode + structured_env_backend` 璺敱锛涜繘涓€姝ュ湴锛宻lot adapter 宸叉敼涓烘噿 materialize compatibility shell锛宍env.driver` / `as_structured_driver(env)` 澶嶇敤 slot adapter 鑰屼笉鏄洖閫€鍒?`StructuredControlDriver(env)`锛岃鏄庨樁娈?C 宸蹭笉鍙槸鈥滈鏋跺嚭鐜扳€濓紝鑰屾槸宸茬粡瀹屾垚 structured 涓昏皟鐢ㄦ柟鏀跺彛
+- `subproc` 榛樿鍊煎凡缁忎粠 structured 璁粌/璇勪及鑴氭湰銆乻tructured 閰嶇疆鍜?`make_vec_env(...)` 榛樿璺敱閲岄€€鎺夛紱瀹冪幇鍦ㄥ彧鍦ㄦ樉寮?opt-in 鐨?backward/reference/璋冭瘯璺緞涓繚鐣欙紝璇存槑闃舵 D 鐨勨€滈粯璁や富鏋舵瀯鍒囨崲鈥濈洰鏍囧凡缁忓畬鎴?- 姝ｅ紡闀?rollout KPI 楠屾敹鍏ュ彛涓庣粺涓€ benchmark 鍏ュ彛鐜板湪閮藉凡缁忓叿澶囷紱formal GPU 璺緞鍦?canonical numeric exact 鍙ｅ緞涓嬪凡缁忔槸 `passed=1`銆乣exact_passed=1`锛屼絾骞堕潪 bitwise exact銆俠enchmark 鍙ｅ緞铏藉凡缁熶竴锛屽綋鍓嶅皬瑙勬ā smoke 浠嶆樉绀?GPU 鎱簬 CPU锛屽洜姝や笉鑳藉绉伴€熷害鐩爣宸茬粡缁濆杈炬爣锛涘悗缁紭鍖栭噸鐐硅浆涓烘寔缁?benchmark/profile銆佹竻鐞嗗墿浣欏吋瀹硅竟鐣屻€侀檷浣庡皬 batch GPU kernel launch 涓?world/spec 鏋勯€犲紑閿€銆?
+### 闃舵 A锛氬缓绔?GPU 鍘熺敓 batched env 鏍稿績
+
+鐩爣锛?
+- 鏂板缓 `StructuredTorchEnvBatch`
+- 瀹屾垚 reset銆侀樁娈垫帹杩涖€乺eward/done銆乷bs/world state 鐨?batched torch 鐗堟湰
+- 涓?CPU reference 寤虹珛閫愰樁娈靛鐓ф祴璇?
+闃舵 A 瀹屾垚鍓嶏紝涓嶅啀缁х画鍥寸粫鏃?env 鍋氭洿澶氱粨鏋勬€т慨琛ャ€?
+### 闃舵 B锛氬垏鎹㈣缁冨拰姝ｅ紡璇勪及鍒?GPU 鏍稿績
+
+鐩爣锛?
+- `StructuredMAPPO.collect_env_steps` 鐩存帴鍚?GPU group 鎺ュ彛
+- `run_structured_training` 鐩存帴缁戝畾 GPU env group
+- `structured_eval` 姝ｅ紡璇勪及璺緞鍒囨崲鍒?GPU env group
+
+姝ら樁娈靛畬鎴愬悗锛岃缁冧笌姝ｅ紡璇勪及涓嶅啀渚濊禆 CPU env 鐑矾寰勩€?
+### 闃舵 C锛氳ˉ榻愬吋瀹瑰眰鍜屽伐鍘傚眰
+
+鐩爣锛?
+- 鎻愪緵 `GpuStructuredEnvSlot` / `GpuStructuredDriverSlot`
+- 鏂板缁熶竴宸ュ巶
+- 閫愭鎶婅剼鏈粠鐩存帴 `SaginParallelEnv(...)` 杩佸埌宸ュ巶
+
+### 闃舵 D锛氬皢鏃?CPU 璺緞闄嶇骇涓?reference/backward path
+
+鐩爣锛?
+- CPU env 涓嶅啀鏄富璁粌瀹炵幇
+- `subproc` 涓嶅啀鏄?structured 涓绘灦鏋?- 鏂囨。銆佽剼鏈€侀粯璁ら厤缃叏閮ㄤ互 GPU batch 璺緞涓轰富
+
+## 13. 鏄庣‘鎷掔粷鐨勬柟妗?
+浠ヤ笅鏂规涓嶅簲浣滀负鏈€缁堟灦鏋勭洰鏍囷細
+
+- 缁х画浠?`subproc` 浣滀负 structured 涓昏缁冭矾寰?- 缁х画璁?CPU env 璐熻矗澶ч儴鍒?step 璁＄畻锛屽彧鎶婅緭鍑?tensor 鏀惧埌 GPU
+- 缁х画淇濈暀鈥滄瘡涓?env 涓€涓璞★紝澶栭儴鎷?batch鈥濅负鍐呴儴鏍稿績缁撴瀯
+- 涓轰簡鍏煎鏃ц剼鏈€岃璁粌鐑矾寰勭户缁蛋鏃ф帴鍙?- 鍙仛鏈€灏忔敼鍔ㄣ€佸眬閮ㄦ墦琛ヤ竵锛岀劧鍚庢妸缁撴灉绉颁负鈥淕PU 鐜鈥?
+## 14. 鏈€缁堟帹鑽?
+鍦ㄢ€滃彧鏈?1 涓?GPU鈥濈殑鍓嶆彁涓嬶紝鏈」鐩渶鍚堢悊鐨勭洰鏍囨灦鏋勬槸锛?
+- 鍐呮牳锛氬崟杩涚▼銆佸崟 GPU銆乥atched torch env
+- 涓昏矾寰勶細璁粌涓庢寮忚瘎浼扮粺涓€璧?GPU env group
+- 杈圭晫锛氶€氳繃鍏煎 wrapper 璁╁皬鑴氭湰缁х画鑳界敤
+- 鍙傝€冿細淇濈暀 CPU env 浣滀负 gold reference锛岃€屼笉鏄富瀹炵幇
+
+濡傛灉鍚庣画瀹炵幇涓庤繖涓洰鏍囧啿绐侊紝搴斾紭鍏堟湇浠庝互涓嬮『搴忥細
+
+1. 姝ｇ‘鎬?2. 璁粌鐑矾寰勯€熷害
+3. 鎺ュ彛鍏煎渚垮埄鎬?
+鎺ュ彛鍏煎鍙兘浣滀负杈圭晫绛栫暐锛屼笉鑳藉弽杩囨潵鍐冲畾鏍稿績鏋舵瀯銆?
+## 15. 绠楀瓙绛栫暐涓庝紭鍏堢骇
+
+### 15.1 缁撹
+
+鍙互閫氳繃鍐欑畻瀛愯繘涓€姝ユ彁閫燂紝鑰屼笖鍦ㄦ湰椤圭洰涓繖鏄湁浠峰€肩殑銆? 
+浣嗙畻瀛愪紭鍖栫殑鍓嶆彁鏄細璁粌鐑矾寰勫凡缁忔槸 batched GPU 鐜銆?
+濡傛灉鐜鏍稿績浠嶇劧鍋滅暀鍦ㄤ互涓嬬粨鏋勪腑锛?
+- Python 閫?env 寰幆
+- NumPy/CPU 涓诲鐨?step
+- CPU/GPU 棰戠箒寰€杩旀惉杩?- 鏃у璞℃帴鍙ｉ┍鍔ㄧ儹璺緞
+
+閭ｄ箞鍗充娇鍐欎簡灏戦噺鑷畾涔夌畻瀛愶紝鎬讳綋鏀剁泭涔熶細琚灦鏋勫紑閿€鍚炴帀銆傚洜姝わ細
+
+- 绠楀瓙浼樺寲鏄浜岄樁娈靛伐浣?- batched GPU env 閲嶆瀯鏄涓€闃舵宸ヤ綔
+
+### 15.2 绠楀瓙浼樺寲瑙ｅ喅鐨勬槸浠€涔堥棶棰?
+褰撶幆澧冨凡缁忔暣浣?batched GPU 鍖栧悗锛岀畻瀛愪紭鍖栦富瑕佽В鍐充笁绫婚棶棰橈細
+
+- 杩囧鐨勫皬 kernel launch
+- 澶ч噺涓棿涓存椂寮犻噺瀵艰嚧鐨勬樉瀛樿鍐欐氮璐?- 鏌愪簺鐑偣璁＄畻铏界劧宸茬粡鍦?GPU 涓婏紝浣嗚瀺鍚堝害涓嶅銆佸悶鍚愪笉楂?
+鍥犳锛岀畻瀛愮殑浣滅敤涓嶆槸鈥滄妸 CPU env 鍙樺揩涓€鐐光€濓紝鑰屾槸鈥滄妸宸茬粡 GPU 鍖栫殑鐑矾寰勭户缁仛娣卞害铻嶅悎鈥濄€?
+### 15.3 鏈」鐩渶鍙兘鍊煎緱鍐欑畻瀛愮殑鐑偣
+
+鍦ㄦ湰椤圭洰閲岋紝浼樺厛鑰冭檻浠ヤ笅鐑偣锛?
+- 鍙鍗槦绛涢€夈€佸嚑浣曞叧绯诲拰閾捐矾鐗瑰緛鏋勯€?- access rate 璁＄畻
+- backhaul rate 璁＄畻
+- queue update銆乺eward銆乨one 鐨勮瀺鍚堟洿鏂?- structured world state / sat snapshot / bw snapshot 鐨勬壒閲忔瀯閫?
+杩欎簺浣嶇疆鐨勫叡鍚岀壒鐐规槸锛?
+- 寮犻噺褰㈢姸瑙勫垯
+- 鎵归噺搴﹂珮
+- 璋冪敤棰戠巼楂?- 瀹规槗鎴愪负 rollout 鐑偣
+
+### 15.4 绠楀瓙浼樺寲鐨勬帹鑽愪紭鍏堢骇
+
+寤鸿鎸夌収浠ヤ笅椤哄簭鎺ㄨ繘锛岃€屼笉鏄竴寮€濮嬪氨鐩存帴鍐欐渶搴曞眰 custom op锛?
+1. 鍏堝畬鎴愮函 torch 鐨?batched GPU 鍙傝€冨疄鐜?2. 瀵圭儹璺緞鍚敤 `torch.compile`
+3. 鐢?profiler 鎵惧嚭鏈€鐑殑 2 鍒?4 娈?4. 浼樺厛灏濊瘯 Triton kernel 鎴栨洿楂樺眰绾х殑铻嶅悎瀹炵幇
+5. 鍙湁褰?Triton/compile 浠嶇劧涓嶅鏃讹紝鍐嶈€冭檻 C++/CUDA custom op
+
+鎺ㄨ崘杩欎釜椤哄簭鐨勫師鍥犳槸锛?
+- `torch.compile` 寮€鍙戞垚鏈渶浣?- Triton 閫氬父鑳藉湪鎬ц兘涓庣淮鎶ゆ垚鏈箣闂村彇寰楁渶濂藉钩琛?- C++/CUDA custom op 缁存姢鎴愭湰鏈€楂橈紝搴斿彧鐢ㄤ簬鐪熸闀挎湡绋冲畾涓旀瀬鐑殑鏍稿績绠楀瓙
+
+### 15.5 绠楀瓙璁捐鍘熷垯
+
+鎴嚦褰撳墠浠ｇ爜锛岃繖涓€浼樺厛绾у凡缁忓畬鏁磋惤鍒板疄鐜板眰锛?- `SaginConfig` 宸叉柊澧?`structured_kernel_operator_mode`銆乣structured_kernel_compile_mode`銆乣structured_kernel_compile_fullgraph`銆乣structured_kernel_compile_dynamic`
+- `StructuredBatchEnvCore` 鐨?`access_rate`銆乣gu_queue_transition`銆乣bw_link_transition`銆乣bw_queue_transition`銆乣bw_post_stats` 鐑偣鐜板凡缁熶竴涓?鈥渢ensor reference + lazy `torch.compile` runtime鈥?鍙屽眰瀹炵幇
+- `StructuredBatchEnvCore` 鐨?`visible_sats` / `access_link_gain`銆乣global_state` / `world` / `sat snapshot` / `bw snapshot` 鎵归噺鏋勯€犮€佷互鍙?BW reward / done / finalize 铻嶅悎閾捐矾涔熷凡缁忓苟鍏ュ悓涓€濂?compile/runtime 涓?benchmark/profiler 浣撶郴
+- `scripts/bench_structured_native_kernels.py` 宸叉彁渚?eager-vs-compile benchmark 涓?`torch.profiler` 鍏ュ彛锛屽彲鐩存帴瀵逛笂杩扮儹鐐瑰仛鍩哄噯鍜岀儹鐐瑰綊鍥?- `tests/test_structured_kernel_ops.py` 宸茶ˉ鍏?compile 璺緞涓?fallback/reference 瀵圭収閿侊紝鐜版湁 `tests/test_channel_models.py` 绛夊崟绠楀瓙 reference 娴嬭瘯涔熺户缁鐩栬繖浜涙牳蹇冪畻瀛?- Triton / C++/CUDA custom op 浠嶇劧娌℃湁寮曞叆锛岃€屼笖褰撳墠鍒绘剰涓嶅紩鍏ワ紱鍙湁 benchmark / profiler 鏄庣‘璇佹槑 `torch.compile` 浠嶄笉瓒虫椂锛屾墠缁х画鎺ㄨ繘鍒颁笅涓€灞?- 鏈妭姝ゅ墠鏄庣‘鏍囧嚭鐨勯珮浼樺厛绾ф贩鍚堥摼璺?`world/global/snapshot/finalize` 宸叉寜鈥滃厛閲嶆瀯涓荤儹璺緞銆佸啀璋堟洿搴曞眰绠楀瓙鈥濈殑鍘熷垯瀹屾垚鏀跺彛锛涗紭鍏堢骇鍒ゆ柇鏈韩涔熷凡缁忓緱鍒颁唬鐮佸嵃璇侊細缁х画鍙ˉ闆舵暎鏁板 kernel 鐨勮竟闄呮敹鐩婏紝宸茬粡浣庝簬瑙ｅ喅杩欎簺娣峰悎鐑摼鐨勬敹鐩?
+绠楀瓙蹇呴』閬靛畧浠ヤ笅鍘熷垯锛?
+- 鍙紭鍖栫儹鐐癸紝涓嶄负鈥滅湅璧锋潵楂樼骇鈥濊€屽啓绠楀瓙
+- 姣忎釜绠楀瓙閮藉繀椤诲搴斾竴涓函 torch 鍙傝€冨疄鐜?- 绠楀瓙璇箟蹇呴』涓?CPU/torch reference 瀵归綈
+- 绠楀瓙鎺ュ彛搴旀湇鍔′簬 batched env锛屼笉搴斿弽鍚戞毚闇叉棫瀵硅薄寮忔帴鍙?- 绠楀瓙搴斿敖閲忓仛铻嶅悎锛岄伩鍏嶅彧鎶婁竴涓緢灏忕殑鐐规搷浣滃崟鐙笅娌?
+### 15.6 姝ｇ‘鎬ц姹?
+鑰冭檻鍒颁綘鐨勬牳蹇冭姹傛槸鈥滄洿蹇笖涓嶅嚭閿欌€濓紝绠楀瓙蹇呴』寤虹珛涓ユ牸瀵圭収鏈哄埗锛?
+- 鍗曠畻瀛愯緭鍑轰笌绾?torch 鍙傝€冨疄鐜伴€愰」瀵规瘮
+- 鍥哄畾 seed 涓嬭繘琛岄暱 rollout 瀵圭収
+- 姣旇緝 reward銆乨one銆佸叧閿姸鎬佽建杩广€佺疮璁＄粺璁￠噺
+- 淇濈暀 debug/reference fallback 寮€鍏?
+瀵逛簬骞惰褰掔害鏁忔劅鐨勮绠楋細
+
+- 蹇呰鏃朵娇鐢ㄦ洿绋冲畾鐨勪腑闂?dtype
+- 鏄庣‘瀹瑰繊闃堝€?- 鏄庣‘鍝簺宸紓灞炰簬鏁板€艰宸紝鍝簺宸紓灞炰簬璇箟閿欒
+
+### 15.7 鏄庣‘鎷掔粷鐨勫仛娉?
+鎴嚦褰撳墠浠ｇ爜锛屽崟绠楀瓙灞傞潰鐨?reference 瀵圭収宸茬粡鍏峰锛岃€屼笖 `10.3` / `11.3` 鐨勫浐瀹?seed 闀?rollout KPI 楠屾敹涓庣粺涓€ benchmark 鍙ｅ緞涔熷凡缁忚ˉ榻愶紱浣嗚繖浠嶄笉鎰忓懗鐫€鍗曠畻瀛?benchmark 鍙互鏇夸唬鏁存潯璁粌/璇勪及閾捐矾楠屾敹銆傜畻瀛愬眰涓庣郴缁熷眰闇€瑕佸苟琛屼繚鐣欙紝涓よ€呯己涓€涓嶅彲銆?
+浠ヤ笅鍋氭硶涓嶅簲琚涓烘纭殑鈥滅畻瀛愪紭鍖栨柟妗堚€濓細
+
+- 鍦?CPU env 涓讳綋鏈敼閫犲墠锛屽厛鎶曞叆澶ч噺绮惧姏鍐?custom op
+- 鐢ㄥ皯閲忕畻瀛愬幓鎺╃洊 Python/NumPy/杩涚▼閫氫俊鐨勪富鐡堕
+- 涓哄吋瀹规棫瀵硅薄鎺ュ彛锛屾妸绠楀瓙鎷嗗緱闈炲父纰?- 娌℃湁 reference 瀵圭収鍜屽洖褰掓祴璇曞氨鐩存帴鏇挎崲涓昏矾寰?
+### 15.8 鏈€缁堝缓璁?
+鏈」鐩绠楀瓙鐨勬纭畾浣嶅簲褰撴槸锛?
+- 涓嶆槸绗竴鎬ч噸鏋?- 涓嶆槸鏋舵瀯鏇夸唬鍝?- 鑰屾槸鍦?batched GPU env 鎴愬瀷涔嬪悗锛屽鐑偣鍋氱殑绗簩闃舵鎬ц兘寮哄寲
+
+鍥犳锛屾纭『搴忓簲濮嬬粓鏄細
+
+1. 鍏堟妸鐜鐑矾寰勬暣浣?batched GPU 鍖?2. 鍐嶇敤 profiler 鎵剧儹鐐?3. 鏈€鍚庡彧瀵圭湡姝ｅ€煎緱鐨勭儹鐐瑰啓绠楀瓙
+
+鎴嚦褰撳墠浠ｇ爜锛岀 15 鑺傚彲浠ュ垽瀹氫负瀹屾垚锛氱儹鐐圭畻瀛愮殑 pure-torch reference銆佺粺涓€ compile runtime銆佷互鍙?benchmark/profiler 鍏ュ彛宸茬粡瑕嗙洊 `visible_sats`銆乣access_link_gain`銆乣access_rate`銆乣gu_queue_transition`銆乣bw_link_transition`銆乣bw_queue_transition`銆乣bw_post_stats`銆乣global/world/snapshot` 鏋勯€犱笌 BW reward/done/finalize 铻嶅悎閾捐矾銆俆riton / custom op 浠嶄繚鎸佷负鈥滃彧鏈夊湪 compile 鏄庣‘涓嶅鏃舵墠缁х画鈥濈殑鍚庣画閫夐」锛岃€屼笉鏄粯璁ゆ灦鏋勭粍鎴愰儴鍒嗐€傞渶瑕佸崟鐙己璋冪殑鏄細`10.3` / `11.3` 鐜板湪宸茬粡鐢辩郴缁熺骇鍥哄畾 seed 楠屾敹鍏ュ彛涓庣粺涓€ benchmark 鍏ュ彛琛ラ綈锛屽洜姝ょ 15 鑺備笉鍐嶆壙鎷呪€滄浛浠ｇ郴缁熼獙鏀垛€濈殑鑱岃矗锛岃€屾槸鍥炲埌瀹冩湰鏉ョ殑浣嶇疆锛氬湪鏋舵瀯鍜岄獙鏀舵敹鍙ｄ箣鍚庢寔缁己鍖栫儹鐐规€ц兘銆?

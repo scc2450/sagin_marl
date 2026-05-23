@@ -66,7 +66,7 @@
 | `uav_tx_gain` | `63.1` | 约 `18 dBi` |
 | `sat_rx_gain` | `63.1` | 约 `18 dBi` |
 | `b_acc` | `1.0e7` | `10 MHz` |
-| `b_sat_total` | `1.5e7` | 每颗卫星总 backhaul 带宽池为 `15 MHz` |
+| `b_backhaul_per_sat` | `1.5e7` | 每颗卫星可分享的总 backhaul 带宽池为 `15 MHz` |
 | `sat_state_max` | `9` | critic 全局状态最多保留 9 颗卫星 |
 
 `Stage 1 / Stage 2` 使用 fixed-sat 口径：
@@ -112,7 +112,7 @@
 当前到达率不是直接从静态链路预算反推出来的，而是按下面的顺序确定：
 
 1. 先固定资源参数：
-   `num_sat = 144`、`uav_tx_gain = 63.1`、`sat_rx_gain = 63.1`、`b_acc = 1.0e7`、`b_sat_total = 1.5e7`
+   `num_sat = 144`、`uav_tx_gain = 63.1`、`sat_rx_gain = 63.1`、`b_acc = 1.0e7`、`b_backhaul_per_sat = 1.5e7`
 2. 使用 `cluster_center_queue_aware` baseline，在“大队列上限 + 零预加载”条件下做 rollout 网格，测真实分层流量：
    `arrival_per_step`、`gu_outflow_per_step`、`sat_incoming_per_step`
 3. 同时统计每步实际活跃卫星数，用于决定 `queue_ref_sat_active_count`

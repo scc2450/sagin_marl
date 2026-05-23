@@ -15,7 +15,6 @@ import numpy as np
 import torch
 
 from sagin_marl.env.config import load_config
-from sagin_marl.env.sagin_env import SaginParallelEnv
 from sagin_marl.rl.action_assembler import assemble_actions
 from sagin_marl.rl.baselines import (
     cluster_center_accel_policy,
@@ -32,6 +31,7 @@ from sagin_marl.rl.baselines import (
     zero_accel_policy,
 )
 from sagin_marl.rl.policy import ActorNet, batch_flatten_obs
+from sagin_marl.rl.structured_train import make_structured_env
 from sagin_marl.utils.checkpoint import load_checkpoint_forgiving
 from sagin_marl.utils.progress import Progress
 
@@ -281,7 +281,7 @@ def main() -> None:
     if args.baseline in {"cluster_center", "cluster_center_queue_aware"}:
         cfg.avoidance_enabled = True
         cfg.pairwise_hard_filter_enabled = True
-    env = SaginParallelEnv(cfg)
+    env = make_structured_env(cfg, backend="sync")
     use_baseline = args.baseline != "none"
     use_hybrid = args.hybrid_bw_sat != "none"
     if use_baseline and use_hybrid:
@@ -492,6 +492,9 @@ def main() -> None:
             f"contrib_abs_mean={row['contrib_abs_mean']:.6g}, "
             f"contrib_abs_p90={row['contrib_abs_p90']:.6g}"
         )
+    close_fn = getattr(env, "close", None)
+    if callable(close_fn):
+        close_fn()
 
 
 if __name__ == "__main__":

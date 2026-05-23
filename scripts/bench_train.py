@@ -13,8 +13,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from sagin_marl.env.config import load_config
-from sagin_marl.env.sagin_env import SaginParallelEnv
-from sagin_marl.env.vec_env import make_vec_env
+from sagin_marl.env.vec_env import SyncVecSaginEnv, make_vec_env
 from sagin_marl.rl.mappo import train
 from sagin_marl.utils.seeding import set_seed
 
@@ -22,7 +21,7 @@ from sagin_marl.utils.seeding import set_seed
 def _build_env(cfg, num_envs: int, vec_backend: str):
     if num_envs > 1:
         return make_vec_env(cfg, num_envs=num_envs, backend=vec_backend)
-    return SaginParallelEnv(cfg)
+    return SyncVecSaginEnv(cfg, 1)
 
 
 def _disable_benchmark_overheads(cfg) -> None:
@@ -41,7 +40,7 @@ def main() -> None:
     parser.add_argument("--run_dir", required=True)
     parser.add_argument("--updates", type=int, default=1)
     parser.add_argument("--num_envs", type=int, default=1)
-    parser.add_argument("--vec_backend", choices=["sync", "subproc"], default="subproc")
+    parser.add_argument("--vec_backend", choices=["sync", "subproc"], default="sync")
     parser.add_argument("--disable_checkpoint_eval", action="store_true")
     parser.add_argument("--torch_threads", type=int, default=0)
     parser.add_argument("--cprofile_out", type=str, default=None)

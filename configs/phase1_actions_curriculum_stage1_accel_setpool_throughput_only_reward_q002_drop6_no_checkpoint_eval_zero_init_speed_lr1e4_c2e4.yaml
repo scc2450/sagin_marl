@@ -1,4 +1,4 @@
-# Stage-1 accel-only ablation: keep safe random init, remove initial velocity.
+﻿# Stage-1 accel-only ablation: keep safe random init, remove initial velocity.
 seed: 42
 map_size: 1500.0
 tau0: 1.0
@@ -62,7 +62,7 @@ gu_tx_power: 0.18
 uav_tx_gain: 300.0
 sat_rx_gain: 300.0
 b_acc: 2.2e6
-b_sat_total: 8.75e5
+b_backhaul_per_sat: 8.75e5
 sat_cpu_freq: 1.8e9
 noise_density: 4.0e-21
 pathloss_mode: prob_los

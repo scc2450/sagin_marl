@@ -19,6 +19,7 @@ from sagin_marl.env.sagin_env import SaginParallelEnv
 from sagin_marl.rl.action_assembler import assemble_actions
 from sagin_marl.rl.policy import ActorNet, batch_flatten_obs
 from sagin_marl.utils.checkpoint import load_checkpoint_forgiving
+from sagin_marl.rl.structured_train import as_structured_driver, as_structured_drivers, make_structured_driver, make_structured_env
 
 
 def _resolve_paths(
@@ -528,7 +529,7 @@ def main() -> None:
     checkpoint, base_dir = _resolve_paths(args.run_dir, args.checkpoint, args.out_dir)
 
     cfg = load_config(args.config)
-    env = SaginParallelEnv(cfg)
+    env = make_structured_env(cfg, mode="script")
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     # Match evaluate.py exactly: one unseeded reset happens before the seeded

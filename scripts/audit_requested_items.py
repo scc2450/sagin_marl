@@ -21,6 +21,7 @@ from sagin_marl.rl.action_assembler import assemble_actions
 from sagin_marl.rl.baselines import cluster_center_accel_policy, queue_aware_policy
 from sagin_marl.rl.policy import ActorNet, batch_flatten_obs
 from sagin_marl.utils.checkpoint import load_checkpoint_forgiving
+from sagin_marl.rl.structured_train import as_structured_driver, as_structured_drivers, make_structured_driver, make_structured_env
 
 
 RUN_ROOT = Path("runs/phase1_actions/curriculum_formal_u1500_subproc12_t2")
@@ -120,7 +121,7 @@ def _write_json(path: Path, payload: dict[str, Any]) -> None:
 
 def _load_actor(cfg_path: Path, checkpoint_path: Path) -> tuple[Any, ActorNet]:
     cfg = load_config(str(cfg_path))
-    env = SaginParallelEnv(cfg)
+    env = make_structured_env(cfg, mode="script")
     obs, _ = env.reset(seed=0)
     obs_dim = batch_flatten_obs(list(obs.values()), cfg).shape[1]
     actor = ActorNet(obs_dim, cfg).to(torch.device("cpu"))
@@ -186,7 +187,7 @@ def _stage1_step_dump() -> dict[str, Any]:
         if mode == "cluster_center":
             mode_cfg.avoidance_enabled = True
             mode_cfg.pairwise_hard_filter_enabled = True
-        env = SaginParallelEnv(mode_cfg)
+        env = make_structured_env(mode_cfg, mode="script")
         for ep in range(EVAL_EPISODES):
             seed = STAGE1_SEED_BASE + ep
             obs, _ = env.reset(seed=seed)
@@ -375,8 +376,7 @@ def _stage2_stats() -> dict[str, Any]:
     cfg_path = STAGE2_DIR / "config_source.yaml"
     ckpt_path = STAGE2_DIR / "actor.pt"
     cfg, actor = _load_actor(cfg_path, ckpt_path)
-    env = SaginParallelEnv(cfg)
-
+    env = make_structured_env(cfg, mode="script")
     sample_rows: list[dict[str, Any]] = []
     valid_counts: list[float] = []
     entropy_bw_values: list[float] = []
@@ -521,8 +521,7 @@ def _stage3_stats() -> dict[str, Any]:
     cfg_path = STAGE3_DIR / "config_source.yaml"
     ckpt_path = STAGE3_DIR / "actor.pt"
     cfg, actor = _load_actor(cfg_path, ckpt_path)
-    env = SaginParallelEnv(cfg)
-
+    env = make_structured_env(cfg, mode="script")
     visible_rows: list[dict[str, Any]] = []
     sat_sample_rows: list[dict[str, Any]] = []
     raw_counts: list[float] = []

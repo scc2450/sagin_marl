@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import argparse
 import copy
@@ -27,6 +27,7 @@ from sagin_marl.rl.baselines import (
     zero_accel_policy,
 )
 from sagin_marl.utils.progress import Progress
+from sagin_marl.rl.structured_train import as_structured_driver, as_structured_drivers, make_structured_driver, make_structured_env
 
 LAYERS = ("gu", "uav", "sat")
 
@@ -540,20 +541,20 @@ def _tuning_hint(layer: str, issue_type: str) -> str:
         return "priority: increase b_acc or reduce task_arrival_rate; queue_max_gu only buffers burst, queue_init_gu only shapes startup"
     if layer == "uav":
         if issue_type == "decay":
-            return "priority: increase b_acc or reduce b_sat_total drain; queue_max_uav and queue_init_uav are secondary"
+            return "priority: increase b_acc or reduce b_backhaul_per_sat drain; queue_max_uav and queue_init_uav are secondary"
         if issue_type == "growth":
-            return "priority: reduce b_acc or increase b_sat_total; queue_max_uav and queue_init_uav are secondary"
+            return "priority: reduce b_acc or increase b_backhaul_per_sat; queue_max_uav and queue_init_uav are secondary"
         if issue_type == "underflow":
             return "priority: increase b_acc or soften UAV->SAT drain; queue_max_uav and queue_init_uav are secondary"
         if issue_type == "drop":
-            return "priority: reduce upstream push or increase b_sat_total; queue_max_uav only buffers burst, queue_init_uav only shapes startup"
-        return "priority: increase b_sat_total or reduce upstream push; queue_max_uav only buffers burst, queue_init_uav only shapes startup"
+            return "priority: reduce upstream push or increase b_backhaul_per_sat; queue_max_uav only buffers burst, queue_init_uav only shapes startup"
+        return "priority: increase b_backhaul_per_sat or reduce upstream push; queue_max_uav only buffers burst, queue_init_uav only shapes startup"
     if issue_type == "decay":
-        return "priority: increase b_sat_total or reduce sat_cpu_freq drain; queue_max_sat and queue_init_sat are secondary"
+        return "priority: increase b_backhaul_per_sat or reduce sat_cpu_freq drain; queue_max_sat and queue_init_sat are secondary"
     if issue_type == "growth":
-        return "priority: reduce b_sat_total or increase sat_cpu_freq; queue_max_sat and queue_init_sat are secondary"
+        return "priority: reduce b_backhaul_per_sat or increase sat_cpu_freq; queue_max_sat and queue_init_sat are secondary"
     if issue_type == "underflow":
-        return "priority: increase b_sat_total or ease SAT drain only if it is over-clearing; queue_max_sat and queue_init_sat are secondary"
+        return "priority: increase b_backhaul_per_sat or ease SAT drain only if it is over-clearing; queue_max_sat and queue_init_sat are secondary"
     if issue_type == "drop":
         return "priority: reduce UAV->SAT injection or increase sat_cpu_freq; queue_max_sat only buffers burst, queue_init_sat only shapes startup"
     return "priority: increase sat_cpu_freq or reduce UAV->SAT injection; queue_max_sat only buffers burst, queue_init_sat only shapes startup"
@@ -563,8 +564,8 @@ def _recommended_tuning_pair(layer: str) -> str:
     if layer == "gu":
         return "task_arrival_rate + b_acc"
     if layer == "uav":
-        return "b_acc + b_sat_total"
-    return "b_sat_total + sat_cpu_freq"
+        return "b_acc + b_backhaul_per_sat"
+    return "b_backhaul_per_sat + sat_cpu_freq"
 
 
 def _build_thresholds(args: argparse.Namespace) -> Dict[str, float]:
@@ -948,7 +949,7 @@ def _run_diagnosis(
     if baseline == "cluster_center":
         cfg.avoidance_enabled = True
         cfg.pairwise_hard_filter_enabled = True
-    env = SaginParallelEnv(cfg)
+    env = make_structured_env(cfg, mode="script")
     progress = Progress(episodes, desc=progress_desc)
     rows: list[Dict[str, float]] = []
 
@@ -1290,3 +1291,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+

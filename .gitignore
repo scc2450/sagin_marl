@@ -39,3 +39,26 @@ runs/
 *.pt
 *.pth
 *.log
+
+# Runtime artifacts / generated diagnostics
+artifacts/
+
+# Torch / compiler caches
+.torchinductor_cache/
+torch_compile_debug/
+.triton/
+triton/
+
+# Local profiler / temporary diagnostics
+/.tmp/
+/.tmp*/
+/.tmp*
+/tmp_*
+/configs/tmp_*.yaml
+*.prof
+*.pstats
+*.trace
+*.nsys-rep
+*.qdrep
+*.sqlite
+.codex_*_debug.json

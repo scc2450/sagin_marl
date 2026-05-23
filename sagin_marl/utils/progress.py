@@ -21,6 +21,7 @@ class Progress:
         self.inline = self._supports_inline_refresh(self.file)
         self.start = time.perf_counter()
         self.last = 0.0
+        self.current = 0
 
     @staticmethod
     def _supports_inline_refresh(file) -> bool:
@@ -33,6 +34,7 @@ class Progress:
         now = time.perf_counter()
         if self.total <= 0:
             return
+        self.current = int(current)
         if current < self.total and (now - self.last) < self.min_interval:
             return
         self.last = now
@@ -50,7 +52,8 @@ class Progress:
         self.file.flush()
 
     def close(self) -> None:
-        self.update(self.total)
+        if self.current < self.total:
+            self.update(self.total)
         if self.inline:
             self.file.write("\n")
             self.file.flush()

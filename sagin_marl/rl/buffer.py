@@ -25,6 +25,8 @@ class RolloutBuffer:
         self._danger_imitation_target: Optional[np.ndarray] = None
         self._danger_imitation_mask: Optional[np.ndarray] = None
         self._sat_indices: Optional[np.ndarray] = None
+        self._sat_cf_credit: Optional[np.ndarray] = None
+        self._sat_cf_credit_mask: Optional[np.ndarray] = None
 
         if self._use_list:
             self.obs: List[np.ndarray] = []
@@ -32,7 +34,7 @@ class RolloutBuffer:
             self.actions: List[np.ndarray] = []
             self.logprobs: List[np.ndarray] = []
             self.rewards: List[float] = []
-            self.values: List[float] = []
+            self.values: List[np.ndarray] = []
             self.terminated: List[bool] = []
             self.truncated: List[bool] = []
             self.global_states: List[np.ndarray] = []
@@ -41,6 +43,8 @@ class RolloutBuffer:
             self.danger_imitation_target: List[np.ndarray] = []
             self.danger_imitation_mask: List[np.ndarray] = []
             self.sat_indices: List[np.ndarray] = []
+            self.sat_cf_credit: List[np.ndarray] = []
+            self.sat_cf_credit_mask: List[np.ndarray] = []
 
     def _allocate(
         self,
@@ -54,6 +58,9 @@ class RolloutBuffer:
         danger_imitation_target: np.ndarray,
         danger_imitation_mask: np.ndarray,
         sat_indices: np.ndarray,
+        sat_cf_credit: np.ndarray,
+        sat_cf_credit_mask: np.ndarray,
+        value: np.ndarray,
     ) -> None:
         if self.capacity is None:
             return
@@ -63,7 +70,7 @@ class RolloutBuffer:
         self._actions = np.empty((cap,) + actions.shape, dtype=np.float32)
         self._logprobs = np.empty((cap,) + logprobs.shape, dtype=np.float32)
         self._rewards = np.empty((cap,), dtype=np.float32)
-        self._values = np.empty((cap,), dtype=np.float32)
+        self._values = np.empty((cap,) + value.shape, dtype=np.float32)
         self._terminated = np.empty((cap,), dtype=np.float32)
         self._truncated = np.empty((cap,), dtype=np.float32)
         self._global_states = np.empty((cap,) + global_state.shape, dtype=np.float32)
@@ -72,6 +79,8 @@ class RolloutBuffer:
         self._danger_imitation_target = np.empty((cap,) + danger_imitation_target.shape, dtype=np.float32)
         self._danger_imitation_mask = np.empty((cap,) + danger_imitation_mask.shape, dtype=np.float32)
         self._sat_indices = np.empty((cap,) + sat_indices.shape, dtype=np.int64)
+        self._sat_cf_credit = np.empty((cap,) + sat_cf_credit.shape, dtype=np.float32)
+        self._sat_cf_credit_mask = np.empty((cap,) + sat_cf_credit_mask.shape, dtype=np.float32)
 
     def add(
         self,
@@ -79,7 +88,7 @@ class RolloutBuffer:
         actions: np.ndarray,
         logprobs: np.ndarray,
         reward: float,
-        value: float,
+        value: float | np.ndarray,
         terminated: bool,
         truncated: bool,
         global_state: np.ndarray,
@@ -89,6 +98,8 @@ class RolloutBuffer:
         danger_imitation_target: np.ndarray | None = None,
         danger_imitation_mask: np.ndarray | None = None,
         sat_indices: np.ndarray | None = None,
+        sat_cf_credit: np.ndarray | None = None,
+        sat_cf_credit_mask: np.ndarray | None = None,
     ) -> None:
         if imitation is None:
             imitation = np.zeros_like(actions, dtype=np.float32)
@@ -98,13 +109,18 @@ class RolloutBuffer:
             danger_imitation_mask = np.zeros((actions.shape[0], 2), dtype=np.float32)
         if sat_indices is None:
             sat_indices = np.full((actions.shape[0], 0), -1, dtype=np.int64)
+        if sat_cf_credit is None:
+            sat_cf_credit = np.zeros((actions.shape[0],), dtype=np.float32)
+        if sat_cf_credit_mask is None:
+            sat_cf_credit_mask = np.zeros((actions.shape[0],), dtype=np.float32)
+        value_arr = np.asarray(value, dtype=np.float32)
         if self._use_list:
             self.obs.append(obs)
             self.next_obs.append(next_obs)
             self.actions.append(actions)
             self.logprobs.append(logprobs)
             self.rewards.append(float(reward))
-            self.values.append(float(value))
+            self.values.append(value_arr.copy())
             self.terminated.append(bool(terminated))
             self.truncated.append(bool(truncated))
             self.global_states.append(global_state)
@@ -113,6 +129,8 @@ class RolloutBuffer:
             self.danger_imitation_target.append(danger_imitation_target)
             self.danger_imitation_mask.append(danger_imitation_mask)
             self.sat_indices.append(sat_indices)
+            self.sat_cf_credit.append(np.asarray(sat_cf_credit, dtype=np.float32))
+            self.sat_cf_credit_mask.append(np.asarray(sat_cf_credit_mask, dtype=np.float32))
             return
 
         if self._obs is None:
@@ -127,6 +145,9 @@ class RolloutBuffer:
                 danger_imitation_target,
                 danger_imitation_mask,
                 sat_indices,
+                sat_cf_credit,
+                sat_cf_credit_mask,
+                value_arr,
             )
 
         if self.capacity is not None and self._idx >= self.capacity:
@@ -137,7 +158,7 @@ class RolloutBuffer:
         self._actions[self._idx] = actions
         self._logprobs[self._idx] = logprobs
         self._rewards[self._idx] = float(reward)
-        self._values[self._idx] = float(value)
+        self._values[self._idx] = value_arr
         self._terminated[self._idx] = float(terminated)
         self._truncated[self._idx] = float(truncated)
         self._global_states[self._idx] = global_state
@@ -146,6 +167,8 @@ class RolloutBuffer:
         self._danger_imitation_target[self._idx] = danger_imitation_target
         self._danger_imitation_mask[self._idx] = danger_imitation_mask
         self._sat_indices[self._idx] = sat_indices
+        self._sat_cf_credit[self._idx] = sat_cf_credit
+        self._sat_cf_credit_mask[self._idx] = sat_cf_credit_mask
         self._idx += 1
 
     def as_arrays(self):
@@ -156,7 +179,7 @@ class RolloutBuffer:
                 np.stack(self.actions, axis=0),
                 np.stack(self.logprobs, axis=0),
                 np.array(self.rewards, dtype=np.float32),
-                np.array(self.values, dtype=np.float32),
+                np.asarray(self.values, dtype=np.float32),
                 np.array(self.terminated, dtype=np.float32),
                 np.array(self.truncated, dtype=np.float32),
                 np.stack(self.global_states, axis=0),
@@ -165,6 +188,8 @@ class RolloutBuffer:
                 np.stack(self.danger_imitation_target, axis=0),
                 np.stack(self.danger_imitation_mask, axis=0),
                 np.stack(self.sat_indices, axis=0),
+                np.stack(self.sat_cf_credit, axis=0),
+                np.stack(self.sat_cf_credit_mask, axis=0),
             )
         end = self._idx
         return (
@@ -182,4 +207,6 @@ class RolloutBuffer:
             self._danger_imitation_target[:end],
             self._danger_imitation_mask[:end],
             self._sat_indices[:end],
+            self._sat_cf_credit[:end],
+            self._sat_cf_credit_mask[:end],
         )

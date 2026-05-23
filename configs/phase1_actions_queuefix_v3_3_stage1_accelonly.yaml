@@ -1,4 +1,4 @@
-# Stage 1: accel-only curriculum. Fixed-load + nearest-K candidates.
+﻿# Stage 1: accel-only curriculum. Fixed-load + nearest-K candidates.
 # Suggested usage:
 #   python scripts/train.py --config configs/phase1_actions_queuefix_v3_3_stage1_accelonly.yaml --updates 400 --log_dir runs/phase1_actions --run_id stage1_accel
 seed: 42
@@ -52,7 +52,7 @@ gu_tx_power: 0.18
 uav_tx_gain: 300.0
 sat_rx_gain: 300.0
 b_acc: 1.0e7
-b_sat_total: 2.0e7
+b_backhaul_per_sat: 2.0e7
 sat_cpu_freq: 1.0e10
 noise_density: 4.0e-21
 pathloss_mode: prob_los

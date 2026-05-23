@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import numpy as np
+from unittest import mock
 
 from sagin_marl.env.config import SaginConfig
 from sagin_marl.env.sagin_env import SaginParallelEnv
@@ -259,6 +260,206 @@ def test_reward_throughput_terms_are_applied():
     assert abs(float(reward) - 0.34) < 1e-9
 
 
+def test_env_step_uses_shared_post_bw_helpers():
+    cfg = SaginConfig(num_uav=2, num_gu=4, num_sat=3, users_obs_max=4, sats_obs_max=3, nbrs_obs_max=1)
+    env = SaginParallelEnv(cfg)
+    env.reset(seed=cfg.seed)
+    actions = {
+        agent: {
+            "accel": np.zeros(2, dtype=np.float32),
+            "bw_logits": np.zeros(cfg.users_obs_max, dtype=np.float32),
+            "sat_logits": np.zeros(cfg.sats_obs_max, dtype=np.float32),
+        }
+        for agent in env.agents
+    }
+
+    with (
+        mock.patch.object(
+            env,
+            "_prepare_next_step_observation_cache",
+            wraps=env._prepare_next_step_observation_cache,
+        ) as cache_mock,
+        mock.patch.object(
+            env,
+            "_finalize_post_bw_step",
+            wraps=env._finalize_post_bw_step,
+        ) as finalize_mock,
+        mock.patch.object(
+            env,
+            "_materialize_post_step_outputs",
+            wraps=env._materialize_post_step_outputs,
+        ) as materialize_mock,
+    ):
+        obs, rewards, terms, truncs, infos = env.step(actions)
+
+    assert set(obs.keys()) == set(env.agents)
+    assert set(rewards.keys()) == set(env.agents)
+    assert set(terms.keys()) == set(env.agents)
+    assert set(truncs.keys()) == set(env.agents)
+    assert set(infos.keys()) == set(env.agents)
+    cache_mock.assert_called_once()
+    assert cache_mock.call_args.kwargs["advance_doppler"] is True
+    finalize_mock.assert_called_once()
+    materialize_mock.assert_called_once()
+    assert materialize_mock.call_args.kwargs["materialize_step_outputs"] is True
+    assert materialize_mock.call_args.kwargs["materialize_agent_dicts"] is True
+
+
+def test_env_reset_uses_shared_obs_builder_without_per_uav_obs_helper():
+    cfg = SaginConfig(
+        seed=17,
+        num_uav=3,
+        num_gu=5,
+        num_sat=6,
+        users_obs_max=4,
+        sats_obs_max=4,
+        nbrs_obs_max=2,
+        danger_nbr_enabled=True,
+        obs_own_include_assoc_uav_cost=True,
+        obs_user_include_assoc_uav_cost=True,
+        obs_user_include_assoc_sat_cost_mean=True,
+        obs_user_include_weighted_queue_cost=True,
+    )
+    baseline_env = SaginParallelEnv(cfg)
+    env = SaginParallelEnv(cfg)
+    try:
+        baseline_obs, baseline_infos = baseline_env.reset(seed=cfg.seed)
+        baseline_obs_old = {agent: baseline_env._get_obs(idx) for idx, agent in enumerate(baseline_env.agents)}
+        baseline_global = np.asarray(baseline_env._build_global_state(), dtype=np.float32)
+
+        with (
+            mock.patch.object(env, "_get_obs", side_effect=AssertionError("unexpected per-uav obs helper during reset")),
+            mock.patch.object(env, "_danger_neighbor_obs", side_effect=AssertionError("unexpected scalar danger helper during reset")),
+            mock.patch.object(env, "_gu_proxy_feature_arrays", wraps=env._gu_proxy_feature_arrays) as gu_proxy_mock,
+            mock.patch.object(env, "_uav_reward_aligned_feature_dict", wraps=env._uav_reward_aligned_feature_dict) as uav_reward_mock,
+        ):
+            obs, infos = env.reset(seed=cfg.seed)
+
+        assert set(obs.keys()) == set(baseline_obs.keys())
+        assert infos == baseline_infos
+        for agent in env.agents:
+            for key, baseline_value in baseline_obs_old[agent].items():
+                np.testing.assert_allclose(
+                    np.asarray(obs[agent][key]),
+                    np.asarray(baseline_value),
+                    rtol=1e-6,
+                    atol=1e-6,
+                )
+        np.testing.assert_allclose(np.asarray(env.get_global_state(), dtype=np.float32), baseline_global, rtol=1e-6, atol=1e-6)
+        assert gu_proxy_mock.call_count == 1
+        assert uav_reward_mock.call_count == 1
+    finally:
+        close_fn = getattr(baseline_env, "close", None)
+        if callable(close_fn):
+            close_fn()
+        close_fn = getattr(env, "close", None)
+        if callable(close_fn):
+            close_fn()
+
+
+def test_env_step_materialize_uses_shared_obs_builder_without_per_uav_obs_helper():
+    cfg = SaginConfig(
+        seed=18,
+        num_uav=3,
+        num_gu=5,
+        num_sat=6,
+        users_obs_max=4,
+        sats_obs_max=4,
+        nbrs_obs_max=2,
+        danger_nbr_enabled=True,
+        obs_own_include_assoc_uav_cost=True,
+        obs_user_include_assoc_uav_cost=True,
+        obs_user_include_assoc_sat_cost_mean=True,
+        obs_user_include_weighted_queue_cost=True,
+    )
+    baseline_env = SaginParallelEnv(cfg)
+    env = SaginParallelEnv(cfg)
+    actions = {
+        agent: {
+            "accel": np.zeros(2, dtype=np.float32),
+            "bw_logits": np.zeros(cfg.users_obs_max, dtype=np.float32),
+            "sat_logits": np.zeros(cfg.sats_obs_max, dtype=np.float32),
+        }
+        for agent in env.agents
+    }
+    try:
+        baseline_env.reset(seed=cfg.seed)
+        baseline_obs, baseline_rewards, baseline_terms, baseline_truncs, baseline_infos = baseline_env.step(actions)
+        baseline_global = np.asarray(baseline_env.get_global_state(), dtype=np.float32)
+
+        env.reset(seed=cfg.seed)
+        with (
+            mock.patch.object(env, "_get_obs", side_effect=AssertionError("unexpected per-uav obs helper during step materialize")),
+            mock.patch.object(env, "_danger_neighbor_obs", side_effect=AssertionError("unexpected scalar danger helper during step materialize")),
+            mock.patch.object(env, "_gu_proxy_feature_arrays", wraps=env._gu_proxy_feature_arrays) as gu_proxy_mock,
+            mock.patch.object(env, "_uav_reward_aligned_feature_dict", wraps=env._uav_reward_aligned_feature_dict) as uav_reward_mock,
+        ):
+            obs, rewards, terms, truncs, infos = env.step(actions)
+
+        for agent in env.agents:
+            for key, baseline_value in baseline_obs[agent].items():
+                np.testing.assert_allclose(
+                    np.asarray(obs[agent][key]),
+                    np.asarray(baseline_value),
+                    rtol=1e-6,
+                    atol=1e-6,
+                )
+        assert rewards == baseline_rewards
+        assert terms == baseline_terms
+        assert truncs == baseline_truncs
+        assert infos == baseline_infos
+        np.testing.assert_allclose(np.asarray(env.get_global_state(), dtype=np.float32), baseline_global, rtol=1e-6, atol=1e-6)
+        assert gu_proxy_mock.call_count == 1
+        assert uav_reward_mock.call_count == 1
+    finally:
+        close_fn = getattr(baseline_env, "close", None)
+        if callable(close_fn):
+            close_fn()
+        close_fn = getattr(env, "close", None)
+        if callable(close_fn):
+            close_fn()
+
+
+def test_get_obs_uses_shared_runtime_context_without_scalar_helpers():
+    cfg = SaginConfig(
+        seed=19,
+        num_uav=3,
+        num_gu=5,
+        num_sat=6,
+        users_obs_max=4,
+        sats_obs_max=4,
+        nbrs_obs_max=2,
+        danger_nbr_enabled=True,
+        obs_own_include_assoc_uav_cost=True,
+        obs_user_include_assoc_uav_cost=True,
+        obs_user_include_assoc_sat_cost_mean=True,
+        obs_user_include_weighted_queue_cost=True,
+    )
+    env = SaginParallelEnv(cfg)
+    try:
+        env.reset(seed=cfg.seed)
+        baseline = env._get_obs(0)
+        with (
+            mock.patch.object(env, "_assoc_centroid_summary", side_effect=AssertionError("unexpected assoc centroid helper")),
+            mock.patch.object(env, "_uav_reward_aligned_feature_dict", side_effect=AssertionError("unexpected uav reward helper")),
+            mock.patch.object(env, "_gu_proxy_feature_arrays", side_effect=AssertionError("unexpected gu proxy helper")),
+            mock.patch.object(env, "_ensure_neighbor_cache", side_effect=AssertionError("unexpected neighbor helper")),
+            mock.patch.object(env, "_danger_neighbor_obs", side_effect=AssertionError("unexpected danger helper")),
+        ):
+            obs = env._get_obs(0)
+        for key, baseline_value in baseline.items():
+            np.testing.assert_allclose(
+                np.asarray(obs[key]),
+                np.asarray(baseline_value),
+                rtol=1e-6,
+                atol=1e-6,
+            )
+    finally:
+        close_fn = getattr(env, "close", None)
+        if callable(close_fn):
+            close_fn()
+
+
 def test_reward_mode_throughput_only_ignores_dense_shaping_terms():
     cfg = SaginConfig(
         num_uav=1,
@@ -354,6 +555,50 @@ def test_controllable_flow_uses_log_pre_backlog_penalty_and_alias_terms():
     assert abs(float(parts["term_pre_backlog"]) + 0.08 * np.log1p(1.0)) < 1e-9
     assert abs(float(parts["term_queue"]) - float(parts["term_pre_backlog"])) < 1e-9
     assert abs(float(parts["term_drop"]) - float(parts["term_pre_drop"])) < 1e-9
+    assert abs(float(parts["reward_raw"]) - expected) < 1e-9
+    assert abs(float(reward) - expected) < 1e-9
+
+
+def test_reward_mode_weighted_workload_level_uses_nested_per_entity_cost():
+    cfg = SaginConfig(
+        num_uav=1,
+        num_gu=1,
+        num_sat=1,
+        users_obs_max=1,
+        sats_obs_max=1,
+        nbrs_obs_max=1,
+        reward_mode="weighted_workload_level",
+    )
+    env = SaginParallelEnv(cfg)
+    env.reset()
+    env.gu_queue[:] = 10.0
+    env.uav_queue[:] = 20.0
+    env.sat_queue[:] = 30.0
+    env.gu_drop[:] = 1.0
+    env.uav_drop[:] = 2.0
+    env.sat_drop[:] = 3.0
+    env.last_association = np.asarray([0], dtype=np.int32)
+    env.last_sat_selection = [[0]]
+    env.bw_weighted_workload_acc_ema_vec = np.asarray([2.0], dtype=np.float32)
+    env.bw_weighted_workload_rel_ema_vec = np.asarray([4.0], dtype=np.float32)
+    env.bw_weighted_workload_sat_ema_vec = np.asarray([8.0], dtype=np.float32)
+
+    reward = env._compute_reward()
+    parts = env.last_reward_parts
+
+    sat_cost = 1.0 / 8.0
+    uav_cost = 1.0 / 4.0 + sat_cost
+    gu_cost = 1.0 / 2.0 + uav_cost
+    expected = -(
+        gu_cost * 10.0
+        + uav_cost * 20.0
+        + sat_cost * 30.0
+        + gu_cost * 1.0
+        + uav_cost * 2.0
+        + sat_cost * 3.0
+    )
+
+    assert abs(float(parts["bw_weighted_workload_level_reward"]) - expected) < 1e-9
     assert abs(float(parts["reward_raw"]) - expected) < 1e-9
     assert abs(float(reward) - expected) < 1e-9
 

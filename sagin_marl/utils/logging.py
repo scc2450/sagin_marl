@@ -45,6 +45,11 @@ class MetricLogger:
         layout = {
             "Training/Main": {
                 "EpisodeReturn": ["Multiline", ["episode_reward", "rollout_reward_per_step"]],
+                "EpisodeReturnBand": [
+                    "Multiline",
+                    ["episode_reward", "episode_reward_p25", "episode_reward_p75"],
+                ],
+                "EpisodeReturnStd": ["Multiline", ["episode_reward_std"]],
                 "EpisodeThroughputTerms": [
                     "Multiline",
                     ["episode_term_throughput_access", "episode_term_throughput_backhaul"],

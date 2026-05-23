@@ -17,6 +17,7 @@ from sagin_marl.env.config import load_config
 from sagin_marl.env.sagin_env import SaginParallelEnv
 from sagin_marl.rl.mappo import train
 from sagin_marl.utils.seeding import set_seed
+from sagin_marl.rl.structured_train import as_structured_driver, as_structured_drivers, make_structured_driver, make_structured_env
 
 
 def _resolve_log_dir(log_dir: str, run_dir: str | None, run_id: str | None) -> str:
@@ -74,7 +75,7 @@ def main():
     parser.add_argument(
         "--vec_backend",
         type=str,
-        default="subproc",
+        default="sync",
         choices=["sync", "subproc"],
         help="Vectorized env backend when --num_envs > 1.",
     )
@@ -109,7 +110,7 @@ def main():
 
         env = make_vec_env(cfg, num_envs=args.num_envs, backend=args.vec_backend)
     else:
-        env = SaginParallelEnv(cfg)
+        env = make_structured_env(cfg, mode="script")
     log_dir = _resolve_log_dir(args.log_dir, args.run_dir, args.run_id)
     os.makedirs(log_dir, exist_ok=True)
     _save_config(log_dir, cfg, os.path.abspath(args.config))

@@ -20,7 +20,7 @@ def assemble_actions(
     for i, agent in enumerate(agents):
         act = {
             "accel": accel_actions[i].astype(np.float32),
-            "bw_alloc": np.zeros(cfg.users_obs_max, dtype=np.float32),
+            "bw_alloc": np.zeros(cfg.num_gu, dtype=np.float32),
             "sat_select_mask": np.zeros(cfg.sats_obs_max, dtype=np.float32),
         }
         if cfg.enable_bw_action and bw_values is not None:

@@ -12,6 +12,7 @@ if ROOT not in sys.path:
 
 from sagin_marl.env.config import load_config
 from sagin_marl.env.sagin_env import SaginParallelEnv
+from sagin_marl.rl.structured_train import as_structured_driver, as_structured_drivers, make_structured_driver, make_structured_env
 
 
 def _fmt(x: float) -> str:
@@ -69,8 +70,7 @@ def main() -> None:
         else:
             cfg.fixed_satellite_strategy = False
             cfg.sat_select_mode = args.sat_mode
-    env = SaginParallelEnv(cfg)
-
+    env = make_structured_env(cfg, mode="script")
     arrival_effective_vals = []
     access_caps = []
     backhaul_caps = []

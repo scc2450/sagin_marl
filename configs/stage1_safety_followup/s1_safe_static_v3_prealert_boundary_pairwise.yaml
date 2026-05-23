@@ -1,9 +1,9 @@
-# Line 3 next step: keep the stable distance-prealert setup, keep the boundary
+﻿# Line 3 next step: keep the stable distance-prealert setup, keep the boundary
 # hard filter, and add a TTC-gated pairwise hard filter so the execution
 # layer can intervene on the most dangerous closing pair before the step is
 # committed.
 # Recommended short validation:
-#   python scripts/train.py --config configs/stage1_safety_followup/s1_safe_static_v3_prealert_boundary_pairwise.yaml --updates 30 --run_dir <RUN_DIR> --num_envs 12 --vec_backend subproc --torch_threads 2
+#   python scripts/train.py --config configs/stage1_safety_followup/s1_safe_static_v3_prealert_boundary_pairwise.yaml --updates 30 --run_dir <RUN_DIR> --num_envs 12 --vec_backend sync --torch_threads 2
 seed: 42
 map_size: 1500.0
 tau0: 1.0
@@ -65,7 +65,7 @@ gu_tx_power: 0.18
 uav_tx_gain: 300.0
 sat_rx_gain: 300.0
 b_acc: 1.0e7
-b_sat_total: 2.0e7
+b_backhaul_per_sat: 2.0e7
 sat_cpu_freq: 1.0e10
 noise_density: 4.0e-21
 pathloss_mode: prob_los

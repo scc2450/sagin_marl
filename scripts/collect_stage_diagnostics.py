@@ -21,6 +21,7 @@ from sagin_marl.env.sagin_env import SaginParallelEnv
 from sagin_marl.rl.critic import CriticNet
 from sagin_marl.rl.mappo import _configure_actor_trainability
 from sagin_marl.rl.policy import ActorNet, batch_flatten_obs
+from sagin_marl.rl.structured_train import as_structured_driver, as_structured_drivers, make_structured_driver, make_structured_env
 
 
 DEFAULT_RUNS = [
@@ -127,7 +128,7 @@ def _load_run_cfg(run_dir: Path) -> tuple[Any, str]:
 
 def _inspect_run(run_dir: Path) -> dict[str, Any]:
     cfg, cfg_path = _load_run_cfg(run_dir)
-    env = SaginParallelEnv(cfg)
+    env = make_structured_env(cfg, mode="script")
     try:
         obs, _ = env.reset(seed=0)
         obs_list = list(obs.values())

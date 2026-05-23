@@ -104,6 +104,12 @@ def _make_scorer(in_dim: int, hidden_dim: int = 128) -> nn.Sequential:
     )
 
 
+def _copy_module_state(target_module: nn.Module | None, source_module: nn.Module | None) -> None:
+    if target_module is None or source_module is None:
+        return
+    target_module.load_state_dict(source_module.state_dict(), strict=True)
+
+
 class ActorNet(nn.Module):
     def __init__(self, obs_dim: int, cfg):
         super().__init__()
@@ -112,6 +118,8 @@ class ActorNet(nn.Module):
         self.enable_bw = bool(cfg.enable_bw_action)
         self.enable_sat = not bool(cfg.fixed_satellite_strategy)
         self.danger_nbr_enabled = bool(getattr(cfg, "danger_nbr_enabled", False))
+        self.bw_private_trunk_enabled = bool(getattr(cfg, "bw_private_trunk_enabled", False)) and self.enable_bw
+        self.bw_private_trunk_init_from_shared = bool(getattr(cfg, "bw_private_trunk_init_from_shared", True))
         self.obs_dim = int(obs_dim)
         self.expected_obs_dim = flat_obs_dim(cfg)
         if self.obs_dim != self.expected_obs_dim:
@@ -122,7 +130,7 @@ class ActorNet(nn.Module):
         self._users_obs_size = self.users_obs_max * USER_OBS_DIM
         self._sats_obs_size = self.sats_obs_max * SAT_OBS_DIM
         self._nbrs_obs_size = self.nbrs_obs_max * NBR_OBS_DIM
-        self.sat_num_select = max(int(getattr(cfg, "sat_num_select", cfg.N_RF) or cfg.N_RF), 0)
+        self.sat_num_select = max(int(getattr(cfg, "sat_action_select_k", getattr(cfg, "sat_num_select", cfg.N_RF)) or cfg.N_RF), 0)
 
         idx = 0
         self._own_slice = slice(idx, idx + OWN_OBS_DIM)
@@ -155,6 +163,16 @@ class ActorNet(nn.Module):
             raise ValueError(f"Unsupported actor_encoder_type='{self.encoder_type}'")
 
         use_input_norm = bool(getattr(cfg, "input_norm_enabled", False))
+        self.bw_obs_norm = None
+        self.bw_fc1 = None
+        self.bw_fc2 = None
+        self.bw_own_encoder = None
+        self.bw_danger_nbr_encoder = None
+        self.bw_users_encoder = None
+        self.bw_sats_encoder = None
+        self.bw_nbrs_encoder = None
+        self.bw_fusion_fc1 = None
+        self.bw_fusion_fc2 = None
         if self.encoder_type == "flat_mlp":
             self.obs_norm = nn.LayerNorm(obs_dim) if use_input_norm else nn.Identity()
             self.fc1 = nn.Linear(obs_dim, cfg.actor_hidden)
@@ -166,6 +184,10 @@ class ActorNet(nn.Module):
             self.nbrs_encoder = None
             self.fusion_fc1 = None
             self.fusion_fc2 = None
+            if self.bw_private_trunk_enabled:
+                self.bw_obs_norm = nn.LayerNorm(obs_dim) if use_input_norm else nn.Identity()
+                self.bw_fc1 = nn.Linear(obs_dim, cfg.actor_hidden)
+                self.bw_fc2 = nn.Linear(cfg.actor_hidden, cfg.actor_hidden)
         else:
             embed_dim = int(getattr(cfg, "actor_set_embed_dim", 64))
             if embed_dim <= 0:
@@ -187,6 +209,16 @@ class ActorNet(nn.Module):
             )
             self.fusion_fc1 = nn.Linear(fusion_in_dim, cfg.actor_hidden)
             self.fusion_fc2 = nn.Linear(cfg.actor_hidden, cfg.actor_hidden)
+            if self.bw_private_trunk_enabled:
+                self.bw_own_encoder = _make_encoder(OWN_OBS_DIM, embed_dim, use_input_norm)
+                self.bw_danger_nbr_encoder = (
+                    _make_encoder(DANGER_NBR_OBS_DIM, embed_dim, use_input_norm) if self.danger_nbr_enabled else None
+                )
+                self.bw_users_encoder = _make_encoder(USER_OBS_DIM, embed_dim, use_input_norm)
+                self.bw_sats_encoder = _make_encoder(SAT_OBS_DIM, embed_dim, use_input_norm)
+                self.bw_nbrs_encoder = _make_encoder(NBR_OBS_DIM, embed_dim, use_input_norm)
+                self.bw_fusion_fc1 = nn.Linear(fusion_in_dim, cfg.actor_hidden)
+                self.bw_fusion_fc2 = nn.Linear(cfg.actor_hidden, cfg.actor_hidden)
 
         elem_embed_dim = int(getattr(cfg, "actor_set_embed_dim", 64))
         elem_embed_dim = max(elem_embed_dim, 16)
@@ -211,6 +243,9 @@ class ActorNet(nn.Module):
         else:
             self.sat_action_encoder = None
             self.sat_scorer = None
+
+        if self.bw_private_trunk_enabled and self.bw_private_trunk_init_from_shared:
+            self.initialize_bw_private_trunk_from_shared()
 
     def _available_action_heads(self) -> Tuple[str, ...]:
         heads = ["accel"]
@@ -243,6 +278,41 @@ class ActorNet(nn.Module):
             ]
         )
         return tuple(modules)
+
+    def bw_private_trunk_modules(self) -> Tuple[nn.Module, ...]:
+        if not self.bw_private_trunk_enabled:
+            return tuple()
+        if self.encoder_type == "flat_mlp":
+            return tuple(module for module in (self.bw_obs_norm, self.bw_fc1, self.bw_fc2) if module is not None)
+        modules: list[nn.Module] = [self.bw_own_encoder]
+        if self.bw_danger_nbr_encoder is not None:
+            modules.append(self.bw_danger_nbr_encoder)
+        modules.extend(
+            [
+                self.bw_users_encoder,
+                self.bw_sats_encoder,
+                self.bw_nbrs_encoder,
+                self.bw_fusion_fc1,
+                self.bw_fusion_fc2,
+            ]
+        )
+        return tuple(module for module in modules if module is not None)
+
+    def initialize_bw_private_trunk_from_shared(self) -> None:
+        if not self.bw_private_trunk_enabled:
+            return
+        if self.encoder_type == "flat_mlp":
+            _copy_module_state(self.bw_obs_norm, self.obs_norm)
+            _copy_module_state(self.bw_fc1, self.fc1)
+            _copy_module_state(self.bw_fc2, self.fc2)
+            return
+        _copy_module_state(self.bw_own_encoder, self.own_encoder)
+        _copy_module_state(self.bw_danger_nbr_encoder, self.danger_nbr_encoder)
+        _copy_module_state(self.bw_users_encoder, self.users_encoder)
+        _copy_module_state(self.bw_sats_encoder, self.sats_encoder)
+        _copy_module_state(self.bw_nbrs_encoder, self.nbrs_encoder)
+        _copy_module_state(self.bw_fusion_fc1, self.fusion_fc1)
+        _copy_module_state(self.bw_fusion_fc2, self.fusion_fc2)
 
     def backbone_is_frozen(self) -> bool:
         for module in self.backbone_modules():
@@ -302,7 +372,7 @@ class ActorNet(nn.Module):
             x = F.relu(self.fc1(x))
             return F.relu(self.fc2(x))
 
-        own, danger_nbr, users, users_mask, _, sats, sats_mask, _, nbrs, nbrs_mask = self._split_flat_obs(obs)
+        own, danger_nbr, users, users_mask, _, sats, _, sat_valid_mask, nbrs, nbrs_mask = self._split_flat_obs(obs)
         own_feat = self.own_encoder(own)
         fused_parts = [own_feat]
         if self.danger_nbr_encoder is not None:
@@ -310,7 +380,7 @@ class ActorNet(nn.Module):
                 raise ValueError("danger_nbr slice is missing while danger_nbr_enabled=True")
             fused_parts.append(self.danger_nbr_encoder(danger_nbr))
         users_feat = self._masked_pool(self.users_encoder(users), users_mask)
-        sats_feat = self._masked_pool(self.sats_encoder(sats), sats_mask)
+        sats_feat = self._masked_pool(self.sats_encoder(sats), sat_valid_mask)
         nbrs_feat = self._masked_pool(self.nbrs_encoder(nbrs), nbrs_mask)
         fused = torch.cat([*fused_parts, users_feat, sats_feat, nbrs_feat], dim=-1)
         fused = F.relu(self.fusion_fc1(fused))
@@ -318,6 +388,39 @@ class ActorNet(nn.Module):
 
     def encode_ctx(self, obs: torch.Tensor) -> torch.Tensor:
         return self._encode_obs(obs)
+
+    def _encode_obs_bw(self, obs: torch.Tensor) -> torch.Tensor:
+        if not self.bw_private_trunk_enabled:
+            return self._encode_obs(obs)
+        if self.encoder_type == "flat_mlp":
+            if self.bw_obs_norm is None or self.bw_fc1 is None or self.bw_fc2 is None:
+                raise ValueError("bw private trunk is enabled but flat bw trunk modules are missing.")
+            x = self.bw_obs_norm(obs)
+            x = F.relu(self.bw_fc1(x))
+            return F.relu(self.bw_fc2(x))
+
+        own, danger_nbr, users, users_mask, _, sats, _, sat_valid_mask, nbrs, nbrs_mask = self._split_flat_obs(obs)
+        if (
+            self.bw_own_encoder is None
+            or self.bw_users_encoder is None
+            or self.bw_sats_encoder is None
+            or self.bw_nbrs_encoder is None
+            or self.bw_fusion_fc1 is None
+            or self.bw_fusion_fc2 is None
+        ):
+            raise ValueError("bw private trunk is enabled but set-pool bw trunk modules are missing.")
+        own_feat = self.bw_own_encoder(own)
+        fused_parts = [own_feat]
+        if self.bw_danger_nbr_encoder is not None:
+            if danger_nbr is None:
+                raise ValueError("danger_nbr slice is missing while danger_nbr_enabled=True")
+            fused_parts.append(self.bw_danger_nbr_encoder(danger_nbr))
+        users_feat = self._masked_pool(self.bw_users_encoder(users), users_mask)
+        sats_feat = self._masked_pool(self.bw_sats_encoder(sats), sat_valid_mask)
+        nbrs_feat = self._masked_pool(self.bw_nbrs_encoder(nbrs), nbrs_mask)
+        fused = torch.cat([*fused_parts, users_feat, sats_feat, nbrs_feat], dim=-1)
+        fused = F.relu(self.bw_fusion_fc1(fused))
+        return F.relu(self.bw_fusion_fc2(fused))
 
     def forward(
         self,
@@ -327,18 +430,18 @@ class ActorNet(nn.Module):
     ) -> Dict[str, torch.Tensor]:
         active_heads = self._resolve_required_heads(required_heads)
         if ctx is None:
-            x = self._encode_obs(obs)
+            x_shared = self._encode_obs(obs)
         else:
             if ctx.ndim != 2 or ctx.shape[0] != obs.shape[0] or ctx.shape[1] != self.ctx_dim:
                 raise ValueError(
                     f"Expected ctx with shape ({obs.shape[0]}, {self.ctx_dim}), got {tuple(ctx.shape)}"
                 )
-            x = ctx
+            x_shared = ctx
         out: Dict[str, torch.Tensor] = {
-            "ctx": x,
+            "ctx": x_shared,
         }
         if "accel" in active_heads:
-            out["mu"] = self.mu_head(x)
+            out["mu"] = self.mu_head(x_shared)
         if "bw" in active_heads or "sat" in active_heads:
             own, danger_nbr, users, users_mask, bw_valid_mask, sats, sats_mask, sat_valid_mask, nbrs, nbrs_mask = (
                 self._split_flat_obs(obs)
@@ -353,20 +456,28 @@ class ActorNet(nn.Module):
             if users is None or bw_valid_mask is None:
                 raise ValueError("bw head requested without user features.")
             user_emb = self.bw_user_encoder(users)
-            ctx_u = x.unsqueeze(1).expand(-1, self.users_obs_max, -1)
+            x_bw = self._encode_obs_bw(obs) if self.bw_private_trunk_enabled else x_shared
+            out["bw_ctx"] = x_bw
+            ctx_u = x_bw.unsqueeze(1).expand(-1, self.users_obs_max, -1)
             bw_in = torch.cat([ctx_u, user_emb, users], dim=-1)
             bw_score = self.bw_scorer(bw_in).squeeze(-1)
             alpha_floor = max(float(getattr(self.cfg, "bw_alpha_floor", 0.2) or 0.0), 1e-4)
             out["bw_alpha"] = F.softplus(bw_score) + alpha_floor
             out["bw_valid_mask"] = bw_valid_mask
+            bw_valid = bw_valid_mask > 0.5
+            out["bw_valid_count"] = bw_valid.to(users.dtype).sum(dim=-1)
+            user_queue = users[..., 2]
+            neg_large = torch.full_like(user_queue, -1.0e9)
+            out["bw_queue_max"] = torch.where(bw_valid, user_queue, neg_large).max(dim=-1).values.clamp_min(0.0)
         if "sat" in active_heads and self.enable_sat and self.sat_action_encoder is not None and self.sat_scorer is not None:
             if sats is None or sat_valid_mask is None:
                 raise ValueError("sat head requested without satellite features.")
             sat_emb = self.sat_action_encoder(sats)
-            ctx_s = x.unsqueeze(1).expand(-1, self.sats_obs_max, -1)
+            ctx_s = x_shared.unsqueeze(1).expand(-1, self.sats_obs_max, -1)
             sat_in = torch.cat([ctx_s, sat_emb, sats], dim=-1)
             out["sat_logits"] = self.sat_scorer(sat_in).squeeze(-1)
             out["sat_valid_mask"] = sat_valid_mask
+            out["sat_projected_rate"] = sats[..., 7] * sats[..., 10]
         return out
 
     def _build_hybrid_dist(self, out: Dict[str, torch.Tensor]) -> HybridActionDist:

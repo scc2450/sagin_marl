@@ -1,8 +1,22 @@
 from __future__ import annotations
 
-from typing import Dict, List, Tuple
+from typing import Any, Dict, List, Tuple
 
 import numpy as np
+import torch
+
+
+def _project_normalized_accel_np(accel: np.ndarray) -> np.ndarray:
+    arr = np.asarray(accel, dtype=np.float32)
+    norms = np.linalg.norm(arr, axis=-1, keepdims=True)
+    scale = np.minimum(1.0, 1.0 / np.maximum(norms, 1.0e-8))
+    return (arr * scale).astype(np.float32, copy=False)
+
+
+def _project_normalized_accel_torch(accel: torch.Tensor) -> torch.Tensor:
+    norms = torch.linalg.vector_norm(accel, dim=-1, keepdim=True)
+    scale = torch.clamp(1.0 / norms.clamp_min(1.0e-8), max=1.0)
+    return accel * scale
 
 
 def zero_accel_policy(num_agents: int) -> np.ndarray:
@@ -14,7 +28,434 @@ def random_accel_policy(
     rng: np.random.Generator | None = None,
 ) -> np.ndarray:
     rng = rng or np.random.default_rng()
-    return rng.uniform(-1.0, 1.0, size=(num_agents, 2)).astype(np.float32)
+    return _project_normalized_accel_np(rng.uniform(-1.0, 1.0, size=(num_agents, 2)))
+
+
+def _stack_like(value, *, device: torch.device) -> torch.Tensor:
+    if torch.is_tensor(value):
+        return value.to(device=device, dtype=torch.float32)
+    return torch.as_tensor(value, dtype=torch.float32, device=device)
+
+
+def _obs_batch_to_torch(
+    obs_batch: Dict[str, np.ndarray | torch.Tensor],
+) -> tuple[dict[str, torch.Tensor], bool, torch.device]:
+    sample = next(iter(obs_batch.values()))
+    if torch.is_tensor(sample):
+        device = sample.device
+        return (
+            {key: _stack_like(value, device=device) for key, value in obs_batch.items()},
+            True,
+            device,
+        )
+    device = torch.device("cpu")
+    return (
+        {key: _stack_like(value, device=device) for key, value in obs_batch.items()},
+        False,
+        device,
+    )
+
+
+def _from_torch_outputs(
+    outputs: tuple[torch.Tensor, ...],
+    *,
+    as_torch: bool,
+) -> tuple[torch.Tensor, ...] | tuple[np.ndarray, ...]:
+    if as_torch:
+        return outputs
+    return tuple(
+        output.detach().cpu().numpy().astype(np.float32, copy=False)
+        for output in outputs
+    )
+
+
+def _sat_action_select_k_from_cfg(cfg) -> int:
+    raw = getattr(cfg, "sat_action_select_k", None)
+    if raw is not None and int(raw) > 0:
+        return int(raw)
+    n_rf = max(int(getattr(cfg, "N_RF", 0) or 0), 1)
+    num_sat = max(int(getattr(cfg, "num_sat", 0) or 0), 0)
+    sat_select_cfg = getattr(cfg, "sat_num_select", None)
+    sat_select = int(sat_select_cfg) if sat_select_cfg is not None and int(sat_select_cfg) > 0 else n_rf
+    upper_sat = num_sat if num_sat > 0 else sat_select
+    return max(min(int(upper_sat), int(n_rf), int(sat_select)), 1)
+
+
+def _candidate_indices_np(obs: Dict[str, np.ndarray], cfg) -> np.ndarray:
+    raw = obs.get("candidate_indices")
+    if raw is None:
+        if int(cfg.users_obs_max) == int(cfg.num_gu):
+            return np.arange(int(cfg.num_gu), dtype=np.int64)
+        raise KeyError(
+            "queue-aware BW baseline received candidate-slot user obs without candidate_indices. "
+            "Either provide obs['candidate_indices'] for slot->GU mapping or use full-GU obs "
+            "(users_obs_max == num_gu)."
+        )
+    out = np.asarray(raw, dtype=np.int64).reshape(-1)
+    if int(out.shape[0]) < int(cfg.users_obs_max):
+        padded = np.full((int(cfg.users_obs_max),), -1, dtype=np.int64)
+        padded[: int(out.shape[0])] = out
+        out = padded
+    return out[: int(cfg.users_obs_max)]
+
+
+def _slot_bw_to_full_gu_np(slot_bw: np.ndarray, obs: Dict[str, np.ndarray], cfg) -> np.ndarray:
+    full = np.zeros((int(cfg.num_gu),), dtype=np.float32)
+    if int(cfg.num_gu) <= 0:
+        return full
+    values = np.asarray(slot_bw, dtype=np.float32).reshape(-1)
+    candidate_idx = _candidate_indices_np(obs, cfg)
+    width = min(int(values.shape[0]), int(candidate_idx.shape[0]))
+    for slot in range(width):
+        gu_idx = int(candidate_idx[slot])
+        if 0 <= gu_idx < int(cfg.num_gu):
+            full[gu_idx] += float(values[slot])
+    return full
+
+
+def _slot_bw_to_full_gu_torch(
+    slot_bw: torch.Tensor,
+    obs_batch: Dict[str, torch.Tensor],
+    cfg,
+) -> torch.Tensor:
+    batch_size, num_agents, slot_count = slot_bw.shape
+    num_gu = int(cfg.num_gu)
+    full = torch.zeros((batch_size, num_agents, num_gu), dtype=slot_bw.dtype, device=slot_bw.device)
+    if num_gu <= 0 or slot_count <= 0:
+        return full
+    candidate_raw = obs_batch.get("candidate_indices")
+    if candidate_raw is None:
+        if slot_count != num_gu:
+            raise KeyError(
+                "queue-aware BW baseline received candidate-slot batched obs without candidate_indices. "
+                "Either provide candidate_indices or use full-GU obs."
+            )
+        candidate = torch.arange(slot_count, dtype=torch.long, device=slot_bw.device).view(1, 1, slot_count)
+        candidate = candidate.expand(batch_size, num_agents, slot_count)
+    else:
+        candidate = candidate_raw.to(device=slot_bw.device, dtype=torch.long)
+        if candidate.ndim == 2:
+            candidate = candidate.unsqueeze(0)
+        if int(candidate.shape[-1]) < slot_count:
+            padded = torch.full(
+                (*candidate.shape[:-1], slot_count),
+                -1,
+                dtype=torch.long,
+                device=slot_bw.device,
+            )
+            padded[..., : int(candidate.shape[-1])] = candidate
+            candidate = padded
+        candidate = candidate[..., :slot_count].expand(batch_size, num_agents, slot_count)
+    valid = (candidate >= 0) & (candidate < num_gu)
+    safe_candidate = candidate.clamp(min=0, max=max(num_gu - 1, 0))
+    full.scatter_add_(2, safe_candidate, torch.where(valid, slot_bw, torch.zeros_like(slot_bw)))
+    return full
+
+
+def _baseline_energy_term_batch_torch(own: torch.Tensor, cfg) -> torch.Tensor:
+    energy_weight = float(getattr(cfg, "baseline_energy_weight", 1.0))
+    if not cfg.energy_enabled or energy_weight <= 0.0:
+        return torch.zeros((*own.shape[:-1], 2), dtype=torch.float32, device=own.device)
+
+    energy_low = float(getattr(cfg, "baseline_energy_low", 0.3))
+    energy_norm = own[..., 4]
+    vel = own[..., 2:4]
+    speed = torch.linalg.norm(vel, dim=-1)
+    target_speed = min(cfg.uav_opt_speed / max(cfg.v_max, 1e-6), 1.0)
+    delta = target_speed - speed
+    scale = (energy_low - energy_norm) / max(energy_low, 1e-6)
+    safe_speed = speed.clamp_min(1.0e-6).unsqueeze(-1)
+    term = energy_weight * scale.unsqueeze(-1) * (vel / safe_speed) * delta.unsqueeze(-1)
+    active = (energy_norm < energy_low) & (speed > 1.0e-6) & (delta < 0.0)
+    return torch.where(
+        active.unsqueeze(-1),
+        term,
+        torch.zeros_like(term),
+    )
+
+
+def _select_cluster_targets_from_positions(
+    uav_pos: np.ndarray,
+    cluster_centers: np.ndarray,
+    cluster_counts: np.ndarray,
+) -> np.ndarray:
+    num_agents = int(np.asarray(uav_pos).shape[0])
+    targets = np.full((num_agents,), -1, dtype=np.int32)
+    if num_agents <= 0:
+        return targets
+
+    centers = np.asarray(cluster_centers, dtype=np.float32)
+    counts = np.asarray(cluster_counts, dtype=np.float32).reshape(-1)
+    if centers.ndim != 2 or centers.shape[1] != 2 or counts.size != centers.shape[0]:
+        return targets
+
+    valid = np.flatnonzero(counts > 0.0)
+    if valid.size == 0:
+        return targets
+
+    priority = valid[np.argsort(-counts[valid], kind="stable")]
+    selected = priority[: min(num_agents, priority.size)]
+
+    remaining_uavs = list(range(num_agents))
+    for cluster_idx in selected:
+        rem = np.asarray(remaining_uavs, dtype=np.int32)
+        dists = np.linalg.norm(np.asarray(uav_pos[rem], dtype=np.float32) - centers[cluster_idx], axis=1)
+        best_uav = int(rem[int(np.argmin(dists))])
+        targets[best_uav] = int(cluster_idx)
+        remaining_uavs.remove(best_uav)
+
+    if selected.size > 0:
+        selected_centers = centers[selected]
+        for u in remaining_uavs:
+            dists = np.linalg.norm(selected_centers - np.asarray(uav_pos[u], dtype=np.float32), axis=1)
+            targets[u] = int(selected[int(np.argmin(dists))])
+
+    return targets
+
+
+def _torch_minmax_normalize_masked(values: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
+    if values.numel() == 0:
+        return values
+    inf = torch.full_like(values, float("inf"))
+    neg_inf = torch.full_like(values, float("-inf"))
+    masked_min = torch.where(mask, values, inf).amin(dim=-1, keepdim=True)
+    masked_max = torch.where(mask, values, neg_inf).amax(dim=-1, keepdim=True)
+    span = masked_max - masked_min
+    valid_range = span > 1.0e-9
+    norm = (values - masked_min) / span.clamp_min(1.0e-9)
+    return torch.where(mask & valid_range, norm, torch.zeros_like(values))
+
+
+def _topk_select_mask_batch_torch(scores: torch.Tensor, valid_mask: torch.Tensor, k: int) -> torch.Tensor:
+    out = torch.zeros_like(scores, dtype=torch.float32)
+    if k <= 0 or scores.shape[-1] <= 0:
+        return out
+    masked_scores = torch.where(valid_mask, scores, torch.full_like(scores, float("-inf")))
+    topk = min(int(k), int(scores.shape[-1]))
+    topk_idx = torch.argsort(masked_scores, dim=-1, descending=True)[..., :topk]
+    topk_valid = valid_mask.gather(-1, topk_idx).to(dtype=torch.float32)
+    out.scatter_(-1, topk_idx, topk_valid)
+    return out
+
+
+def _sat_heuristic_score_batch_torch(sats: torch.Tensor, mask: torch.Tensor, cfg) -> torch.Tensor:
+    if sats.numel() == 0:
+        return torch.zeros((*sats.shape[:-1],), dtype=torch.float32, device=sats.device)
+
+    se = sats[..., 7]
+    qsat = sats[..., 8]
+    load_norm = sats[..., 9]
+    bw_ratio = sats[..., 10]
+    stay = sats[..., 11]
+
+    se_weight = float(getattr(cfg, "baseline_sat_se_weight", 1.0) or 0.0)
+    q_penalty = float(getattr(cfg, "baseline_sat_queue_penalty", 0.5) or 0.0)
+    load_penalty = float(getattr(cfg, "baseline_sat_load_penalty", 1.0) or 0.0)
+    bw_reward = float(getattr(cfg, "baseline_sat_bw_reward", 0.75) or 0.0)
+    stay_bonus = float(getattr(cfg, "baseline_sat_stay_bonus", 0.25) or 0.0)
+    switch_margin = max(float(getattr(cfg, "baseline_sat_switch_margin", 0.15) or 0.0), 0.0)
+
+    projected_count = 1.0 / bw_ratio.clamp(1.0e-6, 1.0)
+    projected_load_term = torch.log1p(projected_count)
+
+    se_norm = _torch_minmax_normalize_masked(se, mask)
+    q_norm = _torch_minmax_normalize_masked(qsat, mask)
+    load_term_norm = _torch_minmax_normalize_masked(projected_load_term, mask)
+    bw_norm = _torch_minmax_normalize_masked(bw_ratio, mask)
+
+    score = (
+        se_weight * se_norm
+        - q_penalty * q_norm
+        - load_penalty * load_term_norm
+        + bw_reward * bw_norm
+        + stay_bonus * stay
+    )
+
+    if int(getattr(cfg, "N_RF", 1)) == 1:
+        current_mask = stay > 0.5
+        current_count = current_mask.sum(dim=-1)
+        current_idx = torch.argmax(stay, dim=-1)
+        best_idx = torch.argmax(torch.where(mask, score, torch.full_like(score, float("-inf"))), dim=-1)
+        cur_score = torch.take_along_dim(score, current_idx.unsqueeze(-1), dim=-1).squeeze(-1)
+        best_score = torch.take_along_dim(score, best_idx.unsqueeze(-1), dim=-1).squeeze(-1)
+        keep_current = (
+            (current_count == 1)
+            & (best_idx != current_idx)
+            & (best_score <= cur_score + switch_margin)
+        )
+        adjusted = best_score + 1.0e-3
+        score = score.scatter(
+            -1,
+            current_idx.unsqueeze(-1),
+            torch.where(keep_current, adjusted, cur_score).unsqueeze(-1),
+        )
+
+    clipped = score.clamp(-float(cfg.sat_logit_scale), float(cfg.sat_logit_scale))
+    return torch.where(mask, clipped, torch.zeros_like(clipped))
+
+
+def queue_aware_policy_batch(
+    obs_batch: Dict[str, np.ndarray | torch.Tensor],
+    cfg,
+) -> Tuple[np.ndarray | torch.Tensor, np.ndarray | torch.Tensor, np.ndarray | torch.Tensor]:
+    torch_batch, as_torch, _ = _obs_batch_to_torch(obs_batch)
+    own = torch_batch["own"]
+    users = torch_batch["users"]
+    users_mask = torch_batch["users_mask"] > 0.0
+    bw_valid_mask = (torch_batch.get("bw_valid_mask", torch_batch["users_mask"]) > 0.0)
+    dtype = torch.float32
+    device = own.device
+
+    batch_size, num_agents = own.shape[:2]
+    accel = torch.zeros((batch_size, num_agents, 2), dtype=dtype, device=device)
+    bw_alloc = torch.zeros((batch_size, num_agents, int(cfg.num_gu)), dtype=dtype, device=device)
+    sat_select_mask = torch.zeros(
+        (batch_size, num_agents, int(torch_batch["sats"].shape[2])),
+        dtype=dtype,
+        device=device,
+    )
+
+    accel_gain = float(getattr(cfg, "baseline_accel_gain", 2.0))
+    assoc_bonus = float(getattr(cfg, "baseline_assoc_bonus", 0.3))
+    repulse_gain = float(getattr(cfg, "baseline_repulse_gain", 0.0))
+    repulse_radius_factor = float(getattr(cfg, "baseline_repulse_radius_factor", 1.5))
+    repulse_radius = float(cfg.d_safe) * repulse_radius_factor if repulse_radius_factor > 0 else 0.0
+
+    if users.shape[2] > 0:
+        q = users[..., 2].clamp_min(0.0)
+        eta = users[..., 3]
+        prev = users[..., 4]
+        weights = q * (0.5 + eta)
+        if assoc_bonus > 0.0:
+            weights = weights * (1.0 + assoc_bonus * prev)
+        weights = torch.where(users_mask, weights, torch.zeros_like(weights))
+        weight_sum = weights.sum(dim=-1, keepdim=True)
+        vec = (users[..., 0:2] * weights.unsqueeze(-1)).sum(dim=-2) / (weight_sum + 1.0e-9)
+        accel = torch.where(
+            users_mask.any(dim=-1, keepdim=True),
+            vec * accel_gain,
+            accel,
+        )
+
+        if cfg.enable_bw_action:
+            slot_weights = weights.clamp_min(0.0) * bw_valid_mask.to(dtype=dtype)
+            denom = slot_weights.sum(dim=-1, keepdim=True)
+            slot_bw_alloc = torch.zeros_like(slot_weights)
+            slot_bw_alloc = torch.where(
+                denom > 1.0e-6,
+                slot_weights / denom.clamp_min(1.0e-9),
+                slot_bw_alloc,
+            )
+            uniform = bw_valid_mask.to(dtype=dtype) / bw_valid_mask.to(dtype=dtype).sum(dim=-1, keepdim=True).clamp_min(1.0)
+            fallback = (denom <= 1.0e-6) & bw_valid_mask.any(dim=-1, keepdim=True)
+            slot_bw_alloc = torch.where(fallback, uniform, slot_bw_alloc)
+            width = min(int(cfg.num_gu), int(slot_bw_alloc.shape[-1]))
+            if width > 0:
+                bw_alloc[..., :width] = slot_bw_alloc[..., :width]
+
+    if not cfg.fixed_satellite_strategy:
+        sats = torch_batch["sats"]
+        sat_valid_mask = torch_batch.get("sat_valid_mask", torch_batch["sats_mask"]) > 0.0
+        if sats.shape[2] > 0:
+            sat_scores = _sat_heuristic_score_batch_torch(sats, sat_valid_mask, cfg)
+            sat_select_mask = _topk_select_mask_batch_torch(
+                sat_scores,
+                sat_valid_mask,
+                _sat_action_select_k_from_cfg(cfg),
+            )
+
+    if repulse_gain > 0.0 and repulse_radius > 0.0 and int(torch_batch["nbrs"].shape[2]) > 0:
+        nbrs = torch_batch["nbrs"]
+        nbrs_mask = torch_batch["nbrs_mask"] > 0.0
+        rel_nbr = nbrs[..., 0:2]
+        dist_norm = torch.linalg.norm(rel_nbr, dim=-1)
+        dist = dist_norm * float(cfg.map_size)
+        active = nbrs_mask & (dist > 1.0e-6) & (dist < repulse_radius)
+        direction = rel_nbr / dist_norm.clamp_min(1.0e-9).unsqueeze(-1)
+        strength = (1.0 / dist.clamp_min(1.0e-9) - 1.0 / float(repulse_radius))
+        repulse = (direction * strength.unsqueeze(-1) * active.unsqueeze(-1).to(dtype)).sum(dim=-2)
+        accel = accel - repulse_gain * repulse
+
+    accel = _project_normalized_accel_torch(accel + _baseline_energy_term_batch_torch(own, cfg))
+    return _from_torch_outputs((accel, bw_alloc, sat_select_mask), as_torch=as_torch)
+
+
+def cluster_center_accel_policy_batch(
+    obs_batch: Dict[str, np.ndarray | torch.Tensor],
+    cfg,
+    cluster_centers: np.ndarray | torch.Tensor | None,
+    cluster_counts: np.ndarray | torch.Tensor | None,
+) -> np.ndarray | torch.Tensor:
+    torch_batch, as_torch, device = _obs_batch_to_torch(obs_batch)
+    own = torch_batch["own"]
+    batch_size, num_agents = own.shape[:2]
+    accel = torch.zeros((batch_size, num_agents, 2), dtype=torch.float32, device=device)
+    if cluster_centers is None or cluster_counts is None:
+        return _from_torch_outputs((accel,), as_torch=as_torch)[0]
+
+    centers_t = _stack_like(cluster_centers, device=device)
+    counts_t = _stack_like(cluster_counts, device=device)
+    uav_pos = (own[..., 0:2] * float(cfg.map_size)).detach().cpu().numpy().astype(np.float32, copy=False)
+    centers_np = centers_t.detach().cpu().numpy().astype(np.float32, copy=False)
+    counts_np = counts_t.detach().cpu().numpy().astype(np.float32, copy=False)
+
+    targets = np.full((batch_size, num_agents), -1, dtype=np.int64)
+    for env_index in range(batch_size):
+        targets[env_index] = _select_cluster_targets_from_positions(
+            uav_pos[env_index],
+            centers_np[env_index],
+            counts_np[env_index],
+        )
+    target_idx = torch.as_tensor(targets, dtype=torch.long, device=device)
+    valid_target = target_idx >= 0
+    if bool(valid_target.any().item()):
+        target_pos = torch.zeros((batch_size, num_agents, 2), dtype=torch.float32, device=device)
+        env_ids, uav_ids = torch.nonzero(valid_target, as_tuple=True)
+        target_pos[env_ids, uav_ids] = centers_t[env_ids, target_idx[env_ids, uav_ids]]
+
+        pos = own[..., 0:2] * float(cfg.map_size)
+        vel = own[..., 2:4] * float(cfg.v_max)
+        error = target_pos - pos
+        dist = torch.linalg.norm(error, dim=-1)
+        speed = torch.linalg.norm(vel, dim=-1)
+
+        stop_radius = max(float(getattr(cfg, "baseline_cluster_stop_radius", 20.0) or 0.0), 0.0)
+        speed_tol = max(float(getattr(cfg, "baseline_cluster_speed_tol", 2.0) or 0.0), 0.0)
+        slow_radius_cfg = float(getattr(cfg, "baseline_cluster_slow_radius", 120.0) or 0.0)
+        slow_radius = max(slow_radius_cfg, stop_radius + 1.0e-6)
+        cruise_speed_cfg = getattr(cfg, "baseline_cluster_cruise_speed", None)
+        cruise_speed = cfg.uav_opt_speed if cruise_speed_cfg is None else float(cruise_speed_cfg)
+        cruise_speed = float(np.clip(cruise_speed, 0.0, cfg.v_max))
+        vel_gain = max(float(getattr(cfg, "baseline_cluster_vel_gain", 1.0) or 0.0), 0.0)
+
+        desired_vel = torch.zeros_like(vel)
+        outside_stop = valid_target & (dist > stop_radius)
+        direction = error / dist.clamp_min(1.0e-6).unsqueeze(-1)
+        desired_speed = cruise_speed * torch.clamp(dist / max(float(slow_radius), 1.0e-6), max=1.0)
+        desired_vel = torch.where(
+            outside_stop.unsqueeze(-1),
+            direction * desired_speed.unsqueeze(-1),
+            desired_vel,
+        )
+        desired_accel = vel_gain * (desired_vel - vel) / max(float(cfg.tau0), 1.0e-6)
+        accel = desired_accel / max(float(cfg.a_max), 1.0e-6)
+        stop_and_slow = valid_target & (dist <= stop_radius) & (speed <= speed_tol)
+        accel = torch.where(stop_and_slow.unsqueeze(-1), torch.zeros_like(accel), accel)
+        accel = torch.where(valid_target.unsqueeze(-1), accel, torch.zeros_like(accel))
+
+    accel = _project_normalized_accel_torch(accel + _baseline_energy_term_batch_torch(own, cfg))
+    return _from_torch_outputs((accel,), as_torch=as_torch)[0]
+
+
+def cluster_center_queue_aware_policy_batch(
+    obs_batch: Dict[str, np.ndarray | torch.Tensor],
+    cfg,
+    cluster_centers: np.ndarray | torch.Tensor | None,
+    cluster_counts: np.ndarray | torch.Tensor | None,
+) -> Tuple[np.ndarray | torch.Tensor, np.ndarray | torch.Tensor, np.ndarray | torch.Tensor]:
+    accel = cluster_center_accel_policy_batch(obs_batch, cfg, cluster_centers, cluster_counts)
+    _, bw_alloc, sat_select_mask = queue_aware_policy_batch(obs_batch, cfg)
+    return accel, bw_alloc, sat_select_mask
 
 
 def centroid_accel_policy(
@@ -36,7 +477,7 @@ def centroid_accel_policy(
             q_sum = float(np.sum(q))
             if q_sum > 1e-6:
                 vec = (rel * q[:, None]).sum(axis=0) / (q_sum + 1e-9)
-        accel[i] = np.clip(vec * gain, -1.0, 1.0).astype(np.float32)
+        accel[i] = _project_normalized_accel_np(vec * gain)
     return accel
 
 
@@ -72,39 +513,8 @@ def _select_cluster_targets(
     cluster_centers: np.ndarray,
     cluster_counts: np.ndarray,
 ) -> np.ndarray:
-    num_agents = len(obs_list)
-    targets = np.full((num_agents,), -1, dtype=np.int32)
-    if num_agents <= 0:
-        return targets
-
-    centers = np.asarray(cluster_centers, dtype=np.float32)
-    counts = np.asarray(cluster_counts, dtype=np.float32).reshape(-1)
-    if centers.ndim != 2 or centers.shape[1] != 2 or counts.size != centers.shape[0]:
-        return targets
-
-    valid = np.flatnonzero(counts > 0.0)
-    if valid.size == 0:
-        return targets
-
-    priority = valid[np.argsort(-counts[valid], kind="stable")]
-    selected = priority[: min(num_agents, priority.size)]
     uav_pos = np.asarray([obs["own"][0:2] * cfg.map_size for obs in obs_list], dtype=np.float32)
-
-    remaining_uavs = list(range(num_agents))
-    for cluster_idx in selected:
-        rem = np.asarray(remaining_uavs, dtype=np.int32)
-        dists = np.linalg.norm(uav_pos[rem] - centers[cluster_idx], axis=1)
-        best_uav = int(rem[int(np.argmin(dists))])
-        targets[best_uav] = int(cluster_idx)
-        remaining_uavs.remove(best_uav)
-
-    if selected.size > 0:
-        selected_centers = centers[selected]
-        for u in remaining_uavs:
-            dists = np.linalg.norm(selected_centers - uav_pos[u], axis=1)
-            targets[u] = int(selected[int(np.argmin(dists))])
-
-    return targets
+    return _select_cluster_targets_from_positions(uav_pos, cluster_centers, cluster_counts)
 
 
 def _cluster_tracking_term(obs: Dict[str, np.ndarray], cfg, target_abs: np.ndarray) -> np.ndarray:
@@ -135,7 +545,7 @@ def _cluster_tracking_term(obs: Dict[str, np.ndarray], cfg, target_abs: np.ndarr
 
     desired_accel = vel_gain * (desired_vel - vel) / max(cfg.tau0, 1e-6)
     action = desired_accel / max(cfg.a_max, 1e-6)
-    return np.clip(action, -1.0, 1.0).astype(np.float32, copy=False)
+    return _project_normalized_accel_np(action)
 
 
 def cluster_center_accel_policy(
@@ -157,13 +567,13 @@ def cluster_center_accel_policy(
         if 0 <= target_idx < len(centers):
             accel_vec = accel_vec + _cluster_tracking_term(obs, cfg, centers[target_idx])
         accel_vec = accel_vec + _baseline_energy_term(obs, cfg)
-        accel[i] = np.clip(accel_vec, -1.0, 1.0)
+        accel[i] = _project_normalized_accel_np(accel_vec)
     return accel
 
-def uniform_bw_policy(num_agents: int, users_obs_max: int) -> np.ndarray:
-    if users_obs_max <= 0:
+def uniform_bw_policy(num_agents: int, gu_count: int) -> np.ndarray:
+    if gu_count <= 0:
         return np.zeros((num_agents, 0), dtype=np.float32)
-    return np.full((num_agents, users_obs_max), 1.0 / float(users_obs_max), dtype=np.float32)
+    return np.full((num_agents, gu_count), 1.0 / float(gu_count), dtype=np.float32)
 
 def random_bw_policy(
     num_agents: int,
@@ -171,7 +581,7 @@ def random_bw_policy(
     rng: np.random.Generator | None = None,
 ) -> np.ndarray:
     rng = rng or np.random.default_rng()
-    return rng.random(size=(num_agents, cfg.users_obs_max)).astype(np.float32)
+    return rng.random(size=(num_agents, cfg.num_gu)).astype(np.float32)
 
 def uniform_sat_policy(num_agents: int, sats_obs_max: int) -> np.ndarray:
     return np.zeros((num_agents, sats_obs_max), dtype=np.float32)
@@ -183,6 +593,229 @@ def random_sat_policy(
 ) -> np.ndarray:
     rng = rng or np.random.default_rng()
     return (rng.random(size=(num_agents, cfg.sats_obs_max)) > 0.5).astype(np.float32)
+
+
+def _bw_slot_valid_mask(obs: Dict[str, np.ndarray], cfg) -> np.ndarray:
+    users_mask = np.asarray(obs.get("users_mask", np.zeros((int(cfg.users_obs_max),), dtype=np.float32))) > 0.0
+    bw_valid = np.asarray(obs.get("bw_valid_mask", users_mask), dtype=np.float32).reshape(-1) > 0.0
+    if bw_valid.shape[0] < int(cfg.users_obs_max):
+        padded = np.zeros((int(cfg.users_obs_max),), dtype=bool)
+        padded[: int(bw_valid.shape[0])] = bw_valid
+        bw_valid = padded
+    return (users_mask[: int(cfg.users_obs_max)] & bw_valid[: int(cfg.users_obs_max)]).astype(bool, copy=False)
+
+
+def _slot_weight_bw_policy(
+    obs_list: List[Dict[str, np.ndarray]],
+    cfg,
+    weight_fn,
+    *,
+    rng: np.random.Generator | None = None,
+) -> np.ndarray:
+    bw_alloc = np.zeros((len(obs_list), int(cfg.num_gu)), dtype=np.float32)
+    for i, obs in enumerate(obs_list):
+        valid = _bw_slot_valid_mask(obs, cfg)
+        if not np.any(valid):
+            continue
+        raw_weights = np.asarray(weight_fn(obs, valid, rng), dtype=np.float32).reshape(-1)
+        slot_weights = np.zeros((int(cfg.users_obs_max),), dtype=np.float32)
+        width = min(int(slot_weights.shape[0]), int(raw_weights.shape[0]))
+        if width > 0:
+            slot_weights[:width] = raw_weights[:width]
+        slot_weights = np.where(valid, np.clip(slot_weights, 0.0, None), 0.0).astype(np.float32, copy=False)
+        denom = float(np.sum(slot_weights, dtype=np.float32))
+        if denom <= 1.0e-9:
+            slot_weights[valid] = 1.0 / float(np.sum(valid))
+        else:
+            slot_weights = slot_weights / denom
+        bw_alloc[i] = _slot_bw_to_full_gu_np(slot_weights, obs, cfg)
+    return bw_alloc
+
+
+def feasible_uniform_bw_policy(
+    obs_list: List[Dict[str, np.ndarray]],
+    cfg,
+) -> np.ndarray:
+    def _weights(_obs, valid, _rng):
+        weights = np.zeros((int(cfg.users_obs_max),), dtype=np.float32)
+        weights[valid] = 1.0
+        return weights
+
+    return _slot_weight_bw_policy(obs_list, cfg, _weights)
+
+
+def feasible_random_bw_policy(
+    obs_list: List[Dict[str, np.ndarray]],
+    cfg,
+    rng: np.random.Generator | None = None,
+) -> np.ndarray:
+    rng = rng or np.random.default_rng()
+
+    def _weights(_obs, valid, local_rng):
+        weights = np.zeros((int(cfg.users_obs_max),), dtype=np.float32)
+        weights[valid] = local_rng.random(int(np.sum(valid))).astype(np.float32)
+        return weights
+
+    return _slot_weight_bw_policy(obs_list, cfg, _weights, rng=rng)
+
+
+def link_priority_bw_policy(
+    obs_list: List[Dict[str, np.ndarray]],
+    cfg,
+) -> np.ndarray:
+    def _weights(obs, _valid, _rng):
+        users = np.asarray(obs["users"], dtype=np.float32)
+        weights = np.zeros((int(cfg.users_obs_max),), dtype=np.float32)
+        width = min(int(cfg.users_obs_max), int(users.shape[0]))
+        if width > 0 and int(users.shape[1]) > 3:
+            weights[:width] = np.clip(users[:width, 3], 0.0, None)
+        return weights
+
+    return _slot_weight_bw_policy(obs_list, cfg, _weights)
+
+
+def demand_priority_bw_policy(
+    obs_list: List[Dict[str, np.ndarray]],
+    cfg,
+) -> np.ndarray:
+    def _weights(obs, _valid, _rng):
+        users = np.asarray(obs["users"], dtype=np.float32)
+        weights = np.zeros((int(cfg.users_obs_max),), dtype=np.float32)
+        width = min(int(cfg.users_obs_max), int(users.shape[0]))
+        if width > 0 and int(users.shape[1]) > 2:
+            weights[:width] = np.clip(users[:width, 2], 0.0, None)
+        return weights
+
+    return _slot_weight_bw_policy(obs_list, cfg, _weights)
+
+
+def _sat_valid_mask(obs: Dict[str, np.ndarray], cfg) -> np.ndarray:
+    mask = np.asarray(obs.get("sat_valid_mask", obs.get("sats_mask", np.zeros((int(cfg.sats_obs_max),), dtype=np.float32)))) > 0.0
+    if mask.shape[0] < int(cfg.sats_obs_max):
+        padded = np.zeros((int(cfg.sats_obs_max),), dtype=bool)
+        padded[: int(mask.shape[0])] = mask
+        mask = padded
+    return mask[: int(cfg.sats_obs_max)].astype(bool, copy=False)
+
+
+def feasible_uniform_sat_policy(
+    obs_list: List[Dict[str, np.ndarray]],
+    cfg,
+    rng: np.random.Generator | None = None,
+) -> np.ndarray:
+    rng = rng or np.random.default_rng()
+    sat_select_mask = np.zeros((len(obs_list), int(cfg.sats_obs_max)), dtype=np.float32)
+    select_k = _sat_action_select_k_from_cfg(cfg)
+    for i, obs in enumerate(obs_list):
+        valid_idx = np.flatnonzero(_sat_valid_mask(obs, cfg))
+        if valid_idx.size <= 0:
+            continue
+        keep_count = min(int(select_k), int(valid_idx.size))
+        keep = rng.choice(valid_idx, size=keep_count, replace=False)
+        sat_select_mask[i, keep] = 1.0
+    return sat_select_mask
+
+
+def feasible_random_sat_policy(
+    obs_list: List[Dict[str, np.ndarray]],
+    cfg,
+    rng: np.random.Generator | None = None,
+) -> np.ndarray:
+    return feasible_uniform_sat_policy(obs_list, cfg, rng=rng)
+
+
+def backhaul_rate_priority_sat_policy(
+    obs_list: List[Dict[str, np.ndarray]],
+    cfg,
+) -> np.ndarray:
+    sat_select_mask = np.zeros((len(obs_list), int(cfg.sats_obs_max)), dtype=np.float32)
+    select_k = _sat_action_select_k_from_cfg(cfg)
+    for i, obs in enumerate(obs_list):
+        valid = _sat_valid_mask(obs, cfg)
+        sats = np.asarray(obs["sats"], dtype=np.float32)
+        scores = np.zeros((int(cfg.sats_obs_max),), dtype=np.float32)
+        width = min(int(scores.shape[0]), int(sats.shape[0]))
+        if width > 0 and int(sats.shape[1]) > 7:
+            spectral_efficiency = np.clip(sats[:width, 7], 0.0, None)
+            bandwidth_ratio = (
+                np.clip(sats[:width, 10], 0.0, None)
+                if int(sats.shape[1]) > 10
+                else np.ones((width,), dtype=np.float32)
+            )
+            scores[:width] = spectral_efficiency * bandwidth_ratio
+        sat_select_mask[i] = _topk_select_mask(scores, valid, select_k)
+    return sat_select_mask
+
+
+def low_queue_priority_sat_policy(
+    obs_list: List[Dict[str, np.ndarray]],
+    cfg,
+) -> np.ndarray:
+    sat_select_mask = np.zeros((len(obs_list), int(cfg.sats_obs_max)), dtype=np.float32)
+    select_k = _sat_action_select_k_from_cfg(cfg)
+    for i, obs in enumerate(obs_list):
+        valid = _sat_valid_mask(obs, cfg)
+        sats = np.asarray(obs["sats"], dtype=np.float32)
+        scores = np.zeros((int(cfg.sats_obs_max),), dtype=np.float32)
+        width = min(int(scores.shape[0]), int(sats.shape[0]))
+        if width > 0 and int(sats.shape[1]) > 8:
+            queue = np.clip(sats[:width, 8], 0.0, None)
+            if int(sats.shape[1]) > 10:
+                tie_link = np.clip(sats[:width, 7], 0.0, None) * np.clip(sats[:width, 10], 0.0, None)
+            elif int(sats.shape[1]) > 7:
+                tie_link = np.clip(sats[:width, 7], 0.0, None)
+            else:
+                tie_link = 0.0
+            scores[:width] = -queue + 1.0e-4 * tie_link
+        sat_select_mask[i] = _topk_select_mask(scores, valid, select_k)
+    return sat_select_mask
+
+
+def static_uniform_policy(
+    obs_list: List[Dict[str, np.ndarray]],
+    cfg,
+    rng: np.random.Generator | None = None,
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    return (
+        zero_accel_policy(len(obs_list)),
+        feasible_uniform_bw_policy(obs_list, cfg),
+        feasible_uniform_sat_policy(obs_list, cfg, rng=rng),
+    )
+
+
+def random_feasible_policy(
+    obs_list: List[Dict[str, np.ndarray]],
+    cfg,
+    rng: np.random.Generator | None = None,
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    rng = rng or np.random.default_rng()
+    return (
+        random_accel_policy(len(obs_list), rng=rng),
+        feasible_random_bw_policy(obs_list, cfg, rng=rng),
+        feasible_random_sat_policy(obs_list, cfg, rng=rng),
+    )
+
+
+def link_priority_policy(
+    obs_list: List[Dict[str, np.ndarray]],
+    cfg,
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    return (
+        zero_accel_policy(len(obs_list)),
+        link_priority_bw_policy(obs_list, cfg),
+        backhaul_rate_priority_sat_policy(obs_list, cfg),
+    )
+
+
+def demand_priority_policy(
+    obs_list: List[Dict[str, np.ndarray]],
+    cfg,
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    return (
+        zero_accel_policy(len(obs_list)),
+        demand_priority_bw_policy(obs_list, cfg),
+        low_queue_priority_sat_policy(obs_list, cfg),
+    )
 
 
 def _minmax_normalize(values: np.ndarray) -> np.ndarray:
@@ -242,6 +875,48 @@ def _sat_heuristic_score(sats: np.ndarray, mask: np.ndarray, cfg) -> np.ndarray:
     return score
 
 
+def _sat_channel_profile(sats: np.ndarray, mask: np.ndarray, cfg) -> Dict[str, np.ndarray]:
+    se_abs = np.zeros((cfg.sats_obs_max,), dtype=np.float32)
+    queue = np.zeros((cfg.sats_obs_max,), dtype=np.float32)
+    load = np.zeros((cfg.sats_obs_max,), dtype=np.float32)
+    doppler_margin = np.ones((cfg.sats_obs_max,), dtype=np.float32)
+    relay_support = np.zeros((cfg.sats_obs_max,), dtype=np.float32)
+    if not np.any(mask):
+        return {
+            "se_abs": se_abs,
+            "queue": queue,
+            "load": load,
+            "doppler_margin": doppler_margin,
+            "relay_support": relay_support,
+        }
+
+    sat_feat = np.asarray(sats[mask], dtype=np.float32)
+    se = np.clip(np.asarray(sat_feat[:, 7], dtype=np.float32), 0.0, None)
+    queue_slice = np.clip(np.asarray(sat_feat[:, 8], dtype=np.float32), 0.0, None)
+    load_slice = np.clip(np.asarray(sat_feat[:, 9], dtype=np.float32), 0.0, None)
+    nu_abs = np.clip(np.abs(np.asarray(sat_feat[:, 6], dtype=np.float32)), 0.0, None)
+
+    # sat_obs[:, 7] already includes current backhaul attenuation, so this term
+    # reacts to atmospheric/rain loss without needing extra environment access.
+    se_abs_slice = np.tanh(se / 6.0).astype(np.float32, copy=False)
+    doppler_margin_slice = (1.0 - np.clip(nu_abs, 0.0, 1.0)).astype(np.float32, copy=False)
+    congestion = (1.0 / (1.0 + queue_slice + load_slice)).astype(np.float32, copy=False)
+    relay_slice = np.clip(se_abs_slice * (0.5 + 0.5 * doppler_margin_slice) * congestion, 0.0, 1.0)
+
+    se_abs[mask] = se_abs_slice
+    queue[mask] = queue_slice
+    load[mask] = load_slice
+    doppler_margin[mask] = doppler_margin_slice
+    relay_support[mask] = relay_slice
+    return {
+        "se_abs": se_abs,
+        "queue": queue,
+        "load": load,
+        "doppler_margin": doppler_margin,
+        "relay_support": relay_support,
+    }
+
+
 def _topk_select_mask(scores: np.ndarray, valid_mask: np.ndarray, k: int) -> np.ndarray:
     out = np.zeros_like(scores, dtype=np.float32)
     valid_idx = np.flatnonzero(valid_mask)
@@ -271,10 +946,11 @@ def _masked_softmax(scores: np.ndarray, valid_mask: np.ndarray, temperature: flo
 
 
 def _lyapunov_state_init(num_agents: int, cfg) -> Dict[str, np.ndarray]:
+    num_gu = int(getattr(cfg, "num_gu", 0))
     return {
-        "pressure_ema": np.zeros((num_agents, cfg.users_obs_max), dtype=np.float32),
-        "virtual_queue": np.zeros((num_agents, cfg.users_obs_max), dtype=np.float32),
-        "service_est": np.zeros((num_agents, cfg.users_obs_max), dtype=np.float32),
+        "pressure_ema": np.zeros((num_agents, num_gu), dtype=np.float32),
+        "virtual_queue": np.zeros((num_agents, num_gu), dtype=np.float32),
+        "service_est": np.zeros((num_agents, num_gu), dtype=np.float32),
     }
 
 
@@ -282,16 +958,23 @@ def lyapunov_queue_aware_policy_step(
     obs_list: List[Dict[str, np.ndarray]],
     cfg,
     state: Dict[str, np.ndarray] | None = None,
+    *,
+    compute_accel: bool = True,
+    compute_bw: bool = True,
+    compute_sat: bool = True,
+    update_pressure: bool = True,
+    update_service: bool = True,
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, Dict[str, np.ndarray]]:
-    """Lyapunov-inspired three-head heuristic baseline with per-episode state.
+    """Lyapunov / MaxWeight style three-head heuristic baseline.
 
-    The policy approximates one-step drift-plus-penalty using a per-slot
-    virtual queue over user urgency and lightweight action cost shaping.
+    Movement follows queue-pressure toward users with current and expected
+    demand, bandwidth uses current queue times service ability, and satellite
+    selection uses UAV-to-satellite backpressure.
     """
 
     num_agents = len(obs_list)
     accel = np.zeros((num_agents, 2), dtype=np.float32)
-    bw_alloc = np.zeros((num_agents, cfg.users_obs_max), dtype=np.float32)
+    bw_alloc = np.zeros((num_agents, cfg.num_gu), dtype=np.float32)
     sat_select_mask = np.zeros((num_agents, cfg.sats_obs_max), dtype=np.float32)
 
     if state is None:
@@ -300,7 +983,7 @@ def lyapunov_queue_aware_policy_step(
         state.get("pressure_ema") is None
         or state.get("virtual_queue") is None
         or state.get("service_est") is None
-        or state["pressure_ema"].shape != (num_agents, cfg.users_obs_max)
+        or state["pressure_ema"].shape != (num_agents, int(cfg.num_gu))
     ):
         state = _lyapunov_state_init(num_agents, cfg)
 
@@ -309,46 +992,57 @@ def lyapunov_queue_aware_policy_step(
     service_est = np.asarray(state["service_est"], dtype=np.float32)
 
     accel_gain = float(getattr(cfg, "baseline_accel_gain", 2.0))
-    assoc_bonus = float(getattr(cfg, "baseline_assoc_bonus", 0.3))
     repulse_gain = float(getattr(cfg, "baseline_repulse_gain", 0.0))
     repulse_radius_factor = float(getattr(cfg, "baseline_repulse_radius_factor", 1.5))
     repulse_radius = float(cfg.d_safe) * repulse_radius_factor if repulse_radius_factor > 0 else 0.0
 
     lyap_v = max(float(getattr(cfg, "baseline_lyapunov_v", 2.0) or 0.0), 0.0)
     lyap_urgency_alpha = max(float(getattr(cfg, "baseline_lyapunov_urgency_alpha", 1.0) or 0.0), 0.0)
-    lyap_drift_w = max(float(getattr(cfg, "baseline_lyapunov_drift_weight", 1.0) or 0.0), 0.0)
-    lyap_action_cost = max(float(getattr(cfg, "baseline_lyapunov_action_cost", 0.05) or 0.0), 0.0)
-    lyap_ema_beta = float(np.clip(getattr(cfg, "baseline_lyapunov_ema_beta", 0.6), 0.0, 0.999))
-    lyap_bw_temp = max(float(getattr(cfg, "baseline_lyapunov_bw_temp", 0.6) or 0.0), 1e-3)
-    lyap_bw_floor = float(np.clip(getattr(cfg, "baseline_lyapunov_bw_floor", 0.02), 0.0, 0.2))
     lyap_service_scale = max(float(getattr(cfg, "baseline_lyapunov_bw_service_scale", 1.0) or 0.0), 0.0)
     lyap_sat_drift_w = max(float(getattr(cfg, "baseline_lyapunov_sat_drift_weight", 0.6) or 0.0), 0.0)
-    lyap_sat_switch_bias = max(float(getattr(cfg, "baseline_lyapunov_sat_switch_bias", 0.1) or 0.0), 0.0)
 
     for i, obs in enumerate(obs_list):
         accel_vec = np.zeros((2,), dtype=np.float32)
         users = obs["users"]
         users_mask = obs["users_mask"] > 0.0
+        candidate_idx = _candidate_indices_np(obs, cfg)
         bw_valid_mask = np.asarray(obs.get("bw_valid_mask", obs["users_mask"]) > 0.0)
+        sat_valid_mask = np.asarray(obs.get("sat_valid_mask", obs["sats_mask"]) > 0.0)
+        sat_profile = _sat_channel_profile(obs["sats"], sat_valid_mask, cfg)
+        relay_gate = 1.0
+        if not cfg.fixed_satellite_strategy:
+            if np.any(sat_valid_mask):
+                relay_gate = 0.5 + 0.5 * float(np.max(sat_profile["relay_support"][sat_valid_mask]))
+            else:
+                relay_gate = 0.5
 
-        instant_pressure = np.zeros((cfg.users_obs_max,), dtype=np.float32)
+        urgency_slots = np.zeros((int(cfg.users_obs_max),), dtype=np.float32)
         if np.any(users_mask):
-            rel = np.asarray(users[users_mask, 0:2], dtype=np.float32)
-            q = np.clip(np.asarray(users[users_mask, 2], dtype=np.float32), 0.0, None)
-            eta = np.clip(np.asarray(users[users_mask, 3], dtype=np.float32), 0.0, 1.0)
-            prev_assoc = np.clip(np.asarray(users[users_mask, 4], dtype=np.float32), 0.0, 1.0)
+            visible_slots = np.flatnonzero(users_mask)
+            visible_gu = candidate_idx[visible_slots]
+            mapped = (visible_gu >= 0) & (visible_gu < int(cfg.num_gu))
+            visible_slots = visible_slots[mapped]
+            visible_gu = visible_gu[mapped]
 
-            pressure_slice = q * (0.5 + eta)
-            if assoc_bonus > 0.0:
-                pressure_slice = pressure_slice * (0.01 + assoc_bonus * prev_assoc)
-            instant_pressure[users_mask] = np.clip(pressure_slice, 0.0, None)
+        if np.any(users_mask) and visible_slots.size > 0:
+            rel = np.asarray(users[visible_slots, 0:2], dtype=np.float32)
+            q = np.clip(np.asarray(users[visible_slots, 2], dtype=np.float32), 0.0, None)
+            eta = np.clip(np.asarray(users[visible_slots, 3], dtype=np.float32), 0.0, None)
+            expected = np.zeros_like(q, dtype=np.float32)
+            if users.shape[1] > 5:
+                expected = np.clip(np.asarray(users[visible_slots, 5], dtype=np.float32), 0.0, None)
+            pressure_slice = (q + expected) * (0.5 + eta)
+            pressure_slice = np.clip(pressure_slice, 0.0, None)
 
-            pressure_ema[i] = lyap_ema_beta * pressure_ema[i] + (1.0 - lyap_ema_beta) * instant_pressure
-            virtual_queue[i] = np.clip(virtual_queue[i] + pressure_ema[i] - service_est[i], 0.0, None)
-            urgency = np.clip(pressure_ema[i] + lyap_drift_w * virtual_queue[i], 0.0, None)
+            if update_pressure:
+                pressure_ema[i].fill(0.0)
+                pressure_ema[i, visible_gu] = pressure_slice
+                virtual_queue[i].fill(0.0)
+            urgency_full = np.clip(pressure_ema[i], 0.0, None)
+            urgency_slots[visible_slots] = urgency_full[visible_gu]
             nbrs = obs["nbrs"]
             nbrs_mask = obs["nbrs_mask"] > 0.0
-            if np.any(nbrs_mask):
+            if compute_accel and np.any(nbrs_mask):
                 dist_gu = np.linalg.norm(rel, axis=1)
                 rel_nbr = nbrs[nbrs_mask, 0:2]
                 diff = rel[:, None, :] - rel_nbr[None, :, :]
@@ -356,61 +1050,78 @@ def lyapunov_queue_aware_policy_step(
                 min_nbr_dist = np.min(dist_nbrs_to_user, axis=1)
                 ratio = np.exp(lyap_urgency_alpha * (min_nbr_dist - dist_gu))
                 responsibility = np.clip(ratio, 0.0, 1.0) 
-                assert responsibility.shape == urgency[users_mask].shape
-                urgency[users_mask] = urgency[users_mask] * responsibility 
+                urgency_slots[visible_slots] = urgency_slots[visible_slots] * responsibility
                 
-            urgency_sum = float(np.sum(urgency[users_mask]))
-            if urgency_sum > 1e-6:
-                vec = (rel * urgency[users_mask, None]).sum(axis=0) / (urgency_sum + 1e-9)
-                accel_vec = accel_vec + vec * accel_gain
+            move_weights = np.clip(urgency_slots[visible_slots], 0.0, None)
+            urgency_sum = float(np.sum(move_weights))
+            if compute_accel and urgency_sum > 1e-6:
+                rel_target = (rel * move_weights[:, None]).sum(axis=0) / (urgency_sum + 1e-9)
+                error = np.asarray(rel_target, dtype=np.float32) * float(cfg.map_size)
+                dist = float(np.linalg.norm(error))
+                vel = np.asarray(obs["own"][2:4], dtype=np.float32) * float(cfg.v_max)
+                speed = float(np.linalg.norm(vel))
+                stop_radius = max(float(getattr(cfg, "baseline_cluster_stop_radius", 20.0) or 0.0), 0.0)
+                speed_tol = max(float(getattr(cfg, "baseline_cluster_speed_tol", 2.0) or 0.0), 0.0)
+                slow_radius = max(
+                    float(getattr(cfg, "baseline_cluster_slow_radius", 120.0) or 0.0),
+                    stop_radius + 1e-6,
+                )
+                cruise_speed_cfg = getattr(cfg, "baseline_cluster_cruise_speed", None)
+                cruise_speed = cfg.uav_opt_speed if cruise_speed_cfg is None else float(cruise_speed_cfg)
+                cruise_speed = float(np.clip(cruise_speed, 0.0, cfg.v_max))
+                vel_gain = max(float(getattr(cfg, "baseline_cluster_vel_gain", 1.0) or 0.0), 0.0) * accel_gain
+                desired_vel = np.zeros((2,), dtype=np.float32)
+                if dist > stop_radius:
+                    desired_speed = cruise_speed * min(dist / max(slow_radius, 1e-6), 1.0)
+                    desired_vel = error / max(dist, 1e-6) * desired_speed
+                accel_vec = accel_vec + vel_gain * (desired_vel - vel) / max(float(cfg.tau0), 1e-6) / max(float(cfg.a_max), 1e-6)
+                if dist <= stop_radius and speed <= speed_tol:
+                    accel_vec = np.zeros((2,), dtype=np.float32)
 
-            if cfg.enable_bw_action:
-                base_scores = lyap_v * urgency - lyap_action_cost * (instant_pressure > 0.0).astype(np.float32)
-                bw_scores = np.full((cfg.users_obs_max,), -1e6, dtype=np.float32)
-                valid_slots = bw_valid_mask & users_mask
-                bw_scores[valid_slots] = base_scores[valid_slots]
-                probs = _masked_softmax(bw_scores, valid_slots, lyap_bw_temp)
-                if lyap_bw_floor > 0.0 and np.any(valid_slots):
-                    count = float(np.sum(valid_slots))
-                    probs = (1.0 - lyap_bw_floor * count) * probs
-                    probs[valid_slots] = probs[valid_slots] + lyap_bw_floor
-                    denom = float(np.sum(probs[valid_slots]))
-                    if denom > 1e-9:
-                        probs[valid_slots] = probs[valid_slots] / denom
-                bw_alloc[i] = probs.astype(np.float32, copy=False)
+            if compute_bw and cfg.enable_bw_action:
+                service_slots = np.zeros((int(cfg.users_obs_max),), dtype=np.float32)
+                service_slots[visible_slots] = 0.5 + eta
+                queue_slots = np.zeros((int(cfg.users_obs_max),), dtype=np.float32)
+                queue_slots[visible_slots] = q
+                base_scores = lyap_v * relay_gate * queue_slots * service_slots
+                bw_scores = np.zeros((cfg.users_obs_max,), dtype=np.float32)
+                valid_slots = bw_valid_mask & users_mask & (candidate_idx >= 0) & (candidate_idx < int(cfg.num_gu))
+                bw_scores[valid_slots] = np.clip(base_scores[valid_slots], 1e-6, None)
+                denom_raw = float(np.sum(bw_scores[valid_slots]))
+                probs = np.zeros_like(bw_scores, dtype=np.float32)
+                if denom_raw > 1e-9:
+                    probs[valid_slots] = bw_scores[valid_slots] / denom_raw
+                elif np.any(valid_slots):
+                    probs[valid_slots] = 1.0 / float(np.sum(valid_slots))
+                slot_bw = probs.astype(np.float32, copy=False)
+                bw_alloc[i] = _slot_bw_to_full_gu_np(slot_bw, obs, cfg)
 
-                eta_slot = np.zeros((cfg.users_obs_max,), dtype=np.float32)
-                eta_slot[users_mask] = 0.5 + eta
-                service_est[i] = lyap_service_scale * bw_alloc[i] * eta_slot
-            else:
+                if update_service:
+                    service_est[i].fill(0.0)
+                    full_service = _slot_bw_to_full_gu_np(slot_bw * service_slots, obs, cfg)
+                    service_est[i] = lyap_service_scale * relay_gate * full_service
+            elif update_service and compute_bw:
                 service_est[i].fill(0.0)
         else:
-            pressure_ema[i].fill(0.0)
-            virtual_queue[i].fill(0.0)
-            service_est[i].fill(0.0)
+            if update_pressure:
+                pressure_ema[i].fill(0.0)
+                virtual_queue[i].fill(0.0)
+            if update_service and compute_bw:
+                service_est[i].fill(0.0)
 
-        if not cfg.fixed_satellite_strategy:
+        if compute_sat and not cfg.fixed_satellite_strategy:
             sats = obs["sats"]
-            sats_mask = obs["sats_mask"] > 0.0
-            sat_valid_mask = np.asarray(obs.get("sat_valid_mask", obs["sats_mask"]) > 0.0)
-            if np.any(sats_mask):
-                base_sat_scores = _sat_heuristic_score(sats, sats_mask, cfg)
-                sat_scores = np.asarray(base_sat_scores, dtype=np.float32)
-                q_active = float(np.mean(instant_pressure[users_mask])) if np.any(users_mask) else 0.0
-                qsat = np.zeros((cfg.sats_obs_max,), dtype=np.float32)
-                qsat[sats_mask] = np.clip(np.asarray(sats[sats_mask, 8], dtype=np.float32), 0.0, None)
-                sat_scores = sat_scores + lyap_sat_drift_w * (q_active - qsat)
-                if lyap_sat_switch_bias > 0.0:
-                    stay = np.zeros((cfg.sats_obs_max,), dtype=np.float32)
-                    stay[sats_mask] = np.clip(np.asarray(sats[sats_mask, 11], dtype=np.float32), 0.0, 1.0)
-                    sat_scores = sat_scores + lyap_sat_switch_bias * stay
+            if np.any(sat_valid_mask):
+                uav_queue = float(np.clip(obs["own"][5], 0.0, None)) if len(obs["own"]) > 5 else 0.0
+                qsat = sat_profile["queue"]
+                sat_scores = lyap_sat_drift_w * (uav_queue - qsat) * sat_profile["relay_support"]
                 sat_select_mask[i] = _topk_select_mask(
                     sat_scores,
                     sat_valid_mask,
-                    max(int(getattr(cfg, "sat_num_select", cfg.N_RF) or cfg.N_RF), 0),
+                    _sat_action_select_k_from_cfg(cfg),
                 )
 
-        if repulse_gain > 0.0 and repulse_radius > 0.0:
+        if compute_accel and repulse_gain > 0.0 and repulse_radius > 0.0:
             nbrs = obs["nbrs"]
             nbrs_mask = obs["nbrs_mask"] > 0.0
             if np.any(nbrs_mask):
@@ -432,9 +1143,9 @@ def lyapunov_queue_aware_policy_step(
                     strength = spring_strength + damper_strength
                     accel_vec = accel_vec - repulse_gain * (direction * strength[:, None]).sum(axis=0)
 
-        accel_vec = accel_vec + _baseline_energy_term(obs, cfg)
-        # accel[i] = np.clip(accel_vec, -1.0, 1.0)
-        accel[i] = np.sqrt(2) * accel_vec / max(np.linalg.norm(accel_vec), 1.0)
+        if compute_accel:
+            accel_vec = accel_vec + _baseline_energy_term(obs, cfg)
+            accel[i] = np.sqrt(2) * accel_vec / max(np.linalg.norm(accel_vec), 1.0)
 
     next_state = {
         "pressure_ema": pressure_ema.astype(np.float32, copy=False),
@@ -466,7 +1177,7 @@ def queue_aware_policy(
 
     num_agents = len(obs_list)
     accel = np.zeros((num_agents, 2), dtype=np.float32)
-    bw_alloc = np.zeros((num_agents, cfg.users_obs_max), dtype=np.float32)
+    bw_alloc = np.zeros((num_agents, cfg.num_gu), dtype=np.float32)
     sat_select_mask = np.zeros((num_agents, cfg.sats_obs_max), dtype=np.float32)
 
     accel_gain = float(getattr(cfg, "baseline_accel_gain", 2.0))
@@ -501,21 +1212,24 @@ def queue_aware_policy(
                 slot_weights[users_mask] = np.clip(weights, 0.0, None)
                 slot_weights = slot_weights * bw_valid_mask.astype(np.float32)
                 denom = float(np.sum(slot_weights))
+                slot_bw = np.zeros((cfg.users_obs_max,), dtype=np.float32)
                 if denom > 1e-6:
-                    bw_alloc[i] = slot_weights / denom
+                    slot_bw = slot_weights / denom
                 elif np.any(bw_valid_mask):
-                    bw_alloc[i, bw_valid_mask] = 1.0 / float(np.sum(bw_valid_mask))
+                    slot_bw[bw_valid_mask] = 1.0 / float(np.sum(bw_valid_mask))
+                width = min(int(cfg.num_gu), int(slot_bw.shape[0]))
+                if width > 0:
+                    bw_alloc[i, :width] = slot_bw[:width]
 
         if not cfg.fixed_satellite_strategy:
             sats = obs["sats"]
-            sats_mask = obs["sats_mask"] > 0.0
             sat_valid_mask = np.asarray(obs.get("sat_valid_mask", obs["sats_mask"]) > 0.0)
-            if np.any(sats_mask):
-                sat_scores = _sat_heuristic_score(sats, sats_mask, cfg)
+            if np.any(sat_valid_mask):
+                sat_scores = _sat_heuristic_score(sats, sat_valid_mask, cfg)
                 sat_select_mask[i] = _topk_select_mask(
                     sat_scores,
                     sat_valid_mask,
-                    max(int(getattr(cfg, "sat_num_select", cfg.N_RF) or cfg.N_RF), 0),
+                    _sat_action_select_k_from_cfg(cfg),
                 )
 
         if repulse_gain > 0.0 and repulse_radius > 0.0:
@@ -532,7 +1246,7 @@ def queue_aware_policy(
                     dist_norm_sel = dist_norm[mask]
                     direction = rel_sel / dist_norm_sel[:, None]
                     strength = (1.0 / dist_sel - 1.0 / repulse_radius)
-                    accel_vec = accel_vec + repulse_gain * (direction * strength[:, None]).sum(axis=0)
+                    accel_vec = accel_vec - repulse_gain * (direction * strength[:, None]).sum(axis=0)
 
         if cfg.energy_enabled and energy_weight > 0.0:
             energy_norm = float(obs["own"][4])
@@ -546,7 +1260,7 @@ def queue_aware_policy(
                         scale = (energy_low - energy_norm) / max(energy_low, 1e-6)
                         accel_vec = accel_vec + energy_weight * scale * (vel / speed) * delta
 
-        accel[i] = np.clip(accel_vec, -1.0, 1.0)
+        accel[i] = _project_normalized_accel_np(accel_vec)
 
     return accel, bw_alloc, sat_select_mask
 

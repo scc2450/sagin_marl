@@ -1,4 +1,4 @@
-# Stage 1 accel-only baseline (current recommended).
+﻿# Stage 1 accel-only baseline (current recommended).
 # Effective values match runs/line3_short/setpool30_prealert_top1gain_eta35_close_risk/config.yaml.
 # This file promotes the current best-balanced Stage 1 setup:
 # distance prealert + top1 closing gain + reward-only close-risk shaping.
@@ -61,7 +61,7 @@ gu_tx_power: 0.18
 uav_tx_gain: 300.0
 sat_rx_gain: 300.0
 b_acc: 2.2e6
-b_sat_total: 8.75e5
+b_backhaul_per_sat: 8.75e5
 sat_cpu_freq: 1.8e9
 noise_density: 4.0e-21
 pathloss_mode: prob_los

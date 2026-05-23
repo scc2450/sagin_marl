@@ -10,11 +10,11 @@ $updatesStage1 = 1500
 $updatesStage2 = 1500
 $updatesStage3 = 1600
 $numEnvs = 12
-$vecBackend = "subproc"
+$vecBackend = "sync"
 $torchThreads = 2
 $evalEpisodes = 20
 
-$runRoot = "runs/phase1_actions/curriculum_formal_u1500_subproc12_t2"
+$runRoot = "runs/phase1_actions/curriculum_formal_u1500_sync12_t2"
 $stage1Dir = Join-Path $runRoot "stage1_accel"
 $stage2Dir = Join-Path $runRoot "stage2_bw"
 $stage3Dir = Join-Path $runRoot "stage3_sat"

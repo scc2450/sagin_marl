@@ -1,6 +1,6 @@
-# Stage-2 bw-only config corresponding to the stage1 throughput-only reward setup.
+﻿# Stage-2 bw-only config corresponding to the stage1 throughput-only reward setup.
 # From-scratch bw training (no init_actor/init_critic, accel fixed as zero/no-op):
-#   python scripts/train.py --config configs/phase1_actions_curriculum_stage2_bw_setpool_throughput_only_reward_q002_drop6_from_scratch_checkpoint_eval10.yaml --log_dir runs/phase1_actions --run_id bw_throughput_only_from_scratch_eval10 --num_envs 12 --vec_backend subproc --torch_threads 2 --updates 300
+#   python scripts/train.py --config configs/phase1_actions_curriculum_stage2_bw_setpool_throughput_only_reward_q002_drop6_from_scratch_checkpoint_eval10.yaml --log_dir runs/phase1_actions --run_id bw_throughput_only_from_scratch_eval10 --num_envs 12 --vec_backend sync --torch_threads 2 --updates 300
 # Evaluate trained policy:
 #   python scripts/evaluate.py --config configs/phase1_actions_curriculum_stage2_bw_setpool_throughput_only_reward_q002_drop6_from_scratch_checkpoint_eval10.yaml --run_dir runs/phase1_actions/bw_throughput_only_from_scratch_eval10 --episodes 20 --episode_seed_base 42000
 # Evaluate the recommended baseline once:
@@ -63,7 +63,7 @@ gu_tx_power: 0.18
 uav_tx_gain: 300.0
 sat_rx_gain: 300.0
 b_acc: 2.2e6
-b_sat_total: 8.75e5
+b_backhaul_per_sat: 8.75e5
 sat_cpu_freq: 1.8e9
 noise_density: 4.0e-21
 pathloss_mode: prob_los

@@ -1,6 +1,6 @@
-# Line 3 v1: replace flat actor obs encoding with block encoders + masked pooling.
+﻿# Line 3 v1: replace flat actor obs encoding with block encoders + masked pooling.
 # Recommended start:
-#   python scripts/train.py --config configs/stage1_safety_followup/s1_safe_static_v3_obs_encoder.yaml --updates 50 --run_dir <RUN_DIR> --num_envs 12 --vec_backend subproc --torch_threads 2 --init_critic runs/ablation_followup/s1_safe_static_v2_warm250/critic.pt
+#   python scripts/train.py --config configs/stage1_safety_followup/s1_safe_static_v3_obs_encoder.yaml --updates 50 --run_dir <RUN_DIR> --num_envs 12 --vec_backend sync --torch_threads 2 --init_critic runs/ablation_followup/s1_safe_static_v2_warm250/critic.pt
 # Note:
 #   Do not warm-start the actor from a flat-MLP checkpoint. The actor architecture changed.
 seed: 42
@@ -54,7 +54,7 @@ gu_tx_power: 0.18
 uav_tx_gain: 300.0
 sat_rx_gain: 300.0
 b_acc: 1.0e7
-b_sat_total: 2.0e7
+b_backhaul_per_sat: 2.0e7
 sat_cpu_freq: 1.0e10
 noise_density: 4.0e-21
 pathloss_mode: prob_los

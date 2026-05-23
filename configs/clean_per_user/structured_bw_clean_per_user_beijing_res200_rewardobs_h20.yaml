@@ -1,0 +1,247 @@
+﻿# Derived from configs/tmp/structured_bw_sanity_1uav_8gu_t40_beijing_res200_rewardobs_h30.yaml
+# Clean per-user BW route with Reward-Obs and Huber target matching.
+seed: 42
+map_size: 1000.0
+tau0: 1.0
+T_steps: 40
+ref_lat_deg: 39.9042  # Beijing site anchor for geometry/propgation lookup.
+ref_lon_deg: 116.4074  # Beijing site anchor for geometry/propgation lookup.
+
+num_uav: 1
+num_gu: 8
+num_sat: 144
+walker_num_planes: 6
+sat_state_max: 9
+
+users_obs_max: 8
+sats_obs_max: 6
+visible_sats_max: 6
+visible_sats_min: null
+nbrs_obs_max: 1
+danger_nbr_enabled: false
+
+uav_height: 100.0
+sat_height: 500000.0
+theta_min_deg: 5.0
+v_max: 30.0
+a_max: 5.0
+d_safe: 20.0
+boundary_mode: reflect
+
+candidate_mode: "assoc"
+candidate_k: 8
+assoc_unfair_gu_threshold: 8
+
+uav_spawn_mode: gu_centroid
+uav_spawn_curriculum_enabled: false
+uav_safe_random_init_enabled: false
+uav_init_speed_frac: 0.0
+
+traffic_model: sticky_subset_hotspot
+task_arrival_rate: 8.0e5
+task_arrival_poisson: true
+traffic_level: 2
+traffic_level_nav_ratio: 0.08
+traffic_level_easy_ratio: 0.5
+traffic_level_hard_ratio: 1.0
+arrival_ramp_steps: 0
+arrival_ramp_start: 0.0
+arrival_ramp_use_global: false
+arrival_base_hetero: 0.0
+gu_init_num_clusters: 1
+gu_init_cluster_std: 320.0
+hotspot_num_subsets: 8
+hotspot_subset_size: 4
+hotspot_rho: 20.0
+hotspot_on_mean_steps: 20.0
+hotspot_off_mean_steps: 1.0
+arrival_mean_preserve: true
+
+queue_max_gu_steps: 24.0
+queue_max_uav_steps: 60.0
+queue_max_sat_steps: 60.0
+queue_ref_sat_active_count: 2.0
+queue_init_frac: 0.0
+queue_init_uav_frac: 0.0
+queue_init_sat_frac: 0.0
+queue_init_gu_steps: 5.0
+queue_init_uav_steps: 0.0
+queue_init_sat_steps: 0.0
+
+gu_tx_power: 0.18
+uav_tx_power: 2.0
+uav_tx_gain: 1.0e3
+sat_rx_gain: 3.16227766e3
+resource_scale_enabled: true
+resource_scale_ref_num_uav: 3
+resource_scale_ref_num_gu: 20
+resource_scale_ref_task_arrival_rate: 4.9e5
+resource_scale_sat_active_count: 2.0
+resource_scale_ref_sat_active_count: 3.0
+resource_scale_b_acc_multiplier: 0.45
+b_acc: 2.0e7  # 2.0x resource retune: chosen after sweep because it robustly restores hot-under-served + cold-slightly-over-served under uniform BW.
+b_backhaul_per_sat: 3.0e7  # Keep access / backhaul / compute scaled together to avoid introducing a new bottleneck.
+sat_cpu_freq: 3.6e10  # Keep compute matched to the same 2.0x resource lift.
+noise_density: 4.0e-21
+carrier_freq: 3.0e10
+subcarrier_spacing: 1.2e5
+pathloss_mode: prob_los
+pl_threshold_db: 140.0
+atm_loss_enabled: true
+atm_loss_db: 0.8  # Reuse the repo's established geometry/live-phase clear-sky gas-loss base.
+rain_loss_enabled: true
+rain_rate_001_mmph: 25.0  # Reuse the repo's established nominal R0.01 setting; Beijing anchor is applied via rain_lat_deg.
+rain_height_km: 5.0
+rain_exceedance_pct: 0.5
+rain_polarization_tilt_deg: 45.0
+rain_lat_deg: 39.9042  # Beijing latitude anchor; compared to the repo's common 30.0, this makes rain attenuation somewhat lighter.
+
+doppler_observed: true
+doppler_atten_enabled: true
+doppler_enabled: true
+doppler_precomp_mode: residual_ppm  # Reuse the repo's established geometry/live-phase Doppler setup.
+doppler_residual_ppm: 0.1
+doppler_residual_ar_rho: 0.98
+doppler_residual_sigma_hz: 100.0
+nu_max: 4000.0
+energy_enabled: false
+fading_enabled: true
+interference_enabled: true
+
+enable_bw_action: true
+fixed_satellite_strategy: true
+sat_select_mode: sample
+N_RF: 2
+append_action_masks_to_obs: true
+obs_own_include_assoc_uav_cost: true
+obs_user_include_arrival_rate: true
+obs_user_include_recent_arrival: true
+obs_user_include_recent_service: true
+obs_user_include_queue_headroom: true
+obs_user_include_local_gu_service_cost: true
+obs_user_include_weighted_queue_cost: true
+obs_user_include_weighted_queue_cost_relative: true
+obs_sat_include_sat_cost: true
+arrival_ref_mode: expected_arrival
+sat_num_select: 2
+structured_bw_objective_norm: per_latent_dim
+
+avoidance_enabled: false
+eta_crash: 0.0
+
+reward_mode: weighted_workload_level
+reward_w_access: 0.5
+reward_w_relay: 0.0
+reward_w_pre_backlog: 0.08
+reward_w_pre_drop: 1.0
+reward_w_pre_growth: 0.0
+reward_stage1_assoc_centroid_enabled: false
+reward_stage3_sat_overlap_enabled: false
+aux_schedule_use_planned_total_updates: true
+
+input_norm_enabled: true
+buffer_size: 80
+gamma: 0.99
+gae_lambda: 0.95
+reward_norm_enabled: false
+reward_norm_clip: 5.0
+reward_tanh_enabled: false
+lr_decay_enabled: false
+actor_lr: 3.0e-4
+critic_lr: 3.0e-4
+clip_ratio: 0.2
+value_coef: 0.5
+entropy_coef: 0.0
+entropy_coef_bw: 0.0
+max_grad_norm: 0.5
+ppo_epochs: 1
+num_mini_batch: 1
+
+danger_imitation_enabled: false
+train_trace_enabled: false
+train_trace_rollout_interval: 0
+
+checkpoint_eval_enabled: true
+checkpoint_eval_interval_updates: 5
+checkpoint_eval_start_update: 5
+checkpoint_eval_episodes: 32
+checkpoint_eval_episode_seed_base: 42000
+checkpoint_eval_fixed_policy: queue_aware_bw
+checkpoint_eval_policy_mode: deterministic
+checkpoint_eval_sat_drop_early_stop_enabled: false
+checkpoint_eval_early_stop_enabled: false
+checkpoint_eval_reward_early_stop_enabled: false
+checkpoint_eval_reward_patience: 2
+checkpoint_eval_stop_on_early_stop: false
+checkpoint_eval_save_best_models: true
+checkpoint_eval_use_best_as_final: true
+
+update_direction_probe_enabled: false
+update_direction_probe_interval_updates: 0
+update_direction_probe_start_update: 1
+update_direction_probe_panel_episodes: 8
+update_direction_probe_panel_states: 16
+update_direction_probe_panel_seed: 35000
+update_direction_probe_k_steps: 10
+update_direction_probe_bw_sample_limit: 16
+update_direction_probe_actor_policy_mode: deterministic
+update_direction_probe_actor_policy_samples: 1
+update_direction_probe_true_mc_enabled: true
+update_direction_probe_true_mc_samples: 4
+update_direction_probe_branch_enabled: true
+update_direction_probe_branch_horizons: [2, 5, 10]
+update_direction_probe_branch_samples: 2
+update_direction_probe_branch_ref_mode: deterministic
+update_direction_probe_branch_follow_policy_mode: stochastic
+
+train_accel: false
+train_sat: false
+train_bw: true
+bw_train_target_mode: weighted_workload_level
+bw_return_mode: bw_gae
+bw_actor_advantage_override_mode: gae
+bw_actor_branch_horizon: 30
+bw_actor_branch_samples: 1
+bw_actor_branch_ref_mode: deterministic
+bw_actor_branch_follow_policy_mode: stochastic
+bw_actor_branch_normalize: false
+bw_actor_branch_worker_fused_rollout_enabled: false
+bw_actor_branch_parallel_envs: 4
+bw_actor_branch_parallel_backend: sync
+bw_clean_per_user_enabled: true
+bw_clean_per_user_horizon: 20
+bw_clean_per_user_delta_probe: 0.02
+bw_clean_per_user_beta: 0.5
+bw_clean_per_user_loss: huber
+bw_clean_trust_region_enabled: true
+bw_clean_trust_region_target_kl: 0.01
+bw_clean_trust_region_kl_coef_init: 0.1
+bw_clean_trust_region_kl_coef_min: 1.0e-4
+bw_clean_trust_region_kl_coef_max: 1.0e3
+bw_clean_trust_region_backtrack_factor: 0.5
+bw_clean_trust_region_max_backtracks: 4
+structured_step_bootstrap_stage: bw
+exec_accel_source: zero
+exec_sat_source: zero
+exec_bw_source: policy
+actor_advantage_normalize_enabled: false
+stagewise_advantage_norm_enabled: false
+structured_bw_loc_readout: fused
+bw_flow_proxy_aux_enabled: false
+bw_flow_proxy_aux_coef: 0.0
+
+structured_bw_per_uav_surrogate_enabled: false
+structured_bw_per_slot_surrogate_enabled: false
+bw_slot_advantage_weight: 1.0
+bw_marginal_teacher_sample_enabled: false
+bw_marginal_teacher_sample_weight: 1.0
+bw_flow_proxy_base_action_mode: executed
+bw_slot_advantage_base_mode: sample
+bw_flow_proxy_aux_delta: 0.02
+structured_bw_entropy_norm_mode: per_simplex_dim
+structured_bw_parameterization: score_only_softmax
+structured_bw_alpha_init_bias: 3.0
+structured_bw_alpha_max: 1.0
+structured_bw_kappa_init: 32.0
+structured_bw_kappa_min: 16.0
+structured_bw_kappa_max: 64.0

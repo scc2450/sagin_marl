@@ -1,4 +1,4 @@
-# Stage-2 bw-only training from a strong zero-bw baseline:
+﻿# Stage-2 bw-only training from a strong zero-bw baseline:
 #   - accel executes from the fixed stage1 teacher
 #   - bw head starts at zero logits (equal-bandwidth baseline)
 #   - bw_log_std is initialized to -1.5 and frozen
@@ -67,7 +67,7 @@ gu_tx_power: 0.18
 uav_tx_gain: 300.0
 sat_rx_gain: 300.0
 b_acc: 2.2e6
-b_sat_total: 8.75e5
+b_backhaul_per_sat: 8.75e5
 sat_cpu_freq: 1.8e9
 noise_density: 4.0e-21
 pathloss_mode: prob_los

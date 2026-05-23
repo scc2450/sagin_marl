@@ -22,6 +22,7 @@ from sagin_marl.rl.action_assembler import assemble_actions
 from sagin_marl.rl.baselines import queue_aware_sat_policy
 from sagin_marl.rl.policy import ActorNet, batch_flatten_obs
 from sagin_marl.utils.checkpoint import load_checkpoint_forgiving
+from sagin_marl.rl.structured_train import as_structured_driver, as_structured_drivers, make_structured_driver, make_structured_env
 
 
 @dataclass(frozen=True)
@@ -35,7 +36,7 @@ class PolicySpec:
 
 def _build_actor(spec: PolicySpec, device: torch.device) -> ActorNet:
     cfg = load_config(spec.config_path)
-    env = SaginParallelEnv(cfg)
+    env = make_structured_env(cfg, mode="script")
     obs, _ = env.reset(seed=cfg.seed)
     obs_dim = batch_flatten_obs(list(obs.values()), cfg).shape[1]
     actor = ActorNet(obs_dim, cfg).to(device)
@@ -85,7 +86,7 @@ def _evaluate_policy(
     cfg = load_config(spec.config_path)
     base_value = float(getattr(cfg, param_name))
     setattr(cfg, param_name, float(param_value))
-    env = SaginParallelEnv(cfg)
+    env = make_structured_env(cfg, mode="script")
     episode_rows: List[Dict[str, float]] = []
 
     for ep in range(episodes):
@@ -238,7 +239,7 @@ def main() -> None:
     parser.add_argument(
         "--params",
         type=str,
-        default="task_arrival_rate,b_acc,b_sat_total,sat_cpu_freq",
+        default="task_arrival_rate,b_acc,b_backhaul_per_sat,sat_cpu_freq",
         help="Comma-separated env params to sweep.",
     )
     parser.add_argument(
@@ -291,7 +292,7 @@ def main() -> None:
     if unknown_policies:
         raise ValueError(f"Unknown policies: {unknown_policies}")
     policies = [policy_map[name] for name in requested_policies]
-    valid_params = {"task_arrival_rate", "b_acc", "b_sat_total", "sat_cpu_freq"}
+    valid_params = {"task_arrival_rate", "b_acc", "b_backhaul_per_sat", "b_sat_total", "sat_cpu_freq"}
     unknown_params = [name for name in requested_params if name not in valid_params]
     if unknown_params:
         raise ValueError(f"Unknown params: {unknown_params}")

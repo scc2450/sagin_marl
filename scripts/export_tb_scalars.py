@@ -16,6 +16,7 @@ from tensorboard.backend.event_processing import event_accumulator
 
 
 Series = Tuple[np.ndarray, np.ndarray]
+BandSeries = Tuple[np.ndarray, np.ndarray, np.ndarray, str]
 
 
 def _split_patterns(values: Sequence[str] | None) -> List[str]:
@@ -40,6 +41,12 @@ def _sanitize_name(name: str) -> str:
     name = re.sub(r"[^A-Za-z0-9._-]+", "_", name)
     name = name.strip("._-")
     return name or "metric"
+
+
+def _uncertainty_companion_tags(tag: str) -> List[str]:
+    if tag.endswith(("_p25", "_p75", "_std")):
+        return []
+    return [f"{tag}_p25", f"{tag}_p75", f"{tag}_std"]
 
 
 def _ema(values: np.ndarray, alpha: float) -> np.ndarray:
@@ -71,9 +78,13 @@ def _load_scalar_series(
     )
     ea.Reload()
     tags = sorted(ea.Tags().get("scalars", []))
+    primary_tags = [tag for tag in tags if _match_any(tag, tag_patterns)]
+    selected_tags = set(primary_tags)
+    for tag in primary_tags:
+        selected_tags.update(name for name in _uncertainty_companion_tags(tag) if name in tags)
     data: Dict[str, Series] = {}
     for tag in tags:
-        if not _match_any(tag, tag_patterns):
+        if tag not in selected_tags:
             continue
         events = ea.Scalars(tag)
         if not events:
@@ -91,22 +102,100 @@ def _load_scalar_series(
     return data
 
 
+def _aligned_values(base_steps: np.ndarray, other: Series) -> Tuple[np.ndarray, np.ndarray] | None:
+    other_steps, other_values = other
+    other_map = {int(step): float(value) for step, value in zip(other_steps, other_values)}
+    keep_mask = np.asarray([int(step) in other_map for step in base_steps], dtype=bool)
+    if not np.any(keep_mask):
+        return None
+    aligned_steps = base_steps[keep_mask]
+    aligned_values = np.asarray([other_map[int(step)] for step in aligned_steps], dtype=np.float64)
+    return aligned_steps, aligned_values
+
+
+def _resolve_uncertainty_band(tag: str, series_map: Dict[str, Series]) -> BandSeries | None:
+    if tag.endswith(("_p25", "_p75", "_std")):
+        return None
+    center = series_map.get(tag)
+    if center is None:
+        return None
+    center_steps, center_values = center
+
+    p25 = series_map.get(f"{tag}_p25")
+    p75 = series_map.get(f"{tag}_p75")
+    if p25 is not None and p75 is not None:
+        aligned_lower = _aligned_values(center_steps, p25)
+        aligned_upper = _aligned_values(center_steps, p75)
+        if aligned_lower is not None and aligned_upper is not None:
+            lower_steps, lower_values = aligned_lower
+            upper_steps, upper_values = aligned_upper
+            upper_map = {int(step): float(value) for step, value in zip(upper_steps, upper_values)}
+            keep_mask = np.asarray([int(step) in upper_map for step in lower_steps], dtype=bool)
+            if np.any(keep_mask):
+                band_steps = lower_steps[keep_mask]
+                lower_band = lower_values[keep_mask]
+                upper_band = np.asarray([upper_map[int(step)] for step in band_steps], dtype=np.float64)
+                return band_steps, lower_band, upper_band, "IQR (p25-p75)"
+
+    std = series_map.get(f"{tag}_std")
+    if std is not None:
+        aligned_std = _aligned_values(center_steps, std)
+        if aligned_std is not None:
+            band_steps, std_values = aligned_std
+            center_map = {int(step): float(value) for step, value in zip(center_steps, center_values)}
+            center_band = np.asarray([center_map[int(step)] for step in band_steps], dtype=np.float64)
+            std_abs = np.abs(std_values)
+            return band_steps, center_band - std_abs, center_band + std_abs, "Mean +/- std"
+    return None
+
+
 def _save_single_plot(
     out_path: Path,
     title: str,
     tag: str,
     series: Series,
+    band: BandSeries | None,
     ema_alpha: float,
     dpi: int,
 ) -> None:
     steps, values = series
     values_plot = _ema(values, ema_alpha)
     fig, ax = plt.subplots(figsize=(10, 4.5))
-    ax.plot(steps, values_plot, linewidth=1.6)
+    ax.plot(steps, values_plot, linewidth=1.6, label=tag if band is not None else None)
+    if band is not None:
+        band_steps, lower, upper, band_label = band
+        lower_plot = _ema(lower, ema_alpha)
+        upper_plot = _ema(upper, ema_alpha)
+        ax.fill_between(
+            band_steps,
+            lower_plot,
+            upper_plot,
+            alpha=0.18,
+            linewidth=0.0,
+            label=band_label,
+        )
+        ax.plot(
+            band_steps,
+            lower_plot,
+            linewidth=0.9,
+            linestyle="--",
+            alpha=0.5,
+            label="_nolegend_",
+        )
+        ax.plot(
+            band_steps,
+            upper_plot,
+            linewidth=0.9,
+            linestyle="--",
+            alpha=0.5,
+            label="_nolegend_",
+        )
     ax.set_title(title)
     ax.set_xlabel("step")
     ax.set_ylabel(tag)
     ax.grid(True, alpha=0.25)
+    if band is not None:
+        ax.legend(loc="best", fontsize=8)
     fig.tight_layout()
     out_path.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(out_path, dpi=dpi)
@@ -205,13 +294,17 @@ def main() -> int:
             continue
         matched_runs += 1
         run_out = outdir / "by_run" / (_sanitize_name(run_name) if run_name != "." else "root")
-        for tag, series in series_map.items():
+        export_tags = sorted(tag for tag in series_map.keys() if _match_any(tag, tag_patterns))
+        for tag in export_tags:
+            series = series_map[tag]
+            band = _resolve_uncertainty_band(tag, series_map)
             filename = _series_filename(tag, args.format)
             _save_single_plot(
                 out_path=run_out / filename,
                 title=f"{run_name} | {tag}",
                 tag=tag,
                 series=series,
+                band=band,
                 ema_alpha=ema_alpha,
                 dpi=args.dpi,
             )

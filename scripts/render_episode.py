@@ -31,6 +31,7 @@ from sagin_marl.rl.baselines import (
 )
 from sagin_marl.rl.policy import ActorNet, batch_flatten_obs
 from sagin_marl.utils.checkpoint import load_checkpoint_forgiving
+from sagin_marl.rl.structured_train import as_structured_driver, as_structured_drivers, make_structured_driver, make_structured_env
 
 
 _UNASSOCIATED_GU_COLOR = np.array([0.65, 0.65, 0.65, 0.85], dtype=np.float32)
@@ -272,7 +273,7 @@ def _render_colored_frame(env: SaginParallelEnv) -> np.ndarray:
 
     fig.canvas.draw()
     w, h = fig.canvas.get_width_height()
-    w, h = 2*w, 2*h  # double the resolution for Mac
+    # w, h = 2*w, 2*h  # double the resolution for Mac
     try:
         rgba = np.asarray(fig.canvas.buffer_rgba())
         rgba = rgba.reshape((h, w, 4))
@@ -344,7 +345,7 @@ def main():
     if args.baseline == "cluster_center":
         cfg.avoidance_enabled = True
         cfg.pairwise_hard_filter_enabled = True
-    env = SaginParallelEnv(cfg)
+    env = make_structured_env(cfg, mode="script")
     use_baseline = args.baseline != "none"
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")

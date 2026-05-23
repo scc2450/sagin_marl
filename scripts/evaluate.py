@@ -35,6 +35,7 @@ from sagin_marl.rl.baselines import (
 from sagin_marl.rl.policy import ActorNet, batch_flatten_obs
 from sagin_marl.utils.checkpoint import load_checkpoint_forgiving
 from sagin_marl.utils.progress import Progress
+from sagin_marl.rl.structured_train import as_structured_driver, as_structured_drivers, make_structured_driver, make_structured_env
 
 
 def _init_eval_tb_layout(writer: SummaryWriter, tag_prefix: str) -> None:
@@ -127,7 +128,7 @@ def _normalize_exec_source(raw: str | None) -> str:
     src = str("policy" if raw is None else raw).strip().lower()
     if src == "heuristic_residual":
         src = "policy"
-    allowed = {"policy", "teacher", "heuristic", "zero"}
+    allowed = {"policy", "teacher", "heuristic", "cluster_center_queue_aware", "zero"}
     if src not in allowed:
         raise ValueError(f"Invalid exec source '{raw}'. Allowed: {sorted(allowed)}")
     return src
@@ -144,13 +145,39 @@ def _select_exec_values(
         return np.asarray(policy_values, dtype=np.float32)
     if source == "teacher" and teacher_values is not None:
         return np.asarray(teacher_values, dtype=np.float32)
-    if source == "heuristic" and heuristic_values is not None:
+    if source in {"heuristic", "cluster_center_queue_aware"} and heuristic_values is not None:
         return np.asarray(heuristic_values, dtype=np.float32)
     return np.zeros(shape, dtype=np.float32)
 
 
 def _source_needs_heuristic(source: str) -> bool:
-    return source == "heuristic"
+    return source in {"heuristic", "cluster_center_queue_aware"}
+
+
+def _resolve_exec_heuristic_triplet(obs_list, cfg, env, accel_source: str, bw_source: str, sat_source: str):
+    queue_bundle = (None, None, None)
+    cluster_bundle = (None, None, None)
+    sources = {accel_source, bw_source, sat_source}
+
+    if "heuristic" in sources:
+        queue_bundle = queue_aware_policy(obs_list, cfg)
+
+    if "cluster_center_queue_aware" in sources:
+        centers = getattr(env, "gu_cluster_centers", None)
+        counts = getattr(env, "gu_cluster_counts", None)
+        cluster_bundle = cluster_center_queue_aware_policy(obs_list, cfg, centers, counts)
+
+    def pick(source: str):
+        if source == "cluster_center_queue_aware":
+            return cluster_bundle
+        if source == "heuristic":
+            return queue_bundle
+        return (None, None, None)
+
+    accel_triplet = pick(accel_source)
+    bw_triplet = pick(bw_source)
+    sat_triplet = pick(sat_source)
+    return accel_triplet[0], bw_triplet[1], sat_triplet[2]
 
 
 def _compose_bw_exec_values(
@@ -303,8 +330,7 @@ def main():
     if args.baseline in {"cluster_center", "cluster_center_queue_aware"}:
         cfg.avoidance_enabled = True
         cfg.pairwise_hard_filter_enabled = True
-    env = SaginParallelEnv(cfg)
-
+    env = make_structured_env(cfg, mode="script")
     use_baseline = args.baseline != "none"
     use_hybrid = args.hybrid_bw_sat != "none"
     if use_hybrid and use_baseline:
@@ -515,7 +541,14 @@ def main():
                     heur_bw = None
                     heur_sat = None
                     if need_heuristic_exec:
-                        heur_accel, heur_bw, heur_sat = queue_aware_policy(obs_list, cfg)
+                        heur_accel, heur_bw, heur_sat = _resolve_exec_heuristic_triplet(
+                            obs_list,
+                            cfg,
+                            env,
+                            exec_accel_source,
+                            exec_bw_source,
+                            exec_sat_source,
+                        )
                     policy_accel = policy_out.accel.cpu().numpy()
                     policy_bw = policy_out.bw_logits.cpu().numpy() if policy_out.bw_logits is not None else None
                     policy_sat = policy_out.sat_logits.cpu().numpy() if policy_out.sat_logits is not None else None

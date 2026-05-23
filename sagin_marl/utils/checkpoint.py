@@ -16,6 +16,10 @@ def _merge_tensor_with_overlap(target: torch.Tensor, source: torch.Tensor) -> to
     return merged
 
 
+def _remap_legacy_key(key: str, current_state: Dict[str, torch.Tensor]) -> str:
+    return key
+
+
 def load_state_dict_forgiving(
     module: nn.Module,
     state_dict: Dict[str, Any],
@@ -27,20 +31,21 @@ def load_state_dict_forgiving(
     skipped_keys: list[tuple[str, tuple[int, ...] | None, tuple[int, ...] | None]] = []
 
     for key, value in state_dict.items():
-        if key not in current_state:
+        target_key = _remap_legacy_key(key, current_state)
+        if target_key not in current_state:
             continue
-        target = current_state[key]
+        target = current_state[target_key]
         if not isinstance(value, torch.Tensor):
-            skipped_keys.append((key, None, tuple(int(v) for v in target.shape)))
+            skipped_keys.append((target_key, None, tuple(int(v) for v in target.shape)))
             continue
         if tuple(value.shape) == tuple(target.shape):
-            adapted_state[key] = value.to(device=target.device, dtype=target.dtype)
+            adapted_state[target_key] = value.to(device=target.device, dtype=target.dtype)
             continue
         if value.ndim == target.ndim:
-            adapted_state[key] = _merge_tensor_with_overlap(target, value)
-            adapted_keys.append((key, tuple(int(v) for v in value.shape), tuple(int(v) for v in target.shape)))
+            adapted_state[target_key] = _merge_tensor_with_overlap(target, value)
+            adapted_keys.append((target_key, tuple(int(v) for v in value.shape), tuple(int(v) for v in target.shape)))
             continue
-        skipped_keys.append((key, tuple(int(v) for v in value.shape), tuple(int(v) for v in target.shape)))
+        skipped_keys.append((target_key, tuple(int(v) for v in value.shape), tuple(int(v) for v in target.shape)))
 
     missing_keys, unexpected_keys = module.load_state_dict(adapted_state, strict=False)
     info = {

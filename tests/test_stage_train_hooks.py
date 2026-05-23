@@ -4,7 +4,7 @@ import numpy as np
 
 from sagin_marl.env.config import SaginConfig
 from sagin_marl.env.sagin_env import SaginParallelEnv
-from sagin_marl.env.vec_env import _collect_step_stats
+from sagin_marl.env.vec_env import SyncVecSaginEnv, _collect_step_stats
 from sagin_marl.rl.mappo import (
     _compute_train_reward_adjustment,
     _configure_actor_trainability,
@@ -147,3 +147,34 @@ def test_vec_env_collect_step_stats_preserves_stage_aux_arrays():
         close_fn = getattr(env, "close", None)
         if callable(close_fn):
             close_fn()
+
+
+def test_sync_vec_env_auto_reset_preserves_post_step_obs_for_bootstrap():
+    cfg = SaginConfig(
+        seed=7,
+        T_steps=1,
+        num_uav=1,
+        num_gu=3,
+        num_sat=4,
+        users_obs_max=3,
+        sats_obs_max=4,
+        nbrs_obs_max=1,
+        sat_num_select=1,
+        enable_bw_action=True,
+        fixed_satellite_strategy=True,
+    )
+    vec_env = SyncVecSaginEnv(cfg, num_envs=1)
+    try:
+        vec_env.reset(seeds=[cfg.seed])
+        action = vec_env.envs[0]._dummy_actions()
+        next_obs_batch, _, _, truncs_batch, _ = vec_env.step([action], auto_reset=True)
+        assert bool(next(iter(truncs_batch[0].values())))
+        post_step_obs = vec_env.last_step_stats[0]["post_step_obs"]
+        assert isinstance(post_step_obs, dict)
+        assert set(post_step_obs) == set(next_obs_batch[0])
+        assert batch_flatten_obs(list(post_step_obs.values()), cfg).shape == batch_flatten_obs(
+            list(next_obs_batch[0].values()),
+            cfg,
+        ).shape
+    finally:
+        vec_env.close()

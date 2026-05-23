@@ -5,7 +5,7 @@ from typing import Dict, Iterable
 
 import torch
 import torch.nn.functional as F
-from torch.distributions import Categorical, Gamma, Normal
+from torch.distributions import Beta, Categorical, Gamma, Normal
 
 
 def atanh(x: torch.Tensor) -> torch.Tensor:
@@ -15,18 +15,43 @@ def atanh(x: torch.Tensor) -> torch.Tensor:
 
 
 def squash_action(z: torch.Tensor, scale: float = 1.0) -> torch.Tensor:
-    return torch.tanh(z) * scale
+    radius = torch.linalg.vector_norm(z, dim=-1, keepdim=True)
+    squashed_radius = torch.tanh(radius)
+    direction_scale = torch.where(
+        radius > 1e-8,
+        squashed_radius / radius.clamp_min(1e-8),
+        torch.ones_like(radius),
+    )
+    return z * direction_scale * scale
 
 
 def squashed_logprob(dist: Normal, action: torch.Tensor, scale: float = 1.0) -> torch.Tensor:
     eps = 1e-4
+    if scale <= 0:
+        raise ValueError(f"scale must be positive, got {scale!r}.")
     t = action / scale
-    t = torch.clamp(t, -1 + eps, 1 - eps)
-    z = atanh(t)
-    logprob = dist.log_prob(z) - torch.log(1 - t.pow(2) + eps)
-    if scale != 1.0:
-        logprob = logprob - torch.log(torch.full_like(logprob, scale))
-    return logprob.sum(-1)
+    action_dim = int(t.shape[-1])
+    action_radius = torch.linalg.vector_norm(t, dim=-1, keepdim=True)
+    squashed_radius = action_radius.clamp(max=1.0 - eps)
+    raw_radius = atanh(squashed_radius)
+    direction = torch.where(
+        action_radius > eps,
+        t / action_radius.clamp_min(eps),
+        t,
+    )
+    z = direction * raw_radius
+    logprob_z = dist.log_prob(z).sum(dim=-1)
+    radius_ratio = torch.where(
+        squashed_radius > eps,
+        squashed_radius / raw_radius.clamp_min(eps),
+        torch.ones_like(squashed_radius),
+    )
+    log_det = (
+        action_dim * torch.log(torch.as_tensor(scale, dtype=t.dtype, device=t.device))
+        + (action_dim - 1) * torch.log(radius_ratio.clamp_min(eps))
+        + torch.log((1.0 - squashed_radius.pow(2)).clamp_min(eps))
+    ).squeeze(-1)
+    return logprob_z - log_det
 
 
 class MaskedDirichlet:
@@ -46,11 +71,9 @@ class MaskedDirichlet:
         denom = gamma.sum(dim=-1, keepdim=True)
         action = torch.where(denom > self.eps, gamma / denom.clamp_min(self.eps), torch.zeros_like(gamma))
         single_mask = self.valid_count == 1
-        if torch.any(single_mask):
-            action = torch.where(single_mask.unsqueeze(-1), self.mask_f, action)
+        action = torch.where(single_mask.unsqueeze(-1), self.mask_f, action)
         no_mask = self.valid_count <= 0
-        if torch.any(no_mask):
-            action = torch.where(no_mask.unsqueeze(-1), torch.zeros_like(action), action)
+        action = torch.where(no_mask.unsqueeze(-1), torch.zeros_like(action), action)
         return action
 
     def mode(self) -> torch.Tensor:
@@ -58,11 +81,9 @@ class MaskedDirichlet:
         denom = alpha_masked.sum(dim=-1, keepdim=True)
         action = torch.where(denom > self.eps, alpha_masked / denom.clamp_min(self.eps), torch.zeros_like(alpha_masked))
         single_mask = self.valid_count == 1
-        if torch.any(single_mask):
-            action = torch.where(single_mask.unsqueeze(-1), self.mask_f, action)
+        action = torch.where(single_mask.unsqueeze(-1), self.mask_f, action)
         no_mask = self.valid_count <= 0
-        if torch.any(no_mask):
-            action = torch.where(no_mask.unsqueeze(-1), torch.zeros_like(action), action)
+        action = torch.where(no_mask.unsqueeze(-1), torch.zeros_like(action), action)
         return action
 
     def log_prob(self, action: torch.Tensor) -> torch.Tensor:
@@ -89,6 +110,253 @@ class MaskedDirichlet:
         return torch.where(self.valid_count >= 2, entropy, torch.zeros_like(entropy))
 
 
+class MaskedMeanConcentrationDirichlet:
+    """Masked simplex Dirichlet parameterized by mean and scalar concentration.
+
+    The deterministic BW action is defined by the caller as ``mean`` itself.
+    This class only provides the stochastic simplex distribution around that
+    mean for sampling and log-prob evaluation.
+    """
+
+    def __init__(self, mean: torch.Tensor, kappa: torch.Tensor, mask: torch.Tensor, eps: float = 1e-8):
+        if mean.shape != mask.shape:
+            raise ValueError("mean and mask must share the same shape")
+        if kappa.ndim == mean.ndim:
+            if kappa.shape[-1] != 1:
+                raise ValueError("kappa must be scalar per row when it has the same ndim as mean")
+            kappa_scalar = kappa.squeeze(-1)
+        elif kappa.ndim == mean.ndim - 1:
+            kappa_scalar = kappa
+        else:
+            raise ValueError("kappa must have shape [...,] or [..., 1] matching mean batch dims")
+        if tuple(kappa_scalar.shape) != tuple(mean.shape[:-1]):
+            raise ValueError("kappa batch shape must match mean batch shape")
+        self.mask = mask > 0.5
+        self.eps = float(eps)
+        self.mask_f = self.mask.to(mean.dtype)
+        self.valid_count = self.mask_f.sum(dim=-1)
+        mean_valid = torch.where(self.mask, mean.clamp_min(self.eps), torch.zeros_like(mean))
+        mean_sum = mean_valid.sum(dim=-1, keepdim=True).clamp_min(self.eps)
+        normalized_mean = torch.where(self.mask, mean_valid / mean_sum, torch.zeros_like(mean_valid))
+        single_mask = self.valid_count == 1
+        normalized_mean = torch.where(single_mask.unsqueeze(-1), self.mask_f, normalized_mean)
+        no_mask = self.valid_count <= 0
+        normalized_mean = torch.where(no_mask.unsqueeze(-1), torch.zeros_like(normalized_mean), normalized_mean)
+        self.mean = normalized_mean
+        self.kappa = kappa_scalar.clamp_min(self.eps)
+        self.concentration = self.mean * self.kappa.unsqueeze(-1)
+
+    def _masked_concentration(self) -> torch.Tensor:
+        return torch.where(self.mask, self.concentration.clamp_min(self.eps), torch.ones_like(self.concentration))
+
+    def sample(self) -> torch.Tensor:
+        concentration = self._masked_concentration()
+        gamma = Gamma(concentration, torch.ones_like(concentration)).sample()
+        gamma = gamma * self.mask_f
+        denom = gamma.sum(dim=-1, keepdim=True)
+        action = torch.where(denom > self.eps, gamma / denom.clamp_min(self.eps), torch.zeros_like(gamma))
+        single_mask = self.valid_count == 1
+        action = torch.where(single_mask.unsqueeze(-1), self.mask_f, action)
+        no_mask = self.valid_count <= 0
+        action = torch.where(no_mask.unsqueeze(-1), torch.zeros_like(action), action)
+        return action
+
+    def rsample(self) -> torch.Tensor:
+        return self.sample()
+
+    def mode(self) -> torch.Tensor:
+        return self.mean
+
+    def log_prob(self, action: torch.Tensor) -> torch.Tensor:
+        if action.shape != self.mean.shape:
+            raise ValueError("action must have the same shape as mean")
+        masked_concentration = self._masked_concentration()
+        action_valid = torch.where(self.mask, action.clamp_min(self.eps), torch.zeros_like(action))
+        action_sum = action_valid.sum(dim=-1, keepdim=True).clamp_min(self.eps)
+        probs = torch.where(self.mask, action_valid / action_sum, torch.zeros_like(action_valid))
+        action_safe = torch.where(self.mask, probs.clamp_min(self.eps), torch.ones_like(probs))
+        alpha0 = (self.concentration * self.mask_f).sum(dim=-1).clamp_min(self.eps)
+        logprob = (
+            torch.lgamma(alpha0)
+            - torch.lgamma(masked_concentration).sum(dim=-1)
+            + ((masked_concentration - 1.0) * torch.log(action_safe)).sum(dim=-1)
+        )
+        return torch.where(self.valid_count >= 2, logprob, torch.zeros_like(logprob))
+
+    def entropy(self) -> torch.Tensor:
+        masked_concentration = self._masked_concentration()
+        alpha0 = (self.concentration * self.mask_f).sum(dim=-1).clamp_min(self.eps)
+        k_valid = self.valid_count
+        log_beta = torch.lgamma(masked_concentration).sum(dim=-1) - torch.lgamma(alpha0)
+        entropy = (
+            log_beta
+            + (alpha0 - k_valid) * torch.digamma(alpha0)
+            - ((masked_concentration - 1.0) * torch.digamma(masked_concentration)).sum(dim=-1)
+        )
+        return torch.where(self.valid_count >= 2, entropy, torch.zeros_like(entropy))
+
+
+class MaskedStickBreakingBeta:
+    """Masked stick-breaking distribution with independent Beta latent factors.
+
+    The action on the simplex is produced by sequentially allocating a fraction
+    of the remaining mass to each valid slot, leaving the final valid slot as
+    the deterministic residual. Log-prob ratios for PPO are computed in the
+    latent Beta-factor space, where the stick-breaking Jacobian cancels between
+    old and new policies for the same realized action.
+    """
+
+    def __init__(self, mean: torch.Tensor, kappa: torch.Tensor, mask: torch.Tensor, eps: float = 1.0e-6):
+        if mean.shape != mask.shape:
+            raise ValueError("mean and mask must share the same shape")
+        if kappa.ndim == mean.ndim:
+            if kappa.shape[-1] != 1:
+                raise ValueError("kappa must be scalar per row when it has the same ndim as mean")
+            kappa_scalar = kappa.squeeze(-1)
+        elif kappa.ndim == mean.ndim - 1:
+            kappa_scalar = kappa
+        else:
+            raise ValueError("kappa must have shape [...,] or [..., 1] matching mean batch dims")
+        if tuple(kappa_scalar.shape) != tuple(mean.shape[:-1]):
+            raise ValueError("kappa batch shape must match mean batch shape")
+        self.eps = float(eps)
+        self.mask = mask > 0.5
+        self.mask_f = self.mask.to(mean.dtype)
+        self.valid_count = self.mask_f.sum(dim=-1)
+        mean_valid = torch.where(self.mask, mean.clamp_min(self.eps), torch.zeros_like(mean))
+        mean_sum = mean_valid.sum(dim=-1, keepdim=True).clamp_min(self.eps)
+        normalized_mean = torch.where(self.mask, mean_valid / mean_sum, torch.zeros_like(mean_valid))
+        single_mask = self.valid_count == 1
+        normalized_mean = torch.where(single_mask.unsqueeze(-1), self.mask_f, normalized_mean)
+        no_mask = self.valid_count <= 0
+        normalized_mean = torch.where(no_mask.unsqueeze(-1), torch.zeros_like(normalized_mean), normalized_mean)
+        self.mean = normalized_mean
+        self.kappa = kappa_scalar.clamp_min(self.eps)
+        self._flat_mean = self.mean.reshape(-1, self.mean.shape[-1])
+        self._flat_mask = self.mask.reshape(-1, self.mask.shape[-1])
+        self._batch_shape = self.mean.shape[:-1]
+        self._event_dim = int(self.mean.shape[-1])
+        index_grid = torch.arange(self._event_dim, device=self.mean.device, dtype=torch.long).unsqueeze(0)
+        self._flat_last_idx = torch.where(
+            self._flat_mask,
+            index_grid.expand_as(self._flat_mask),
+            torch.full_like(self._flat_mask, -1, dtype=torch.long),
+        ).amax(dim=-1)
+        active_rows = self._flat_mask.sum(dim=-1) > 1
+        last_mask = index_grid.expand_as(self._flat_mask) == self._flat_last_idx.unsqueeze(-1)
+        self._flat_latent_mask = self._flat_mask & ~(active_rows.unsqueeze(-1) & last_mask)
+        self._flat_last_mask = self._flat_mask & ~self._flat_latent_mask
+        self.latent_mask = self._flat_latent_mask.reshape_as(self.mask)
+        self.latent_count = self.latent_mask.to(dtype=mean.dtype).sum(dim=-1)
+        factor_mean = self._flat_mean_to_factors(self._flat_mean)
+        flat_kappa = self.kappa.reshape(-1, 1).expand_as(factor_mean)
+        self._flat_factor_mean = torch.where(
+            self._flat_latent_mask,
+            factor_mean.clamp(min=self.eps, max=1.0 - self.eps),
+            torch.full_like(factor_mean, 0.5),
+        )
+        self._flat_alpha = torch.where(
+            self._flat_latent_mask,
+            (self._flat_factor_mean * flat_kappa).clamp_min(self.eps),
+            torch.ones_like(self._flat_factor_mean),
+        )
+        self._flat_beta = torch.where(
+            self._flat_latent_mask,
+            ((1.0 - self._flat_factor_mean) * flat_kappa).clamp_min(self.eps),
+            torch.ones_like(self._flat_factor_mean),
+        )
+        self._beta_dist = Beta(self._flat_alpha, self._flat_beta)
+
+    def _flat_mean_to_factors(self, flat_probs: torch.Tensor) -> torch.Tensor:
+        factor_cols: list[torch.Tensor] = []
+        remaining = torch.ones((flat_probs.shape[0],), dtype=flat_probs.dtype, device=flat_probs.device)
+        for slot in range(self._event_dim):
+            slot_mass = torch.where(self._flat_mask[:, slot], flat_probs[:, slot], torch.zeros_like(remaining))
+            factor = torch.where(
+                self._flat_latent_mask[:, slot],
+                (slot_mass / remaining.clamp_min(self.eps)).clamp(min=self.eps, max=1.0 - self.eps),
+                torch.zeros_like(remaining),
+            )
+            factor_cols.append(factor)
+            remaining = torch.where(
+                self._flat_mask[:, slot],
+                (remaining - slot_mass).clamp_min(self.eps),
+                remaining,
+            )
+        if not factor_cols:
+            return torch.zeros_like(flat_probs)
+        return torch.stack(factor_cols, dim=-1)
+
+    def _flat_factors_to_action(self, flat_factors: torch.Tensor) -> torch.Tensor:
+        action_cols: list[torch.Tensor] = []
+        remaining = torch.ones((flat_factors.shape[0],), dtype=flat_factors.dtype, device=flat_factors.device)
+        for slot in range(self._event_dim):
+            factor = torch.where(
+                self._flat_latent_mask[:, slot],
+                flat_factors[:, slot].clamp(min=self.eps, max=1.0 - self.eps),
+                torch.zeros_like(remaining),
+            )
+            latent_alloc = torch.where(self._flat_latent_mask[:, slot], remaining * factor, torch.zeros_like(remaining))
+            last_alloc = torch.where(self._flat_last_mask[:, slot], remaining, torch.zeros_like(remaining))
+            action_cols.append(latent_alloc + last_alloc)
+            remaining = torch.where(self._flat_latent_mask[:, slot], remaining * (1.0 - factor), remaining)
+            remaining = torch.where(self._flat_last_mask[:, slot], torch.zeros_like(remaining), remaining)
+        if not action_cols:
+            return torch.zeros_like(flat_factors)
+        return torch.stack(action_cols, dim=-1)
+
+    def _flat_action_to_factors(self, flat_action: torch.Tensor) -> torch.Tensor:
+        flat_valid = torch.where(self._flat_mask, flat_action.clamp_min(self.eps), torch.zeros_like(flat_action))
+        valid_sum = flat_valid.sum(dim=-1, keepdim=True).clamp_min(self.eps)
+        probs = torch.where(self._flat_mask, flat_valid / valid_sum, torch.zeros_like(flat_valid))
+        return self._flat_mean_to_factors(probs)
+
+    def rsample(self, sample_shape: torch.Size = torch.Size()) -> torch.Tensor:
+        if len(sample_shape) > 1:
+            raise ValueError("Only one-dimensional sample_shape is supported")
+        sample_count = int(sample_shape[0]) if len(sample_shape) == 1 else 1
+        factor_sample = self._beta_dist.rsample((sample_count,))
+        factor_sample = torch.where(
+            self._flat_latent_mask.unsqueeze(0),
+            factor_sample,
+            torch.zeros_like(factor_sample),
+        )
+        flat_actions = self._flat_factors_to_action(factor_sample.reshape(-1, self._event_dim)).reshape(
+            sample_count,
+            *self._batch_shape,
+            self._event_dim,
+        )
+        if len(sample_shape) == 0:
+            return flat_actions[0]
+        return flat_actions
+
+    def sample(self, sample_shape: torch.Size = torch.Size()) -> torch.Tensor:
+        with torch.no_grad():
+            return self.rsample(sample_shape)
+
+    def mode(self) -> torch.Tensor:
+        return self.mean
+
+    def log_prob_parts(self, action: torch.Tensor) -> torch.Tensor:
+        if action.shape != self.mean.shape:
+            raise ValueError("action must have the same shape as mean")
+        flat_factors = self._flat_action_to_factors(action.reshape(-1, self._event_dim))
+        logprob = self._beta_dist.log_prob(flat_factors.clamp(min=self.eps, max=1.0 - self.eps))
+        logprob = torch.where(self._flat_latent_mask, logprob, torch.zeros_like(logprob))
+        return logprob.reshape(*self._batch_shape, self._event_dim)
+
+    def log_prob(self, action: torch.Tensor) -> torch.Tensor:
+        return self.log_prob_parts(action).sum(dim=-1)
+
+    def entropy_parts(self) -> torch.Tensor:
+        entropy = self._beta_dist.entropy()
+        entropy = torch.where(self._flat_latent_mask, entropy, torch.zeros_like(entropy))
+        return entropy.reshape(*self._batch_shape, self._event_dim)
+
+    def entropy(self) -> torch.Tensor:
+        return self.entropy_parts().sum(dim=-1)
+
+
 @dataclass
 class MaskedSequentialCategoricalSample:
     indices: torch.Tensor
@@ -109,10 +377,11 @@ class MaskedSequentialCategorical:
     def _indices_to_select_mask(self, indices: torch.Tensor) -> torch.Tensor:
         select_mask = torch.zeros((*indices.shape[:-1], self.num_choices), dtype=self.logits.dtype, device=self.logits.device)
         valid_choice_mask = indices >= 0
-        if torch.any(valid_choice_mask):
-            one_hot = F.one_hot(indices.clamp_min(0), num_classes=self.num_choices).to(select_mask.dtype)
-            one_hot = one_hot * valid_choice_mask.unsqueeze(-1).to(select_mask.dtype)
-            select_mask = one_hot.sum(dim=-2)
+        if self.num_choices <= 0:
+            return select_mask
+        one_hot = F.one_hot(indices.clamp_min(0), num_classes=self.num_choices).to(select_mask.dtype)
+        one_hot = one_hot * valid_choice_mask.unsqueeze(-1).to(select_mask.dtype)
+        select_mask = one_hot.sum(dim=-2)
         return select_mask
 
     def _pad_indices(self, indices: torch.Tensor) -> torch.Tensor:
@@ -176,60 +445,69 @@ class MaskedSequentialCategorical:
         for step in range(self.k):
             remaining = current_mask.sum(dim=-1)
             active = remaining > 1
-            if torch.any(active):
-                safe_logits = flat_logits.masked_fill(~current_mask, -1e9)
-                safe_logits = torch.where(active.unsqueeze(-1), safe_logits, torch.zeros_like(safe_logits))
-                step_indices = flat_indices[:, step].clamp_min(0)
-                step_log_probs = F.log_softmax(safe_logits, dim=-1)
-                gathered = step_log_probs.gather(1, step_indices.unsqueeze(-1)).squeeze(-1)
-                step_valid = active & (flat_indices[:, step] >= 0) & current_mask.gather(
-                    1, step_indices.unsqueeze(-1)
-                ).squeeze(-1)
-                logprob = logprob + torch.where(step_valid, gathered, torch.zeros_like(logprob))
+            safe_logits = flat_logits.masked_fill(~current_mask, -1e9)
+            safe_logits = torch.where(active.unsqueeze(-1), safe_logits, torch.zeros_like(safe_logits))
+            step_indices = flat_indices[:, step].clamp_min(0)
+            step_log_probs = F.log_softmax(safe_logits, dim=-1)
+            gathered = step_log_probs.gather(1, step_indices.unsqueeze(-1)).squeeze(-1)
+            step_valid = active & (flat_indices[:, step] >= 0) & current_mask.gather(
+                1, step_indices.unsqueeze(-1)
+            ).squeeze(-1)
+            logprob = logprob + torch.where(step_valid, gathered, torch.zeros_like(logprob))
             step_valid_idx = flat_indices[:, step] >= 0
-            if torch.any(step_valid_idx):
-                chosen_mask = torch.zeros_like(current_mask)
-                chosen_mask[step_valid_idx, flat_indices[step_valid_idx, step].long()] = True
-                current_mask = current_mask & ~chosen_mask
+            chosen_mask = F.one_hot(
+                flat_indices[:, step].clamp_min(0),
+                num_classes=self.num_choices,
+            ).to(torch.bool)
+            chosen_mask = chosen_mask & step_valid_idx.unsqueeze(-1)
+            current_mask = current_mask & ~chosen_mask
         return logprob.reshape(self.logits.shape[:-1])
 
-    def _mask_key(self, mask: torch.Tensor) -> int:
-        return int(torch.sum(mask.to(torch.int64) * self._bit_weights).item())
+    def _entropy_exact_state_dp(self, steps: int) -> torch.Tensor:
+        batch_shape = self.logits.shape[:-1]
+        if self.num_choices <= 0 or int(steps) <= 0:
+            return torch.zeros(batch_shape, dtype=self.logits.dtype, device=self.logits.device)
+        if self.num_choices > 12:
+            safe_logits = self._safe_logits(self.mask)
+            has_any = self.mask.any(dim=-1)
+            safe_logits = torch.where(has_any.unsqueeze(-1), safe_logits, torch.zeros_like(safe_logits))
+            one_step_entropy = torch.where(has_any, Categorical(logits=safe_logits).entropy(), torch.zeros(batch_shape, dtype=self.logits.dtype, device=self.logits.device))
+            return one_step_entropy * float(min(int(steps), self.num_choices))
 
-    def _entropy_exact_row(
-        self,
-        row_logits: torch.Tensor,
-        row_mask: torch.Tensor,
-        steps_left: int,
-        memo: dict[tuple[int, int], torch.Tensor],
-    ) -> torch.Tensor:
-        valid_count = int(row_mask.sum().item())
-        if steps_left <= 0 or valid_count <= 1:
-            return row_logits.new_zeros(())
-        key = (steps_left, self._mask_key(row_mask))
-        if key in memo:
-            return memo[key]
-        safe_logits = row_logits.masked_fill(~row_mask, float("-inf"))
-        log_probs = F.log_softmax(safe_logits, dim=-1)
-        probs = log_probs.exp()
-        row_entropy = -(probs[row_mask] * log_probs[row_mask]).sum()
-        if steps_left == 1:
-            memo[key] = row_entropy
-            return row_entropy
-        future_entropy = row_logits.new_zeros(())
-        valid_indices = torch.nonzero(row_mask, as_tuple=False).flatten()
-        for idx in valid_indices:
-            next_mask = row_mask.clone()
-            next_mask[idx] = False
-            future_entropy = future_entropy + probs[idx] * self._entropy_exact_row(
-                row_logits,
-                next_mask,
-                steps_left - 1,
-                memo,
+        flat_logits = self.logits.reshape(-1, self.num_choices)
+        flat_mask = self.mask.reshape(-1, self.num_choices)
+        batch = int(flat_logits.shape[0])
+        state_count = 1 << int(self.num_choices)
+        state_ids = torch.arange(state_count, device=self.logits.device, dtype=torch.long)
+        bit_weights = (1 << torch.arange(self.num_choices, device=self.logits.device, dtype=torch.long))
+        state_masks = (state_ids.unsqueeze(-1).bitwise_and(bit_weights.view(1, -1)) != 0)
+        initial_ids = (flat_mask.to(torch.long) * bit_weights.view(1, -1)).sum(dim=-1)
+        state_probs = F.one_hot(initial_ids, num_classes=state_count).to(dtype=self.logits.dtype)
+        total_entropy = torch.zeros((batch,), dtype=self.logits.dtype, device=self.logits.device)
+        state_valid_counts = state_masks.sum(dim=-1)
+        for _step in range(min(int(steps), int(self.num_choices))):
+            active_states = state_valid_counts > 1
+            logits_state = flat_logits[:, None, :].masked_fill(~state_masks.view(1, state_count, self.num_choices), -1e9)
+            logits_state = torch.where(active_states.view(1, state_count, 1), logits_state, torch.zeros_like(logits_state))
+            dist_state = Categorical(logits=logits_state)
+            entropy_state = torch.where(
+                active_states.view(1, state_count),
+                dist_state.entropy(),
+                torch.zeros((batch, state_count), dtype=self.logits.dtype, device=self.logits.device),
             )
-        total_entropy = row_entropy + future_entropy
-        memo[key] = total_entropy
-        return total_entropy
+            total_entropy = total_entropy + (state_probs * entropy_state).sum(dim=-1)
+            choice_probs = torch.where(
+                active_states.view(1, state_count, 1),
+                dist_state.probs * state_masks.view(1, state_count, self.num_choices).to(self.logits.dtype),
+                torch.zeros((batch, state_count, self.num_choices), dtype=self.logits.dtype, device=self.logits.device),
+            )
+            next_state_ids = state_ids.view(state_count, 1).bitwise_and(~bit_weights.view(1, self.num_choices))
+            next_probs = torch.zeros_like(state_probs)
+            expanded_next = next_state_ids.view(1, state_count, self.num_choices).expand(batch, -1, -1)
+            next_probs.scatter_add_(1, expanded_next.reshape(batch, -1), (state_probs.unsqueeze(-1) * choice_probs).reshape(batch, -1))
+            inactive_mass = state_probs * (~active_states).view(1, state_count).to(state_probs.dtype)
+            state_probs = next_probs + inactive_mass
+        return total_entropy.reshape(batch_shape)
 
     def entropy(self) -> torch.Tensor:
         batch_shape = self.logits.shape[:-1]
@@ -243,29 +521,16 @@ class MaskedSequentialCategorical:
         if self.k == 1:
             return entropy
         if self.k != 2:
-            flat_logits = self.logits.reshape(-1, self.num_choices)
-            flat_mask = self.mask.reshape(-1, self.num_choices)
-            flat_entropy = []
-            for row_logits, row_mask in zip(flat_logits, flat_mask):
-                memo: dict[tuple[int, int], torch.Tensor] = {}
-                flat_entropy.append(
-                    self._entropy_exact_row(
-                        row_logits,
-                        row_mask,
-                        min(self.k, int(row_mask.sum().item())),
-                        memo,
-                    )
-                )
-            return torch.stack(flat_entropy, dim=0).reshape(batch_shape)
+            return self._entropy_exact_state_dp(int(self.k))
         probs1 = dist1.probs
         expected_h2 = torch.zeros_like(entropy)
         for choice in range(self.num_choices):
-            choice_mask = self.mask.clone()
-            choice_mask[..., choice] = False
+            choice_mask = self.mask & ~F.one_hot(
+                torch.full(batch_shape, int(choice), dtype=torch.long, device=self.logits.device),
+                num_classes=self.num_choices,
+            ).to(torch.bool)
             remaining = choice_mask.sum(dim=-1)
             active = self.mask[..., choice] & (remaining > 0)
-            if not torch.any(active):
-                continue
             logits2 = self._safe_logits(choice_mask)
             logits2 = torch.where(active.unsqueeze(-1), logits2, torch.zeros_like(logits2))
             dist2 = Categorical(logits=logits2)

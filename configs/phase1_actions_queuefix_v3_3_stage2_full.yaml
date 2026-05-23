@@ -1,4 +1,4 @@
-# Stage 2: full actions. Fixed-load + nearest-K candidates.
+﻿# Stage 2: full actions. Fixed-load + nearest-K candidates.
 # Load weights from stage1 (see commands below).
 # Suggested usage:
 #   python scripts/train.py --config configs/phase1_actions_queuefix_v3_3_stage2_full.yaml --updates 500 --log_dir runs/phase1_actions --run_id stage2_full --init_actor runs/phase1_actions/stage1_accel/actor.pt --init_critic runs/phase1_actions/stage1_accel/critic.pt
@@ -53,7 +53,7 @@ gu_tx_power: 0.18
 uav_tx_gain: 300.0
 sat_rx_gain: 300.0
 b_acc: 1.0e7
-b_sat_total: 2.0e7
+b_backhaul_per_sat: 2.0e7
 sat_cpu_freq: 1.0e10
 noise_density: 4.0e-21
 pathloss_mode: prob_los

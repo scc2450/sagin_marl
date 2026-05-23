@@ -1,4 +1,4 @@
-# Joint 3-head training: accel + bw + sat are all trainable.
+﻿# Joint 3-head training: accel + bw + sat are all trainable.
 # Variant:
 #   - Keeps the same joint curriculum as the base config.
 #   - Enables access-link fading and average-overlap interference.
@@ -75,7 +75,7 @@ gu_tx_power: 0.18
 uav_tx_gain: 63.1
 sat_rx_gain: 63.1
 b_acc: 1.0e7
-b_sat_total: 1.5e7
+b_backhaul_per_sat: 1.5e7
 sat_cpu_freq: 1.8e10
 noise_density: 4.0e-21
 pathloss_mode: prob_los
