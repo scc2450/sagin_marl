@@ -35,7 +35,7 @@ A_oracle_ref = G(s, a_rollout_sample) - G(s, a_deterministic_ref)
 ## 脚本
 
 ```text
-scripts/audit_stage_ppo_credit_alignment.py
+scripts/diagnostics/audit/audit_stage_ppo_credit_alignment.py
 ```
 
 关键参数：
@@ -52,7 +52,7 @@ scripts/audit_stage_ppo_credit_alignment.py
 命令：
 
 ```powershell
-.\.venv\Scripts\python.exe scripts\audit_stage_ppo_credit_alignment.py `
+.\.venv\Scripts\python.exe scripts\diagnostics\audit\audit_stage_ppo_credit_alignment.py `
   --stage sat `
   --config configs\tmp\structured_single_sat_3uav_20gu_t250_ppo.yaml `
   --reward_mode sat_relay_processed `
@@ -210,7 +210,7 @@ oracle sign
 为了排除“只是 critic 还没学出来”的解释，新增脚本：
 
 ```text
-scripts/audit_stage_critic_only_fit.py
+scripts/diagnostics/audit/audit_stage_critic_only_fit.py
 ```
 
 这次不用 MC return，而是按训练时口径固定 `train_gae` target：

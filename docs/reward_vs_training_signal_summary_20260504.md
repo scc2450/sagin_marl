@@ -292,7 +292,7 @@ state s
 新增脚本：
 
 ```text
-scripts/audit_stage_credit_chain.py
+scripts/diagnostics/audit/audit_stage_credit_chain.py
 ```
 
 它固定同一批 state/action，分三段输出：
@@ -313,7 +313,7 @@ scripts/audit_stage_credit_chain.py
 
 ## 8. 旧 Qπ 数值应该怎么解释
 
-已有 `scripts/audit_stage_qpi_action_credit.py` 结果仍然有用，但解释要改。
+已有 `scripts/diagnostics/audit/audit_stage_qpi_action_credit.py` 结果仍然有用，但解释要改。
 
 SAT + `sat_relay_processed`：
 

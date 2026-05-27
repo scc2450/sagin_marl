@@ -31,24 +31,24 @@ from sagin_marl.rl.stage_mcgae import (
 from sagin_marl.rl.structured_mappo import _index_dataclass
 from sagin_marl.rl.structured_train import close_structured_env_group, make_structured_driver_group
 
-from scripts.audit_stage_critic_only_fit import (
+from scripts.diagnostics.audit.audit_stage_critic_only_fit import (
     _collect_stage_bank,
     _heldout_vpi_ceiling_probe,
     _train_critic_only,
 )
-from scripts.audit_stage_credit_chain import (
+from scripts.diagnostics.audit.audit_stage_credit_chain import (
     _candidate_shift_summary,
     _eval_candidate_logprob,
     _per_state_shift_summary,
     _row_agent_indices,
     _standardize_np,
 )
-from scripts.audit_stage_ppo_credit_alignment import (
+from scripts.diagnostics.audit.audit_stage_ppo_credit_alignment import (
     _normalize_advantages_like_update,
     _stage_action_samples,
 )
-from scripts.audit_stage_qpi_action_credit import _branch_returns_qpi
-from scripts.diagnose_reward_action_sensitivity import _corr, _summ
+from scripts.diagnostics.audit.audit_stage_qpi_action_credit import _branch_returns_qpi
+from scripts.diagnostics.diagnose.diagnose_reward_action_sensitivity import _corr, _summ
 
 
 def _set_seed(seed: int) -> None:

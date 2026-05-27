@@ -20,7 +20,7 @@ from sagin_marl.rl.stage_mcgae import (
     set_seed as _set_seed,
 )
 from sagin_marl.rl.structured_train import close_structured_env_group, make_structured_driver_group
-from scripts.audit_stage_critic_only_fit import (
+from scripts.diagnostics.audit.audit_stage_critic_only_fit import (
     _collect_stage_bank,
     _train_critic_only,
 )

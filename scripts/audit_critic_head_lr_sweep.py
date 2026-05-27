@@ -36,7 +36,7 @@ from scripts.audit_fixed_critic_benchmark import (
     _system_context,
     _world_global_features,
 )
-from scripts.audit_stage_critic_only_fit import (
+from scripts.diagnostics.audit.audit_stage_critic_only_fit import (
     _collect_stage_bank,
     _heldout_vpi_ceiling_probe,
     _train_critic_only,

@@ -48,11 +48,6 @@ scripts/
 
 | path | reason |
 |---|---|
-| `scripts/audit_stage_credit_chain.py` | current entrypoint or imported helper; leave in root for first pass |
-| `scripts/audit_stage_critic_only_fit.py` | current entrypoint or imported helper; leave in root for first pass |
-| `scripts/audit_stage_ppo_credit_alignment.py` | current entrypoint or imported helper; leave in root for first pass |
-| `scripts/audit_stage_qpi_action_credit.py` | current entrypoint or imported helper; leave in root for first pass |
-| `scripts/diagnose_reward_action_sensitivity.py` | current entrypoint or imported helper; leave in root for first pass |
 | `scripts/evaluate_structured_mixed_heads_native.py` | current entrypoint or imported helper; leave in root for first pass |
 | `scripts/render_structured_episode.py` | current entrypoint or imported helper; leave in root for first pass |
 | `scripts/run_autodl_cuda_smoke.sh` | current entrypoint or imported helper; leave in root for first pass |
@@ -66,13 +61,15 @@ scripts/
 |---|---:|
 | `scripts/analysis` | 17 |
 | `scripts/benchmarks` | 5 |
-| `scripts/diagnostics` | 100 |
+| `scripts/diagnostics` | 105 |
 | `scripts/evaluation` | 9 |
 | `scripts/experiments` | 23 |
 | `scripts/legacy` | 8 |
-| `scripts/root-keepers` | 11 |
+| `scripts/root-keepers` | 6 |
 
 ## Import-Dependent Scripts
+
+This table records the early planning snapshot. Executed move sections below supersede locations when a script has since been migrated.
 
 | script | imported by |
 |---|---|
@@ -188,6 +185,16 @@ This batch also normalizes existing `scripts/diagnostics/**` repo-root bootstrap
 - `scripts/diagnose_structured_bw_native_clean_fixed_fit.py -> scripts/diagnostics/diagnose/diagnose_structured_bw_native_clean_fixed_fit.py`
 - `scripts/diagnose_structured_bw_workload_proportional_fit.py -> scripts/diagnostics/diagnose/diagnose_structured_bw_workload_proportional_fit.py`
 
+## Executed Stage Credit Batch
+
+Moved the interdependent stage-credit audit helper cluster after updating all direct `scripts.*` imports and historical documentation command paths. These scripts are used to diagnose PPO/MC/QPI credit alignment and critic-fit behavior; moving them first keeps the later critic-audit migration smaller.
+
+- `scripts/audit_stage_ppo_credit_alignment.py -> scripts/diagnostics/audit/audit_stage_ppo_credit_alignment.py`
+- `scripts/audit_stage_qpi_action_credit.py -> scripts/diagnostics/audit/audit_stage_qpi_action_credit.py`
+- `scripts/audit_stage_credit_chain.py -> scripts/diagnostics/audit/audit_stage_credit_chain.py`
+- `scripts/audit_stage_critic_only_fit.py -> scripts/diagnostics/audit/audit_stage_critic_only_fit.py`
+- `scripts/diagnose_reward_action_sensitivity.py -> scripts/diagnostics/diagnose/diagnose_reward_action_sensitivity.py`
+
 ## Full Mapping
 
 | original path | proposed path | phase | risk | note |
@@ -215,10 +222,10 @@ This batch also normalizes existing `scripts/diagnostics/**` repo-root bootstrap
 | `scripts/audit_old_good_accel_python_credit.py` | `scripts/diagnostics/audit/audit_old_good_accel_python_credit.py` | P2 diagnostics | fix-ROOT-bootstrap | audit script; many imports require coordinated update |
 | `scripts/audit_requested_items.py` | `scripts/diagnostics/audit/audit_requested_items.py` | P2 diagnostics | low | audit script; many imports require coordinated update |
 | `scripts/audit_sat_local_world_vhat_probe.py` | `scripts/diagnostics/audit/audit_sat_local_world_vhat_probe.py` | P2 diagnostics | fix-ROOT-bootstrap | audit script; many imports require coordinated update |
-| `scripts/audit_stage_credit_chain.py` | `scripts/audit_stage_credit_chain.py` | P0 keep-root | low-now; high-if-moved, imported-by-2 | current entrypoint or imported helper; do not move in first pass |
-| `scripts/audit_stage_critic_only_fit.py` | `scripts/audit_stage_critic_only_fit.py` | P0 keep-root | low-now; high-if-moved, imported-by-12 | current entrypoint or imported helper; do not move in first pass |
-| `scripts/audit_stage_ppo_credit_alignment.py` | `scripts/audit_stage_ppo_credit_alignment.py` | P0 keep-root | low-now; high-if-moved, imported-by-16 | current entrypoint or imported helper; do not move in first pass |
-| `scripts/audit_stage_qpi_action_credit.py` | `scripts/audit_stage_qpi_action_credit.py` | P0 keep-root | low-now; high-if-moved, imported-by-3 | current entrypoint or imported helper; do not move in first pass |
+| `scripts/audit_stage_credit_chain.py` | `scripts/diagnostics/audit/audit_stage_credit_chain.py` | P2 diagnostics | coordinated-import-update | stage-credit diagnostic helper cluster |
+| `scripts/audit_stage_critic_only_fit.py` | `scripts/diagnostics/audit/audit_stage_critic_only_fit.py` | P2 diagnostics | coordinated-import-update | stage-credit diagnostic helper cluster |
+| `scripts/audit_stage_ppo_credit_alignment.py` | `scripts/diagnostics/audit/audit_stage_ppo_credit_alignment.py` | P2 diagnostics | coordinated-import-update | stage-credit diagnostic helper cluster |
+| `scripts/audit_stage_qpi_action_credit.py` | `scripts/diagnostics/audit/audit_stage_qpi_action_credit.py` | P2 diagnostics | coordinated-import-update | stage-credit diagnostic helper cluster |
 | `scripts/backfill_structured_tb.py` | `scripts/analysis/export/backfill_structured_tb.py` | P1 analysis | low | export/report generation |
 | `scripts/bench_structured_native_kernels.py` | `scripts/benchmarks/bench_structured_native_kernels.py` | P1/P2 benchmark | low | performance benchmark or profiler |
 | `scripts/bench_structured_training_system.py` | `scripts/benchmarks/bench_structured_training_system.py` | P1/P2 benchmark | low | performance benchmark or profiler |
@@ -240,7 +247,7 @@ This batch also normalizes existing `scripts/diagnostics/**` repo-root bootstrap
 | `scripts/diagnose_native_flow_regime.py` | `scripts/diagnostics/diagnose/diagnose_native_flow_regime.py` | P2 diagnostics | low | diagnostic script |
 | `scripts/diagnose_old_bootstrap_targets.py` | `scripts/diagnostics/diagnose/diagnose_old_bootstrap_targets.py` | P2 diagnostics | low | diagnostic script |
 | `scripts/diagnose_queue_regime.py` | `scripts/diagnostics/diagnose/diagnose_queue_regime.py` | P2 diagnostics | low | diagnostic script |
-| `scripts/diagnose_reward_action_sensitivity.py` | `scripts/diagnose_reward_action_sensitivity.py` | P0 keep-root | low-now; high-if-moved, imported-by-6 | current entrypoint or imported helper; do not move in first pass |
+| `scripts/diagnose_reward_action_sensitivity.py` | `scripts/diagnostics/diagnose/diagnose_reward_action_sensitivity.py` | P2 diagnostics | coordinated-import-update | shared reward/action sensitivity diagnostic helpers |
 | `scripts/diagnose_sat_counterfactual_step.py` | `scripts/diagnostics/diagnose/diagnose_sat_counterfactual_step.py` | P2 diagnostics | fix-ROOT-bootstrap | diagnostic script |
 | `scripts/diagnose_sat_credit_mismatch.py` | `scripts/diagnostics/diagnose/diagnose_sat_credit_mismatch.py` | P2 diagnostics | fix-ROOT-bootstrap | diagnostic script |
 | `scripts/diagnose_sat_selection_gap.py` | `scripts/diagnostics/diagnose/diagnose_sat_selection_gap.py` | P2 diagnostics | fix-ROOT-bootstrap | diagnostic script |

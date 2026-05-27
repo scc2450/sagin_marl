@@ -8,7 +8,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = next(parent for parent in Path(__file__).resolve().parents if (parent / "sagin_marl").is_dir())
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
@@ -29,7 +29,7 @@ from sagin_marl.rl.stage_mcgae import (
 )
 from sagin_marl.rl.structured_train import close_structured_env_group, make_structured_driver_group
 
-from scripts.diagnose_reward_action_sensitivity import (
+from scripts.diagnostics.diagnose.diagnose_reward_action_sensitivity import (
     _branch_returns_from_history_for_modes,
     _corr,
     _summ,

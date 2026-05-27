@@ -633,7 +633,7 @@ Vπ_new(s)
 脚本：
 
 ```text
-scripts/audit_stage_critic_only_fit.py
+scripts/diagnostics/audit/audit_stage_critic_only_fit.py
 ```
 
 关键参数：
@@ -967,7 +967,7 @@ MC-trained critic 解决了 V 尺度问题；
 
 ### 11.1 诊断脚本的 rollout begin 口径
 
-发现旧版 `scripts/audit_stage_critic_only_fit.py` 在同一个 native rollout program 中连续收多条 rollout；真实训练主路径则是每个 update 都重新：
+发现旧版 `scripts/diagnostics/audit/audit_stage_critic_only_fit.py` 在同一个 native rollout program 中连续收多条 rollout；真实训练主路径则是每个 update 都重新：
 
 ```text
 begin_native_rollout(...)
@@ -987,10 +987,10 @@ update
 对应修正：
 
 ```text
-scripts/audit_stage_critic_only_fit.py:
+scripts/diagnostics/audit/audit_stage_critic_only_fit.py:
   _collect_one_rollout(...) 内部先 begin_native_rollout(...)
 
-scripts/audit_stage_credit_chain.py:
+scripts/diagnostics/audit/audit_stage_credit_chain.py:
   新增 --selected_stage_samples，用来指定 exact rows
   新增 --pre_collect_rollouts，仅用于复现旧错误
 ```
@@ -1928,10 +1928,10 @@ Vπ(s) = E_future_noise,policy [ G | s ]
 sagin_marl/env/structured_batch_env_core.py:
   prepare_native_branch_replay_from_history(..., future_random_mode="copy|resample")
 
-scripts/audit_stage_qpi_action_credit.py:
+scripts/diagnostics/audit/audit_stage_qpi_action_credit.py:
   _branch_returns_qpi(..., future_random_mode="copy|resample")
 
-scripts/audit_stage_critic_only_fit.py:
+scripts/diagnostics/audit/audit_stage_critic_only_fit.py:
   Vπ ceiling probe 默认 future_random_mode="resample"
 
 scripts/audit_critic_vhat_artifact.py:

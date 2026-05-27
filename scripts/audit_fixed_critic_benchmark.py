@@ -26,7 +26,7 @@ from sagin_marl.rl.stage_mcgae import (
 )
 from sagin_marl.rl.structured_mappo import _collate_dataclass, _index_dataclass
 from sagin_marl.rl.structured_train import close_structured_env_group, make_structured_driver_group
-from scripts.audit_stage_critic_only_fit import (
+from scripts.diagnostics.audit.audit_stage_critic_only_fit import (
     _collect_stage_bank,
     _heldout_vpi_ceiling_probe,
     _train_critic_only,
