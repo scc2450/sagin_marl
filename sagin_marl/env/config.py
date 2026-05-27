@@ -739,6 +739,13 @@ class SaginConfig:
     stage_mcgae_bw_actor_lr: float | None = None
     stage_mcgae_actor_epochs: int | None = None
     stage_mcgae_actor_minibatches: int | None = None
+    # Actor advantage estimator for the MC-critic training scripts:
+    # "gae" uses bootstrapped GAE(V), "mc_residual" uses G_MC - V(s).
+    stage_mcgae_advantage_mode: str | None = None
+    stage_mcgae_accel_advantage_mode: str | None = None
+    stage_mcgae_sat_advantage_mode: str | None = None
+    stage_mcgae_bw_advantage_mode: str | None = None
+    stage_mcgae_macro_advantage_mode: str | None = None
     stage_actor_logprob_parity_check_enabled: bool = True
     stage_actor_logprob_parity_abs_tol: float = 1.0e-3
     stage_actor_logprob_parity_rel_tol: float = 1.0e-4
@@ -767,6 +774,25 @@ class SaginConfig:
     stage_actor_lr_max_accel: float = 6.0e-4
     stage_actor_lr_max_sat: float = 2.0e-3
     stage_actor_lr_max_bw: float = 2.0e-3
+    stage_actor_credit_gate_enabled: bool = False
+    stage_actor_adv_health_gate_enabled: bool = True
+    stage_actor_adv_raw_std_skip: float = 1.0e-8
+    stage_actor_adv_norm_std_skip: float = 1.0e-6
+    stage_actor_adv_ess_skip: float = 0.10
+    stage_actor_adv_ess_halve: float = 0.20
+    stage_actor_adv_top10_skip: float = 0.50
+    stage_actor_adv_top10_halve: float = 0.30
+    stage_actor_policy_response_gate_enabled: bool = True
+    stage_actor_response_rollback_t: float = -2.0
+    stage_actor_response_weak_t: float = 1.0
+    stage_actor_response_rollback_lr_factor: float = 0.5
+    stage_actor_importance_sampling_enabled: bool = False
+    stage_actor_is_sample_frac: float = 0.5
+    stage_actor_is_alpha: float = 0.5
+    stage_actor_is_eps_scale: float = 1.0e-6
+    stage_actor_is_weight_clip_min: float = 0.25
+    stage_actor_is_weight_clip_max: float = 4.0
+    stage_actor_is_uniform_frac: float = 0.0
     # Dedicated SAT MC-critic + A_gae(V) training loop knobs.
     sat_mcgae_cold_critic_lr: float = 1.0e-3
     sat_mcgae_cold_critic_epochs: int = 20

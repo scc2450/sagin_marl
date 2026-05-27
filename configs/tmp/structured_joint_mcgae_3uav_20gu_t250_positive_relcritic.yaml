@@ -250,6 +250,13 @@ stage_mcgae_actor_epochs: 5
 stage_mcgae_actor_minibatches: 1
 stage_mcgae_critic_update_microbatch_size: 1000
 stage_mcgae_critic_eval_before_enabled: false
+# Current best-supported mix: keep dense accel/SAT on GAE(V), while BW K>1
+# uses direct MC residual to avoid weakening macro credit with bootstrap error.
+stage_mcgae_accel_advantage_mode: gae
+stage_mcgae_sat_advantage_mode: gae
+stage_mcgae_bw_advantage_mode: mc_residual
+# Backward-compatible fallback for macro stages when no stage-specific mode is set.
+stage_mcgae_macro_advantage_mode: mc_residual
 stage_mcgae_critic_ev_gate_enabled: true
 stage_mcgae_critic_ev_soft_target: 0.96
 stage_mcgae_critic_ev_hard_floor: 0.90
@@ -283,6 +290,25 @@ stage_actor_lr_min_bw: 1.0e-5
 stage_actor_lr_max_accel: 6.0e-4
 stage_actor_lr_max_sat: 2.0e-3
 stage_actor_lr_max_bw: 2.0e-3
+stage_actor_credit_gate_enabled: false
+stage_actor_adv_health_gate_enabled: true
+stage_actor_adv_raw_std_skip: 1.0e-8
+stage_actor_adv_norm_std_skip: 1.0e-6
+stage_actor_adv_ess_skip: 0.10
+stage_actor_adv_ess_halve: 0.20
+stage_actor_adv_top10_skip: 0.50
+stage_actor_adv_top10_halve: 0.30
+stage_actor_policy_response_gate_enabled: true
+stage_actor_response_rollback_t: -2.0
+stage_actor_response_weak_t: 1.0
+stage_actor_response_rollback_lr_factor: 0.5
+stage_actor_importance_sampling_enabled: false
+stage_actor_is_sample_frac: 0.5
+stage_actor_is_alpha: 0.5
+stage_actor_is_eps_scale: 1.0e-6
+stage_actor_is_weight_clip_min: 0.25
+stage_actor_is_weight_clip_max: 4.0
+stage_actor_is_uniform_frac: 0.0
 
 # Backward-compatible SAT-only fallback knobs for scripts/train_sat_mcgae.py.
 sat_mcgae_cold_critic_lr: 1.0e-3

@@ -1343,6 +1343,7 @@ def main() -> None:
             actor_metrics: dict[str, float] = {}
             adv_metrics: dict[str, float] = {}
             stage_actor_inputs: dict[int, torch.Tensor] = {}
+            stage_actor_raw_inputs: dict[int, torch.Tensor] = {}
             actor_stage_batches: dict[int, _ActorOnlyStageBatch] = {}
             for stage_id in STAGES:
                 stage_batch = views.training_view.stage_batches[int(stage_id)]
@@ -1367,6 +1368,7 @@ def main() -> None:
                 adv_metrics.update({f"{stage_name}_value_{k}": v for k, v in value_stats.items()})
                 adv_metrics[f"{stage_name}_critic_final_ev"] = _tensor_ev(stage_values, stage_targets[int(stage_id)])
                 stage_actor_inputs[int(stage_id)] = stage_adv_norm
+                stage_actor_raw_inputs[int(stage_id)] = stage_adv
                 actor_stage_batches[int(stage_id)] = _actor_only_stage_batch(stage_batch)
 
             t_prune = time.perf_counter()
@@ -1382,6 +1384,7 @@ def main() -> None:
                 stage_batch = actor_stage_batches[int(stage_id)]
                 stage_name = STAGE_NAME[int(stage_id)]
                 stage_adv_norm = stage_actor_inputs[int(stage_id)]
+                stage_adv_raw = stage_actor_raw_inputs[int(stage_id)]
                 _append_phase_trace(
                     run_dir,
                     update=update + 1,
@@ -1414,6 +1417,7 @@ def main() -> None:
                         stage_id=int(stage_id),
                         stage_batch=stage_batch,
                         stage_advantages=stage_adv_norm,
+                        stage_advantages_raw=stage_adv_raw,
                         optimizer=actor_optimizers[int(stage_id)],
                         epochs=int(hparams["actor_epochs"]),
                         minibatches=int(hparams["actor_minibatches"]),
@@ -1426,14 +1430,32 @@ def main() -> None:
                             else None
                         ),
                     )
-                    stats.update(
-                        _maybe_adjust_stage_actor_lr(
-                            actor_optimizers[int(stage_id)],
-                            stage_id=int(stage_id),
-                            stage_metrics=stats,
-                            hparams=hparams,
+                    if float(stats.get("actor_credit_gate_rollback", 0.0)) > 0.0:
+                        suffix = _stage_metric_suffix(int(stage_id))
+                        current_lr = float(actor_optimizers[int(stage_id)].param_groups[0].get("lr", 0.0))
+                        stats.update(
+                            {
+                                f"actor_lr_used_{suffix}": current_lr,
+                                f"actor_lr_next_{suffix}": current_lr,
+                                f"actor_lr_decayed_{suffix}": 1.0,
+                                f"actor_lr_grew_{suffix}": 0.0,
+                                f"actor_lr_high_count_{suffix}": float(
+                                    hparams.get(f"actor_lr_high_count_{suffix}", 0)
+                                ),
+                                f"actor_lr_low_count_{suffix}": float(
+                                    hparams.get(f"actor_lr_low_count_{suffix}", 0)
+                                ),
+                            }
                         )
-                    )
+                    else:
+                        stats.update(
+                            _maybe_adjust_stage_actor_lr(
+                                actor_optimizers[int(stage_id)],
+                                stage_id=int(stage_id),
+                                stage_metrics=stats,
+                                hparams=hparams,
+                            )
+                        )
                 actor_metrics.update(_prefix_keys(stats, f"{stage_name}_actor", keep_prefixed_stage_keys=True))
                 _append_phase_trace(
                     run_dir,
