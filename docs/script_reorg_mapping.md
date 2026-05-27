@@ -284,6 +284,20 @@ Moved the BW distillation/training/tooling family into experiment subdirectories
 - `scripts/search_structured_bw_reward_alignment.py -> scripts/experiments/bw_tools/search_structured_bw_reward_alignment.py`
 - `scripts/solve_bw_1uav2gu_flow_bcd.py -> scripts/experiments/bw_tools/solve_bw_1uav2gu_flow_bcd.py`
 
+## Executed Thesis/SAT/Runner Batch
+
+Moved focused evaluation, thesis analysis, SAT offline validation, old runner, and single-purpose training experiment scripts out of the top-level `scripts/` directory. `evaluate_joint_head_timeline.py` was placed under `scripts/evaluation/sat/` with `evaluate_partner_swap_matrix.py` because it dynamically loads that sibling module.
+
+- `scripts/analyze_thesis_fairness.py -> scripts/analysis/analyze_thesis_fairness.py`
+- `scripts/evaluate_thesis_native_methods.py -> scripts/evaluation/evaluate_thesis_native_methods.py`
+- `scripts/evaluate_joint_head_timeline.py -> scripts/evaluation/sat/evaluate_joint_head_timeline.py`
+- `scripts/evaluate_partner_swap_matrix.py -> scripts/evaluation/sat/evaluate_partner_swap_matrix.py`
+- `scripts/evaluate_sat_slot_permutation.py -> scripts/evaluation/sat/evaluate_sat_slot_permutation.py`
+- `scripts/offline_validate_sat_local_listwise.py -> scripts/experiments/sat/offline_validate_sat_local_listwise.py`
+- `scripts/train_accel_python_simple_ppo.py -> scripts/experiments/training/train_accel_python_simple_ppo.py`
+- `scripts/run_curriculum_stage123_formal.ps1 -> scripts/legacy/runners/run_curriculum_stage123_formal.ps1`
+- `scripts/run_structured_bw_fourway_ablation.ps1 -> scripts/legacy/runners/run_structured_bw_fourway_ablation.ps1`
+
 ## Full Mapping
 
 | original path | proposed path | phase | risk | note |
@@ -408,7 +422,7 @@ Moved the BW distillation/training/tooling family into experiment subdirectories
 | `scripts/eval_param_sweep.py` | `scripts/evaluation/eval_param_sweep.py` | P2 evaluation | low | evaluation helper or sweep |
 | `scripts/evaluate.py` | `scripts/legacy/pettingzoo/evaluate.py` | P2 legacy | update-docs | old flat/PettingZoo workflow |
 | `scripts/evaluate_action_head_ablation_best.py` | `scripts/evaluation/evaluate_action_head_ablation_best.py` | P2 evaluation | low | evaluation helper or sweep |
-| `scripts/evaluate_joint_head_timeline.py` | `scripts/evaluation/evaluate_joint_head_timeline.py` | P2 evaluation | fix-ROOT-bootstrap | evaluation helper or sweep |
+| `scripts/evaluate_joint_head_timeline.py` | `scripts/evaluation/sat/evaluate_joint_head_timeline.py` | P2 evaluation | fix-ROOT-bootstrap | SAT/partner evaluation helper |
 | `scripts/evaluate_partner_swap_matrix.py` | `scripts/evaluation/sat/evaluate_partner_swap_matrix.py` | P2 evaluation | low | SAT/partner evaluation helper |
 | `scripts/evaluate_sat_slot_permutation.py` | `scripts/evaluation/sat/evaluate_sat_slot_permutation.py` | P2 evaluation | fix-ROOT-bootstrap | SAT/partner evaluation helper |
 | `scripts/evaluate_structured.py` | `scripts/legacy/structured/evaluate_structured.py` | P2 legacy | update-docs | old structured/stage workflow; docs still reference it |

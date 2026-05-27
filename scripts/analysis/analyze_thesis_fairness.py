@@ -7,14 +7,14 @@ import sys
 from pathlib import Path
 from typing import Any
 
-ROOT = os.path.dirname(os.path.dirname(__file__))
-if ROOT not in sys.path:
-    sys.path.insert(0, ROOT)
+ROOT = next(parent for parent in Path(__file__).resolve().parents if (parent / "sagin_marl").is_dir())
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 
 import numpy as np
 import torch
 
-from scripts.evaluate_thesis_native_methods import _actor_state_from_stage_checkpoints
+from scripts.evaluation.evaluate_thesis_native_methods import _actor_state_from_stage_checkpoints
 from sagin_marl.env.config import load_config
 from sagin_marl.rl import structured_critic_schema as critic_schema
 from sagin_marl.rl.structured_eval import (

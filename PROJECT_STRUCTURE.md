@@ -173,7 +173,7 @@ scripts/evaluate_structured_mixed_heads_native.py
 ## 仍有用的辅助脚本
 
 ```text
-scripts/evaluate_thesis_native_methods.py
+scripts/evaluation/evaluate_thesis_native_methods.py
 ```
 
 论文方法对照 / baseline 汇总入口，适合批量评估 proposed、baseline、Lyapunov 等。
@@ -191,7 +191,7 @@ scripts/analysis/export/export_tb_scalars.py
 导出 TensorBoard scalar 曲线。
 
 ```text
-scripts/analyze_thesis_fairness.py
+scripts/analysis/analyze_thesis_fairness.py
 ```
 
 论文 fairness / 指标分析辅助。

@@ -9,7 +9,7 @@ from dataclasses import fields, is_dataclass
 from pathlib import Path
 from typing import Any
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = next(parent for parent in Path(__file__).resolve().parents if (parent / "sagin_marl").is_dir())
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 

@@ -14,7 +14,7 @@
 
 ## 脚本
 
-- 验证脚本： [scripts/offline_validate_sat_local_listwise.py](/d:/研三上/毕设/sagin_marl/scripts/offline_validate_sat_local_listwise.py:1)
+- 验证脚本： [scripts/experiments/sat/offline_validate_sat_local_listwise.py](/d:/研三上/毕设/sagin_marl/scripts/experiments/sat/offline_validate_sat_local_listwise.py:1)
 
 脚本口径：
 
@@ -32,7 +32,7 @@
 命令：
 
 ```powershell
-.venv\Scripts\python.exe scripts\offline_validate_sat_local_listwise.py `
+.venv\Scripts\python.exe scripts\experiments\sat\offline_validate_sat_local_listwise.py `
   --episodes 3 `
   --step-stride 80 `
   --max-contexts 6 `
