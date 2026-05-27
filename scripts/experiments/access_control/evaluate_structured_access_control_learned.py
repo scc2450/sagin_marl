@@ -9,21 +9,21 @@ import sys
 from pathlib import Path
 from typing import Any
 
-ROOT = os.path.dirname(os.path.dirname(__file__))
-if ROOT not in sys.path:
-    sys.path.insert(0, ROOT)
+ROOT = next(parent for parent in Path(__file__).resolve().parents if (parent / "sagin_marl").is_dir())
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 
 import numpy as np
 import torch
 
-from access_control_imitation_common import (
+from scripts.experiments.access_control.access_control_imitation_common import (
     AccessBidScorer,
     pair_feature_names,
     predict_access_assoc,
     predict_access_assoc_from_snapshot,
     queue_aware_bw_policy_from_snapshot,
 )
-from evaluate_structured_access_control_oracle import (
+from scripts.experiments.access_control.evaluate_structured_access_control_oracle import (
     _apply_access_stage_override,
     _episode_metrics_template,
     _episode_row_from_accumulator,

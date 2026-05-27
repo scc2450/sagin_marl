@@ -9,7 +9,7 @@ import torch.nn as nn
 
 from sagin_marl.env import channel
 
-from evaluate_structured_access_control_oracle import (
+from scripts.experiments.access_control.evaluate_structured_access_control_oracle import (
     _assoc_candidate_users,
     _feasible_overlap_candidate_lists,
     _reference_eta_matrix,

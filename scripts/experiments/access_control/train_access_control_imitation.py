@@ -8,16 +8,16 @@ import sys
 from pathlib import Path
 from typing import Any
 
-ROOT = os.path.dirname(os.path.dirname(__file__))
-if ROOT not in sys.path:
-    sys.path.insert(0, ROOT)
+ROOT = next(parent for parent in Path(__file__).resolve().parents if (parent / "sagin_marl").is_dir())
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 
 import numpy as np
 import torch
 import torch.nn.functional as F
 
-from access_control_imitation_common import AccessBidScorer, AccessUserGroup, build_overlap_user_choices, pair_feature_names
-from evaluate_structured_access_control_oracle import _write_csv
+from scripts.experiments.access_control.access_control_imitation_common import AccessBidScorer, AccessUserGroup, build_overlap_user_choices, pair_feature_names
+from scripts.experiments.access_control.evaluate_structured_access_control_oracle import _write_csv
 from sagin_marl.env.config import load_config
 from sagin_marl.rl.structured_train import (
     close_structured_env_group,

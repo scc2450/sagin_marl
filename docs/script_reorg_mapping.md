@@ -257,6 +257,16 @@ Moved the remaining root-level `diagnose_*` scripts into `scripts/diagnostics/di
 - `scripts/diagnose_structured_sat_action_horizon.py -> scripts/diagnostics/diagnose/diagnose_structured_sat_action_horizon.py`
 - `scripts/diagnose_structured_sat_local_swap_horizon.py -> scripts/diagnostics/diagnose/diagnose_structured_sat_local_swap_horizon.py`
 
+## Executed Access-Control Experiment Batch
+
+Moved the access-control imitation/evaluation family into one experiment directory. These files form a small coupled cluster around shared access-bid scoring helpers and oracle/fixed-rule/learned evaluation entrypoints.
+
+- `scripts/access_control_imitation_common.py -> scripts/experiments/access_control/access_control_imitation_common.py`
+- `scripts/train_access_control_imitation.py -> scripts/experiments/access_control/train_access_control_imitation.py`
+- `scripts/evaluate_structured_access_control_fixedrule.py -> scripts/experiments/access_control/evaluate_structured_access_control_fixedrule.py`
+- `scripts/evaluate_structured_access_control_learned.py -> scripts/experiments/access_control/evaluate_structured_access_control_learned.py`
+- `scripts/evaluate_structured_access_control_oracle.py -> scripts/experiments/access_control/evaluate_structured_access_control_oracle.py`
+
 ## Full Mapping
 
 | original path | proposed path | phase | risk | note |
