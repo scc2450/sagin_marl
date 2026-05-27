@@ -54,7 +54,7 @@
 - `sagin_marl/env/config.py`
 - `sagin_marl/env/sagin_env.py`
 - `sagin_marl/env/structured_driver.py`
-- `scripts/diagnose_structured_bw_env_leverage.py`
+- `scripts/diagnostics/diagnose/diagnose_structured_bw_env_leverage.py`
 
 主要新增/使用的配置：
 - `configs/structured_bw_sanity_1uav_static_gap_debug_t10_ppo_obsproxy_only.yaml`
@@ -393,7 +393,7 @@ value probe：
 - 输出：`runs/analysis/bw_deadline_mild_value_probe_20260411/summary.json`
 
 credit mismatch probe：
-- `scripts/diagnose_structured_bw_credit_mismatch.py`
+- `scripts/diagnostics/diagnose/diagnose_structured_bw_credit_mismatch.py`
 - 输出：`runs/analysis/bw_deadline_mild_credit_mismatch_20260411/summary.json`
 
 ### 10.3 结果

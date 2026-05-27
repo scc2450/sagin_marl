@@ -13,7 +13,7 @@
 - 所有分支都从同一个 `sat-stage snapshot + RNG` 恢复
 
 脚本：
-- [scripts/diagnose_structured_sat_local_swap_horizon.py](/d:/研三上/毕设/sagin_marl/scripts/diagnose_structured_sat_local_swap_horizon.py:1)
+- [scripts/diagnostics/diagnose/diagnose_structured_sat_local_swap_horizon.py](/d:/研三上/毕设/sagin_marl/scripts/diagnostics/diagnose/diagnose_structured_sat_local_swap_horizon.py:1)
 
 ## 2. 运行结果
 

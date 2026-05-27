@@ -315,7 +315,7 @@ The following files are the main files involved in the current `BW` PPO path.
   - checkpoint/model evaluation logic
 - `scripts/train_structured_bw_imitation_sanity.py`
   - actor-capacity sanity via teacher imitation
-- `scripts/diagnose_structured_bw_policy_gradient_alignment.py`
+- `scripts/diagnostics/diagnose/diagnose_structured_bw_policy_gradient_alignment.py`
   - gradient / one-step-update alignment diagnostics
 
 ## 9. What Is Still Missing

@@ -410,10 +410,10 @@ BW stage / 输入状态构造：
 
 当前相关辅助诊断脚本：
 
-- `scripts/diagnose_structured_bw_fused_head_compare.py`
-- `scripts/diagnose_structured_bw_fixed_target_interpolation.py`
-- `scripts/diagnose_structured_bw_online_update_direction.py`
-- `scripts/diagnose_structured_bw_fixed_teacher_fit.py`
+- `scripts/diagnostics/diagnose/diagnose_structured_bw_fused_head_compare.py`
+- `scripts/diagnostics/diagnose/diagnose_structured_bw_fixed_target_interpolation.py`
+- `scripts/diagnostics/diagnose/diagnose_structured_bw_online_update_direction.py`
+- `scripts/diagnostics/diagnose/diagnose_structured_bw_fixed_teacher_fit.py`
 
 ---
 

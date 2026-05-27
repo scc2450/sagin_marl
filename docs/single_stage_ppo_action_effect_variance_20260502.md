@@ -49,7 +49,7 @@
 
 新增脚本：
 
-`scripts/diagnose_structured_action_effect_variance.py`
+`scripts/diagnostics/diagnose/diagnose_structured_action_effect_variance.py`
 
 诊断口径：
 

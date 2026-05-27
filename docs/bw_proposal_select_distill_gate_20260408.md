@@ -100,7 +100,7 @@ within-state 平均相关性：
 
 现成脚本：
 
-- [`scripts/diagnose_bw_best_of_n_readout.py`](./../scripts/diagnose_bw_best_of_n_readout.py)
+- [`scripts/diagnostics/diagnose/diagnose_bw_best_of_n_readout.py`](./../scripts/diagnostics/diagnose/diagnose_bw_best_of_n_readout.py)
 
 当前候选集：
 
@@ -305,7 +305,7 @@ within-state 平均相关性：
 
 固化 Gate A 数据集导出：
 
-- 复用 [`scripts/diagnose_bw_best_of_n_readout.py`](./../scripts/diagnose_bw_best_of_n_readout.py)
+- 复用 [`scripts/diagnostics/diagnose/diagnose_bw_best_of_n_readout.py`](./../scripts/diagnostics/diagnose/diagnose_bw_best_of_n_readout.py)
 - 增加 winner 数据导出，形成固定 `winner bank`
 
 ### Step 2

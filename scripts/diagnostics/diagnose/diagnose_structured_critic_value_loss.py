@@ -4,14 +4,15 @@ import argparse
 import json
 import os
 import sys
+from pathlib import Path
 from typing import Any
 
 import numpy as np
 import torch
 
-ROOT = os.path.dirname(os.path.dirname(__file__))
-if ROOT not in sys.path:
-    sys.path.insert(0, ROOT)
+ROOT = next(parent for parent in Path(__file__).resolve().parents if (parent / "sagin_marl").is_dir())
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 
 import sagin_marl.rl.structured_mappo as structured_mappo
 from sagin_marl.rl.structured_buffer import _index_dataclass_items

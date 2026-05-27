@@ -134,7 +134,7 @@
 
 后来做了固定策略的 rollout 方差对照，脚本：
 
-- [scripts/diagnose_structured_fixed_policy_rollout_variance.py](/d:/研三上/毕设/sagin_marl/scripts/diagnose_structured_fixed_policy_rollout_variance.py:1)
+- [scripts/diagnostics/diagnose/diagnose_structured_fixed_policy_rollout_variance.py](/d:/研三上/毕设/sagin_marl/scripts/diagnostics/diagnose/diagnose_structured_fixed_policy_rollout_variance.py:1)
 
 结果文件：
 
@@ -212,7 +212,7 @@
 
 重要脚本：
 
-- [scripts/diagnose_structured_bw_fixed_teacher_fit.py](/d:/研三上/毕设/sagin_marl/scripts/diagnose_structured_bw_fixed_teacher_fit.py:1)
+- [scripts/diagnostics/diagnose/diagnose_structured_bw_fixed_teacher_fit.py](/d:/研三上/毕设/sagin_marl/scripts/diagnostics/diagnose/diagnose_structured_bw_fixed_teacher_fit.py:1)
 
 重要结果：
 
@@ -258,7 +258,7 @@
 
 脚本：
 
-- [scripts/diagnose_structured_bw_fixed_target_interpolation.py](/d:/研三上/毕设/sagin_marl/scripts/diagnose_structured_bw_fixed_target_interpolation.py:1)
+- [scripts/diagnostics/diagnose/diagnose_structured_bw_fixed_target_interpolation.py](/d:/研三上/毕设/sagin_marl/scripts/diagnostics/diagnose/diagnose_structured_bw_fixed_target_interpolation.py:1)
 
 结果：
 
@@ -294,7 +294,7 @@
 
 核心脚本：
 
-- [scripts/diagnose_structured_bw_clean_gradient_conflict.py](/d:/研三上/毕设/sagin_marl/scripts/diagnose_structured_bw_clean_gradient_conflict.py:1)
+- [scripts/diagnostics/diagnose/diagnose_structured_bw_clean_gradient_conflict.py](/d:/研三上/毕设/sagin_marl/scripts/diagnostics/diagnose/diagnose_structured_bw_clean_gradient_conflict.py:1)
 
 早期关键结果之一：
 
@@ -335,7 +335,7 @@
 
 相关脚本：
 
-- [scripts/diagnose_structured_bw_local_state_target_ambiguity.py](/d:/研三上/毕设/sagin_marl/scripts/diagnose_structured_bw_local_state_target_ambiguity.py:1)
+- [scripts/diagnostics/diagnose/diagnose_structured_bw_local_state_target_ambiguity.py](/d:/研三上/毕设/sagin_marl/scripts/diagnostics/diagnose/diagnose_structured_bw_local_state_target_ambiguity.py:1)
 
 相关结果：
 
@@ -421,7 +421,7 @@
 
 脚本：
 
-- [scripts/diagnose_structured_bw_cross_follow_policy_consistency.py](/d:/研三上/毕设/sagin_marl/scripts/diagnose_structured_bw_cross_follow_policy_consistency.py:1)
+- [scripts/diagnostics/diagnose/diagnose_structured_bw_cross_follow_policy_consistency.py](/d:/研三上/毕设/sagin_marl/scripts/diagnostics/diagnose/diagnose_structured_bw_cross_follow_policy_consistency.py:1)
 
 结果：
 
@@ -448,7 +448,7 @@
 
 脚本：
 
-- [scripts/diagnose_structured_bw_lookup_vs_shared_fit.py](/d:/研三上/毕设/sagin_marl/scripts/diagnose_structured_bw_lookup_vs_shared_fit.py:1)
+- [scripts/diagnostics/diagnose/diagnose_structured_bw_lookup_vs_shared_fit.py](/d:/研三上/毕设/sagin_marl/scripts/diagnostics/diagnose/diagnose_structured_bw_lookup_vs_shared_fit.py:1)
 
 结果：
 
@@ -574,13 +574,13 @@
 
 ### 关键诊断脚本
 
-- [scripts/diagnose_structured_fixed_policy_rollout_variance.py](/d:/研三上/毕设/sagin_marl/scripts/diagnose_structured_fixed_policy_rollout_variance.py:1)
-- [scripts/diagnose_structured_bw_fixed_teacher_fit.py](/d:/研三上/毕设/sagin_marl/scripts/diagnose_structured_bw_fixed_teacher_fit.py:1)
-- [scripts/diagnose_structured_bw_fixed_target_interpolation.py](/d:/研三上/毕设/sagin_marl/scripts/diagnose_structured_bw_fixed_target_interpolation.py:1)
-- [scripts/diagnose_structured_bw_clean_gradient_conflict.py](/d:/研三上/毕设/sagin_marl/scripts/diagnose_structured_bw_clean_gradient_conflict.py:1)
-- [scripts/diagnose_structured_bw_local_state_target_ambiguity.py](/d:/研三上/毕设/sagin_marl/scripts/diagnose_structured_bw_local_state_target_ambiguity.py:1)
-- [scripts/diagnose_structured_bw_cross_follow_policy_consistency.py](/d:/研三上/毕设/sagin_marl/scripts/diagnose_structured_bw_cross_follow_policy_consistency.py:1)
-- [scripts/diagnose_structured_bw_lookup_vs_shared_fit.py](/d:/研三上/毕设/sagin_marl/scripts/diagnose_structured_bw_lookup_vs_shared_fit.py:1)
+- [scripts/diagnostics/diagnose/diagnose_structured_fixed_policy_rollout_variance.py](/d:/研三上/毕设/sagin_marl/scripts/diagnostics/diagnose/diagnose_structured_fixed_policy_rollout_variance.py:1)
+- [scripts/diagnostics/diagnose/diagnose_structured_bw_fixed_teacher_fit.py](/d:/研三上/毕设/sagin_marl/scripts/diagnostics/diagnose/diagnose_structured_bw_fixed_teacher_fit.py:1)
+- [scripts/diagnostics/diagnose/diagnose_structured_bw_fixed_target_interpolation.py](/d:/研三上/毕设/sagin_marl/scripts/diagnostics/diagnose/diagnose_structured_bw_fixed_target_interpolation.py:1)
+- [scripts/diagnostics/diagnose/diagnose_structured_bw_clean_gradient_conflict.py](/d:/研三上/毕设/sagin_marl/scripts/diagnostics/diagnose/diagnose_structured_bw_clean_gradient_conflict.py:1)
+- [scripts/diagnostics/diagnose/diagnose_structured_bw_local_state_target_ambiguity.py](/d:/研三上/毕设/sagin_marl/scripts/diagnostics/diagnose/diagnose_structured_bw_local_state_target_ambiguity.py:1)
+- [scripts/diagnostics/diagnose/diagnose_structured_bw_cross_follow_policy_consistency.py](/d:/研三上/毕设/sagin_marl/scripts/diagnostics/diagnose/diagnose_structured_bw_cross_follow_policy_consistency.py:1)
+- [scripts/diagnostics/diagnose/diagnose_structured_bw_lookup_vs_shared_fit.py](/d:/研三上/毕设/sagin_marl/scripts/diagnostics/diagnose/diagnose_structured_bw_lookup_vs_shared_fit.py:1)
 
 ### 关键结果文件
 

@@ -8,9 +8,9 @@ import sys
 from pathlib import Path
 from typing import Any
 
-ROOT = os.path.dirname(os.path.dirname(__file__))
-if ROOT not in sys.path:
-    sys.path.insert(0, ROOT)
+ROOT = next(parent for parent in Path(__file__).resolve().parents if (parent / "sagin_marl").is_dir())
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 
 import numpy as np
 import torch
@@ -18,8 +18,8 @@ import torch
 from sagin_marl.env.config import load_config
 from sagin_marl.rl.structured_mappo import _collate_dataclass
 
-from diagnose_structured_bw_fixed_target_interpolation import _build_actor, _capture_user0_offline_states
-from diagnose_structured_bw_fixed_teacher_fit import (
+from scripts.diagnostics.diagnose.diagnose_structured_bw_fixed_target_interpolation import _build_actor, _capture_user0_offline_states
+from scripts.diagnostics.diagnose.diagnose_structured_bw_fixed_teacher_fit import (
     _collect_panel_bank,
     _make_learner,
     _masked_l1,

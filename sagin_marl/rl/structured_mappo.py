@@ -20,7 +20,7 @@ from sagin_marl.env.structured_gpu_rollout_runtime import (
 )
 from sagin_marl.env.native_cuda import bindings as native_cuda
 
-from .baselines import queue_aware_bw_policy
+from .baselines import cluster_center_accel_policy, queue_aware_bw_policy, queue_aware_policy, queue_aware_sat_policy
 from .distributions import squash_action
 from .structured_buffer import (
     StructuredBootstrapBatchView,
@@ -518,6 +518,32 @@ def sat_clean_joint_critic_free_enabled(
 def _current_obs_list(driver: Any) -> list[dict[str, np.ndarray]]:
     env = driver.env
     return [env._get_obs(i) for i in range(len(env.agents))]
+
+
+def _heuristic_accel(
+    obs_list: Sequence[dict[str, np.ndarray]],
+    cfg: Any,
+    heuristic_policy: str,
+    *,
+    centers: np.ndarray | None = None,
+    counts: np.ndarray | None = None,
+) -> np.ndarray:
+    """Backward-compatible heuristic helper used by legacy diagnostics."""
+    policy = str(heuristic_policy or "queue_aware").strip().lower()
+    if policy == "cluster_center_queue_aware":
+        return np.asarray(cluster_center_accel_policy(list(obs_list), cfg, centers, counts), dtype=np.float32)
+    if policy in {"queue_aware", "queue_aware_accel"}:
+        accel, _, _ = queue_aware_policy(list(obs_list), cfg)
+        return np.asarray(accel, dtype=np.float32)
+    raise ValueError(f"Unsupported accel heuristic policy: {heuristic_policy}")
+
+
+def _heuristic_sat(obs_list: Sequence[dict[str, np.ndarray]], cfg: Any, heuristic_policy: str) -> np.ndarray:
+    """Backward-compatible SAT heuristic helper used by legacy diagnostics."""
+    policy = str(heuristic_policy or "queue_aware").strip().lower()
+    if policy in {"queue_aware", "queue_aware_sat", "cluster_center_queue_aware"}:
+        return np.asarray(queue_aware_sat_policy(list(obs_list), cfg), dtype=np.float32)
+    raise ValueError(f"Unsupported SAT heuristic policy: {heuristic_policy}")
 
 
 def _heuristic_bw(obs_list: Sequence[dict[str, np.ndarray]], cfg: Any, heuristic_policy: str) -> np.ndarray:

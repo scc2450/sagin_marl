@@ -9,9 +9,9 @@ import sys
 from pathlib import Path
 from typing import Any
 
-ROOT = os.path.dirname(os.path.dirname(__file__))
-if ROOT not in sys.path:
-    sys.path.insert(0, ROOT)
+ROOT = next(parent for parent in Path(__file__).resolve().parents if (parent / "sagin_marl").is_dir())
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 
 import numpy as np
 import torch
@@ -20,10 +20,9 @@ from scripts.diagnostics.audit.audit_bw_broad2local_offline import _collect_pane
 from sagin_marl.env.config import load_config
 from sagin_marl.env.sagin_env import SaginParallelEnv
 from sagin_marl.env.structured_driver import StructuredControlDriver
-from sagin_marl.rl.baselines import queue_aware_bw_policy
 from sagin_marl.rl.structured_factory import build_structured_modules_from_config
 from sagin_marl.rl.structured_mappo import StructuredMAPPO, _to_device_dataclass
-from sagin_marl.rl.structured_stage_builders import build_local_bw_states_from_snapshot, world_state_to_torch
+from sagin_marl.rl.structured_stage_builders import world_state_to_torch
 from sagin_marl.rl.structured_train import close_structured_env_group, make_structured_env_group
 from sagin_marl.utils.checkpoint import load_checkpoint_forgiving
 from sagin_marl.rl.structured_train import as_structured_driver, as_structured_drivers, make_structured_driver, make_structured_env
@@ -49,6 +48,16 @@ def _summarize(values: list[float]) -> dict[str, float]:
         "min": float(np.min(arr)),
         "max": float(np.max(arr)),
     }
+
+
+def _write_csv(path: Path, rows: list[dict[str, Any]]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if not rows:
+        return
+    with path.open("w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=list(rows[0].keys()))
+        writer.writeheader()
+        writer.writerows(rows)
 
 
 def _safe_corr(x: np.ndarray, y: np.ndarray) -> float:
@@ -107,85 +116,18 @@ def _top1_hit_desc(pred: np.ndarray, truth: np.ndarray) -> float:
     return 1.0 if int(np.argmax(pred)) == int(np.argmax(truth)) else 0.0
 
 
-def _write_csv(path: Path, rows: list[dict[str, Any]]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    if not rows:
-        return
-    with path.open("w", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(f, fieldnames=list(rows[0].keys()))
-        writer.writeheader()
-        writer.writerows(rows)
-
-
-def _rollout_score_from_snapshot(
-    *,
-    snapshot_state: dict[str, Any],
-    first_action: np.ndarray,
-    cfg,
-    actor,
-    device: torch.device,
-    k_steps: int,
-    gamma: float,
-    follow_deterministic: bool,
-    score_mode: str,
-    bw_follow_mode: str,
-) -> float:
-    probe_env = make_structured_env(cfg, mode="script")
-    probe_driver = as_structured_driver(probe_env)
-    score_mode_l = str(score_mode).strip().lower()
-    bw_follow_mode_l = str(bw_follow_mode).strip().lower()
-    if score_mode_l not in {"reward", "weighted"}:
-        raise ValueError(f"Unsupported score_mode: {score_mode}")
-    if bw_follow_mode_l not in {"policy", "queue_aware"}:
-        raise ValueError(f"Unsupported bw_follow_mode: {bw_follow_mode}")
-    try:
-        probe_driver.load_bw_stage_state(snapshot_state)
-        total = 0.0
-        discount = 1.0
-        action = np.asarray(first_action, dtype=np.float32)
-        for step in range(int(k_steps)):
-            step_result, _next_world = probe_driver.execute_stage_bw_and_prepare_next_accel(action)
-            if score_mode_l == "weighted":
-                step_score = float(getattr(step_result, "bw_weighted_workload_delta_reward", 0.0) or 0.0)
-            else:
-                step_score = float(next(iter(step_result.rewards.values())))
-            total += discount * step_score
-            done = bool(list(step_result.terminations.values())[0] or list(step_result.truncations.values())[0])
-            if done or step == int(k_steps) - 1:
-                break
-            probe_driver.begin_step()
-            accel_zero = np.zeros((cfg.num_uav, 2), dtype=np.float32)
-            z1 = probe_driver.run_accel_stage(accel_zero)
-            select_k = max(int(getattr(cfg, "sat_num_select", cfg.N_RF) or cfg.N_RF), 1)
-            z2 = probe_driver.run_sat_stage(np.full((cfg.num_uav, select_k), -1, dtype=np.int64))
-            if bw_follow_mode_l == "queue_aware":
-                obs = {agent: probe_env._get_obs(idx) for idx, agent in enumerate(probe_env.agents)}
-                action = np.asarray(queue_aware_bw_policy(list(obs.values()), cfg), dtype=np.float32)
-            else:
-                bw_snapshot = probe_driver.build_bw_stage_snapshot(z2)
-                bw_state = _to_device_dataclass(build_local_bw_states_from_snapshot(bw_snapshot)[0], device)
-                with torch.no_grad():
-                    out = actor.act_bw(bw_state, deterministic=bool(follow_deterministic))
-                action = np.asarray(out.action.detach().cpu().numpy(), dtype=np.float32)
-            discount *= float(gamma)
-        return float(total)
-    finally:
-        close_fn = getattr(probe_env, "close", None)
-        if callable(close_fn):
-            close_fn()
-
-
 def _load_actor_critic(
     run_dir: Path,
+    update: int,
     device: torch.device,
     *,
     actor_checkpoint: str | None,
     critic_checkpoint: str | None,
-):
+) -> tuple[Any, Any, StructuredMAPPO, Any]:
     cfg = load_config(str(run_dir / "config_source.yaml"))
     bundle = build_structured_modules_from_config(cfg, hidden_dim=256, embed_dim=64)
-    actor_ckpt = Path(actor_checkpoint) if actor_checkpoint is not None else run_dir / "actor_final.pt"
-    critic_ckpt = Path(critic_checkpoint) if critic_checkpoint is not None else run_dir / "critic_final.pt"
+    actor_ckpt = Path(actor_checkpoint) if actor_checkpoint is not None else run_dir / f"actor_u{int(update):04d}.pt"
+    critic_ckpt = Path(critic_checkpoint) if critic_checkpoint is not None else run_dir / f"critic_u{int(update):04d}.pt"
     load_checkpoint_forgiving(bundle.actor, str(actor_ckpt), map_location=device, strict=True)
     load_checkpoint_forgiving(bundle.critic, str(critic_ckpt), map_location=device, strict=True)
     bundle.actor.to(device).eval()
@@ -210,7 +152,7 @@ def _load_actor_critic(
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("--run_dir", type=str, required=True)
-    parser.add_argument("--update", type=int, default=0)
+    parser.add_argument("--update", type=int, required=True)
     parser.add_argument("--actor_checkpoint", type=str, default=None)
     parser.add_argument("--critic_checkpoint", type=str, default=None)
     parser.add_argument("--episodes", type=int, default=24)
@@ -220,7 +162,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--num_envs", type=int, default=8)
     parser.add_argument("--vec_backend", choices=["sync", "subproc"], default="sync")
     parser.add_argument("--heuristic_bw_source", type=str, default="queue_aware")
-    parser.add_argument("--k_steps", type=int, default=20)
+    parser.add_argument("--k_steps", type=int, default=2)
     parser.add_argument("--panel_random_count", type=int, default=2)
     parser.add_argument("--prefer_policy_gap_min", type=float, default=1.0e-3)
     parser.add_argument("--min_best_gap", type=float, default=0.02)
@@ -228,8 +170,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--bw_deterministic_step_size", type=float, default=0.5)
     parser.add_argument("--seed", type=int, default=22345)
     parser.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu")
-    parser.add_argument("--score_mode", choices=["reward", "weighted"], default="weighted")
-    parser.add_argument("--bw_follow_mode", choices=["policy", "queue_aware"], default="policy")
     parser.add_argument("--out_dir", type=str, required=True)
     return parser.parse_args()
 
@@ -244,6 +184,7 @@ def main() -> None:
 
     cfg, actor, learner, critic = _load_actor_critic(
         run_dir,
+        int(args.update),
         device,
         actor_checkpoint=None if args.actor_checkpoint is None else str(args.actor_checkpoint),
         critic_checkpoint=None if args.critic_checkpoint is None else str(args.critic_checkpoint),
@@ -279,93 +220,114 @@ def main() -> None:
     entries = list(bank["entries"])
     eval_group = make_structured_env_group(cfg, num_envs=max(1, int(args.num_envs)), backend=str(args.vec_backend))
     probe_driver = make_structured_driver(cfg, mode="script")
-    metric_names = ["immediate", "next_value", "boot", "proxy"]
-    pooled_pred: dict[str, list[float]] = {name: [] for name in metric_names}
     pooled_true: list[float] = []
+    pooled_proxy: list[float] = []
+    pooled_boot: list[float] = []
+    pooled_adv: list[float] = []
+    pooled_proxy_active: list[float] = []
+
     state_rows: list[dict[str, Any]] = []
-    per_state_scores: dict[str, list[float]] = {name: [] for name in metric_names}
-    per_state_pairwise: dict[str, list[float]] = {name: [] for name in metric_names}
-    per_state_top1: dict[str, list[float]] = {name: [] for name in metric_names}
+    proxy_spearman: list[float] = []
+    proxy_pairwise: list[float] = []
+    proxy_top1: list[float] = []
+    boot_spearman: list[float] = []
+    boot_pairwise: list[float] = []
+    boot_top1: list[float] = []
+    adv_spearman: list[float] = []
+    adv_pairwise: list[float] = []
+    adv_top1: list[float] = []
+    proxy_active_frac: list[float] = []
 
     try:
         for idx, entry in enumerate(entries):
             local_state = _to_device_dataclass(entry["local_state"], device)
             sample_actions: list[np.ndarray] = []
-            with torch.no_grad():
+            with torch.inference_mode():
                 for _ in range(int(args.sample_count)):
                     sample_actions.append(
                         np.asarray(actor.act_bw(local_state, deterministic=False).action.detach().cpu().numpy(), dtype=np.float32)
                     )
-
-            true_scores = [
-                _rollout_score_from_snapshot(
-                    snapshot_state=entry["snapshot_state"],
-                    first_action=action,
-                    cfg=cfg,
-                    actor=actor,
-                    device=device,
-                    k_steps=int(args.k_steps),
-                    gamma=float(cfg.gamma),
-                    follow_deterministic=(str(args.policy_mode) == "deterministic"),
-                    score_mode=str(args.score_mode),
-                    bw_follow_mode=str(args.bw_follow_mode),
-                )
-                for action in sample_actions
-            ]
-            true_arr = np.asarray(true_scores, dtype=np.float64)
+            true_scores = _rollout_panel_action_scores(
+                eval_group,
+                entry["snapshot_state"],
+                panel_actions=sample_actions,
+                follow_actor=actor,
+                follow_device=device,
+                follow_deterministic=(str(args.policy_mode) == "deterministic"),
+                bw_deterministic_readout="latent_mean_pushforward",
+                bw_deterministic_opt_steps=int(args.bw_deterministic_opt_steps),
+                bw_deterministic_step_size=float(args.bw_deterministic_step_size),
+                gamma=float(cfg.gamma),
+                k_steps=int(args.k_steps),
+            )
             current_world = _to_device_dataclass(world_state_to_torch(entry["snapshot"].world_state), device)
             with torch.no_grad():
-                _current_bw_value = float(critic.value_bw(current_world).reshape(-1)[0].item())
+                current_bw_value = float(critic.value_bw(current_world).reshape(-1)[0].item())
 
-            immediate_scores: list[float] = []
-            next_value_scores: list[float] = []
-            boot_scores: list[float] = []
             proxy_scores: list[float] = []
-
+            boot_scores: list[float] = []
+            adv_scores: list[float] = []
+            active_flags: list[float] = []
             for action in sample_actions:
                 probe_driver.load_bw_stage_state(entry["snapshot_state"])
                 step_result, next_world_state = probe_driver.execute_stage_bw_and_prepare_next_accel(action)
-                if str(args.score_mode) == "weighted":
-                    immediate_reward = float(getattr(step_result, "bw_weighted_workload_delta_reward", 0.0) or 0.0)
-                else:
-                    immediate_reward = float(next(iter(step_result.rewards.values())))
+                immediate_reward = float(next(iter(step_result.rewards.values())))
                 next_value = float(learner.bootstrap_value(next_world_state))
                 boot_score = float(immediate_reward + float(cfg.gamma) * next_value)
+                adv_score = float(boot_score - current_bw_value)
                 proxy_score = 0.0
+                is_active = 0.0
                 if step_result.bw_flow_proxy_scores is not None and step_result.bw_flow_proxy_mask is not None:
                     sample_credit, sample_active, _metrics = learner._bw_counterfactual_credit_from_proxy(
                         torch.as_tensor(step_result.bw_flow_proxy_scores, dtype=torch.float32, device=device).unsqueeze(0),
                         torch.as_tensor(step_result.bw_flow_proxy_mask, dtype=torch.float32, device=device).unsqueeze(0),
                     )
-                    if bool(sample_active.reshape(-1)[0].detach().cpu().item() > 0.5):
-                        proxy_score = float(sample_credit.reshape(-1)[0].detach().cpu().item())
-                immediate_scores.append(immediate_reward)
-                next_value_scores.append(next_value)
-                boot_scores.append(boot_score)
+                    proxy_score = float(sample_credit.reshape(-1)[0].detach().cpu().item())
+                    is_active = float(sample_active.reshape(-1)[0].detach().cpu().item())
                 proxy_scores.append(proxy_score)
+                boot_scores.append(boot_score)
+                adv_scores.append(adv_score)
+                active_flags.append(is_active)
 
-            pred_map = {
-                "immediate": np.asarray(immediate_scores, dtype=np.float64),
-                "next_value": np.asarray(next_value_scores, dtype=np.float64),
-                "boot": np.asarray(boot_scores, dtype=np.float64),
-                "proxy": np.asarray(proxy_scores, dtype=np.float64),
-            }
-            row: dict[str, Any] = {
+            true_arr = np.asarray(true_scores, dtype=np.float64)
+            proxy_arr = np.asarray(proxy_scores, dtype=np.float64)
+            boot_arr = np.asarray(boot_scores, dtype=np.float64)
+            adv_arr = np.asarray(adv_scores, dtype=np.float64)
+            pooled_true.extend(true_arr.tolist())
+            pooled_proxy.extend(proxy_arr.tolist())
+            pooled_boot.extend(boot_arr.tolist())
+            pooled_adv.extend(adv_arr.tolist())
+            pooled_proxy_active.extend(active_flags)
+
+            row = {
                 "index": int(idx),
                 "sample_count": int(len(sample_actions)),
                 "true_score_mean": float(np.mean(true_arr)),
+                "proxy_score_mean": float(np.mean(proxy_arr)),
+                "boot_score_mean": float(np.mean(boot_arr)),
+                "adv_score_mean": float(np.mean(adv_arr)),
+                "proxy_active_frac": float(np.mean(np.asarray(active_flags, dtype=np.float64))),
+                "proxy_spearman": _safe_spearman_desc(proxy_arr, true_arr),
+                "proxy_pairwise_acc": _pairwise_concordance_desc(proxy_arr, true_arr),
+                "proxy_top1_hit": _top1_hit_desc(proxy_arr, true_arr),
+                "boot_spearman": _safe_spearman_desc(boot_arr, true_arr),
+                "boot_pairwise_acc": _pairwise_concordance_desc(boot_arr, true_arr),
+                "boot_top1_hit": _top1_hit_desc(boot_arr, true_arr),
+                "adv_spearman": _safe_spearman_desc(adv_arr, true_arr),
+                "adv_pairwise_acc": _pairwise_concordance_desc(adv_arr, true_arr),
+                "adv_top1_hit": _top1_hit_desc(adv_arr, true_arr),
             }
-            for metric_name, pred_arr in pred_map.items():
-                pooled_pred[metric_name].extend(pred_arr.tolist())
-                row[f"{metric_name}_mean"] = float(np.mean(pred_arr))
-                row[f"{metric_name}_spearman"] = _safe_spearman_desc(pred_arr, true_arr)
-                row[f"{metric_name}_pairwise_acc"] = _pairwise_concordance_desc(pred_arr, true_arr)
-                row[f"{metric_name}_top1_hit"] = _top1_hit_desc(pred_arr, true_arr)
-                per_state_scores[metric_name].append(float(row[f"{metric_name}_spearman"]))
-                per_state_pairwise[metric_name].append(float(row[f"{metric_name}_pairwise_acc"]))
-                per_state_top1[metric_name].append(float(row[f"{metric_name}_top1_hit"]))
             state_rows.append(row)
-            pooled_true.extend(true_arr.tolist())
+            proxy_spearman.append(float(row["proxy_spearman"]))
+            proxy_pairwise.append(float(row["proxy_pairwise_acc"]))
+            proxy_top1.append(float(row["proxy_top1_hit"]))
+            boot_spearman.append(float(row["boot_spearman"]))
+            boot_pairwise.append(float(row["boot_pairwise_acc"]))
+            boot_top1.append(float(row["boot_top1_hit"]))
+            adv_spearman.append(float(row["adv_spearman"]))
+            adv_pairwise.append(float(row["adv_pairwise_acc"]))
+            adv_top1.append(float(row["adv_top1_hit"]))
+            proxy_active_frac.append(float(row["proxy_active_frac"]))
     finally:
         close_structured_env_group(eval_group)
         close_fn = getattr(probe_driver.env, "close", None)
@@ -373,30 +335,60 @@ def main() -> None:
             close_fn()
 
     pooled_true_arr = np.asarray(pooled_true, dtype=np.float64)
+    pooled_proxy_arr = np.asarray(pooled_proxy, dtype=np.float64)
+    pooled_boot_arr = np.asarray(pooled_boot, dtype=np.float64)
+    pooled_adv_arr = np.asarray(pooled_adv, dtype=np.float64)
+
     summary = {
         "run_dir": str(run_dir),
+        "update": int(args.update),
+        "actor_checkpoint": None if args.actor_checkpoint is None else str(Path(args.actor_checkpoint).resolve()),
+        "critic_checkpoint": None if args.critic_checkpoint is None else str(Path(args.critic_checkpoint).resolve()),
+        "policy_mode": str(args.policy_mode),
         "panel_state_count": int(len(state_rows)),
         "sample_count": int(args.sample_count),
         "k_steps": int(args.k_steps),
+        "vec_backend": str(args.vec_backend),
         "device": str(device),
-        "per_state": {},
-        "pooled": {},
+        "proxy_active_frac": _summarize(proxy_active_frac),
+        "per_state": {
+            "proxy_vs_true": {
+                "spearman": _summarize(proxy_spearman),
+                "pairwise_acc": _summarize(proxy_pairwise),
+                "top1_hit_mean": float(np.mean(np.asarray(proxy_top1, dtype=np.float64))) if proxy_top1 else 0.0,
+            },
+            "boot_vs_true": {
+                "spearman": _summarize(boot_spearman),
+                "pairwise_acc": _summarize(boot_pairwise),
+                "top1_hit_mean": float(np.mean(np.asarray(boot_top1, dtype=np.float64))) if boot_top1 else 0.0,
+            },
+            "adv_vs_true": {
+                "spearman": _summarize(adv_spearman),
+                "pairwise_acc": _summarize(adv_pairwise),
+                "top1_hit_mean": float(np.mean(np.asarray(adv_top1, dtype=np.float64))) if adv_top1 else 0.0,
+            },
+        },
+        "pooled": {
+            "proxy_vs_true": {
+                "pearson": _safe_corr(pooled_proxy_arr, pooled_true_arr),
+                "spearman": _safe_spearman_desc(pooled_proxy_arr, pooled_true_arr),
+                "pairwise_acc": _pairwise_concordance_desc(pooled_proxy_arr, pooled_true_arr),
+                "top1_hit": _top1_hit_desc(pooled_proxy_arr, pooled_true_arr),
+            },
+            "boot_vs_true": {
+                "pearson": _safe_corr(pooled_boot_arr, pooled_true_arr),
+                "spearman": _safe_spearman_desc(pooled_boot_arr, pooled_true_arr),
+                "pairwise_acc": _pairwise_concordance_desc(pooled_boot_arr, pooled_true_arr),
+                "top1_hit": _top1_hit_desc(pooled_boot_arr, pooled_true_arr),
+            },
+            "adv_vs_true": {
+                "pearson": _safe_corr(pooled_adv_arr, pooled_true_arr),
+                "spearman": _safe_spearman_desc(pooled_adv_arr, pooled_true_arr),
+                "pairwise_acc": _pairwise_concordance_desc(pooled_adv_arr, pooled_true_arr),
+                "top1_hit": _top1_hit_desc(pooled_adv_arr, pooled_true_arr),
+            },
+        },
     }
-    for metric_name in metric_names:
-        pred_arr = np.asarray(pooled_pred[metric_name], dtype=np.float64)
-        summary["per_state"][f"{metric_name}_vs_true"] = {
-            "spearman": _summarize(per_state_scores[metric_name]),
-            "pairwise_acc": _summarize(per_state_pairwise[metric_name]),
-            "top1_hit_mean": float(np.mean(np.asarray(per_state_top1[metric_name], dtype=np.float64)))
-            if per_state_top1[metric_name]
-            else 0.0,
-        }
-        summary["pooled"][f"{metric_name}_vs_true"] = {
-            "pearson": _safe_corr(pred_arr, pooled_true_arr),
-            "spearman": _safe_spearman_desc(pred_arr, pooled_true_arr),
-            "pairwise_acc": _pairwise_concordance_desc(pred_arr, pooled_true_arr),
-            "top1_hit": _top1_hit_desc(pred_arr, pooled_true_arr),
-        }
 
     (out_dir / "summary.json").write_text(json.dumps(summary, indent=2, ensure_ascii=False), encoding="utf-8")
     _write_csv(out_dir / "per_state_rows.csv", state_rows)

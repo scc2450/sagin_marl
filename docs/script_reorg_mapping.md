@@ -75,13 +75,13 @@ This table records the early planning snapshot. Executed move sections below sup
 |---|---|
 | `scripts/audit_stage_ppo_credit_alignment.py` | 16: `audit_accel_one_update_lr_effect.py`, `audit_bw_real_update_alignment.py`, `audit_critic_artifact_eval.py`, `audit_critic_head_lr_sweep.py`, `audit_critic_heldout_seed_sweep.py`, `audit_critic_relearn_after_policy_update.py`, `audit_critic_vhat_artifact.py`, `audit_fixed_critic_benchmark.py`, `audit_sat_local_world_vhat_probe.py`, `audit_stage_credit_chain.py`, `audit_stage_critic_only_fit.py`, `audit_stage_qpi_action_credit.py`, `diagnose_bw_actor_update_repro.py`, `train_joint_mcgae.py`, `train_sat_mcgae.py`, `train_stage_mcgae.py` |
 | `scripts/audit_stage_critic_only_fit.py` | 12: `audit_critic_artifact_eval.py`, `audit_critic_head_lr_sweep.py`, `audit_critic_heldout_seed_sweep.py`, `audit_critic_relearn_after_policy_update.py`, `audit_critic_vhat_artifact.py`, `audit_fixed_critic_benchmark.py`, `audit_sat_local_world_vhat_probe.py`, `diagnose_bw_actor_update_repro.py`, `profile_joint_critic_step.py`, `train_joint_mcgae.py`, `train_sat_mcgae.py`, `train_stage_mcgae.py` |
-| `scripts/diagnose_reward_action_sensitivity.py` | 6: `audit_critic_relearn_after_policy_update.py`, `audit_critic_vhat_artifact.py`, `audit_stage_credit_chain.py`, `audit_stage_critic_only_fit.py`, `audit_stage_ppo_credit_alignment.py`, `audit_stage_qpi_action_credit.py` |
+| `scripts/diagnostics/diagnose/diagnose_reward_action_sensitivity.py` | 6: `audit_critic_relearn_after_policy_update.py`, `audit_critic_vhat_artifact.py`, `audit_stage_credit_chain.py`, `audit_stage_critic_only_fit.py`, `audit_stage_ppo_credit_alignment.py`, `audit_stage_qpi_action_credit.py` |
 | `scripts/train_stage_mcgae.py` | 6: `audit_accel_one_update_lr_effect.py`, `audit_bw_real_update_alignment.py`, `diagnose_bw_actor_update_repro.py`, `diagnose_inductor_bw_cross_compile.py`, `profile_joint_critic_step.py`, `train_joint_mcgae.py` |
 | `scripts/train_joint_mcgae.py` | 5: `audit_accel_one_update_lr_effect.py`, `audit_bw_real_update_alignment.py`, `diagnose_bw_actor_update_repro.py`, `diagnose_inductor_bw_cross_compile.py`, `profile_joint_critic_step.py` |
 | `scripts/audit_fixed_critic_benchmark.py` | 4: `audit_critic_artifact_eval.py`, `audit_critic_head_lr_sweep.py`, `audit_critic_vhat_artifact.py`, `audit_sat_local_world_vhat_probe.py` |
 | `scripts/audit_stage_qpi_action_credit.py` | 3: `audit_critic_relearn_after_policy_update.py`, `audit_stage_credit_chain.py`, `audit_stage_critic_only_fit.py` |
 | `scripts/audit_stage_credit_chain.py` | 2: `audit_critic_relearn_after_policy_update.py`, `audit_stage_critic_only_fit.py` |
-| `scripts/diagnose_frontend_critic.py` | 1: `diagnose_bw_perhead_vs_oldjoint.py` |
+| `scripts/diagnostics/diagnose/diagnose_frontend_critic.py` | 1: `diagnose_bw_perhead_vs_oldjoint.py` |
 | `scripts/evaluate_thesis_native_methods.py` | 1: `analyze_thesis_fairness.py` |
 
 
@@ -112,45 +112,45 @@ Moved in the second script cleanup batch because these files had no detected int
 - `scripts/audit_bw_snapshot_reward_gap.py -> scripts/diagnostics/audit/audit_bw_snapshot_reward_gap.py`
 - `scripts/audit_requested_items.py -> scripts/diagnostics/audit/audit_requested_items.py`
 - `scripts/collect_bw_local_opportunity_bank.py -> scripts/experiments/bw_distill/collect_bw_local_opportunity_bank.py`
-- `scripts/diagnose_abcd.py -> scripts/diagnostics/diagnose/diagnose_abcd.py`
-- `scripts/diagnose_bw_old_logprob_replay.py -> scripts/diagnostics/diagnose/diagnose_bw_old_logprob_replay.py`
-- `scripts/diagnose_native_flow_regime.py -> scripts/diagnostics/diagnose/diagnose_native_flow_regime.py`
-- `scripts/diagnose_old_bootstrap_targets.py -> scripts/diagnostics/diagnose/diagnose_old_bootstrap_targets.py`
-- `scripts/diagnose_structured_bootstrap_targets.py -> scripts/diagnostics/diagnose/diagnose_structured_bootstrap_targets.py`
-- `scripts/diagnose_structured_bw_access_signal_curve.py -> scripts/diagnostics/diagnose/diagnose_structured_bw_access_signal_curve.py`
-- `scripts/diagnose_structured_bw_advantage_shape.py -> scripts/diagnostics/diagnose/diagnose_structured_bw_advantage_shape.py`
-- `scripts/diagnose_structured_bw_advantage_sources.py -> scripts/diagnostics/diagnose/diagnose_structured_bw_advantage_sources.py`
-- `scripts/diagnose_structured_bw_basin_gap.py -> scripts/diagnostics/diagnose/diagnose_structured_bw_basin_gap.py`
-- `scripts/diagnose_structured_bw_candidate_hit_rate.py -> scripts/diagnostics/diagnose/diagnose_structured_bw_candidate_hit_rate.py`
-- `scripts/diagnose_structured_bw_counterfactual_credit_probe.py -> scripts/diagnostics/diagnose/diagnose_structured_bw_counterfactual_credit_probe.py`
-- `scripts/diagnose_structured_bw_det_marginal_teacher.py -> scripts/diagnostics/diagnose/diagnose_structured_bw_det_marginal_teacher.py`
-- `scripts/diagnose_structured_bw_exploration_eval.py -> scripts/diagnostics/diagnose/diagnose_structured_bw_exploration_eval.py`
-- `scripts/diagnose_structured_bw_flatness_decomposition.py -> scripts/diagnostics/diagnose/diagnose_structured_bw_flatness_decomposition.py`
-- `scripts/diagnose_structured_bw_gap_geometry.py -> scripts/diagnostics/diagnose/diagnose_structured_bw_gap_geometry.py`
-- `scripts/diagnose_structured_bw_grad_split.py -> scripts/diagnostics/diagnose/diagnose_structured_bw_grad_split.py`
-- `scripts/diagnose_structured_bw_heuristic_perturb_impulse.py -> scripts/diagnostics/diagnose/diagnose_structured_bw_heuristic_perturb_impulse.py`
-- `scripts/diagnose_structured_bw_interpolation_curve.py -> scripts/diagnostics/diagnose/diagnose_structured_bw_interpolation_curve.py`
-- `scripts/diagnose_structured_bw_k2_alpha_curve.py -> scripts/diagnostics/diagnose/diagnose_structured_bw_k2_alpha_curve.py`
-- `scripts/diagnose_structured_bw_kstep_override.py -> scripts/diagnostics/diagnose/diagnose_structured_bw_kstep_override.py`
-- `scripts/diagnose_structured_bw_kstep_splice.py -> scripts/diagnostics/diagnose/diagnose_structured_bw_kstep_splice.py`
-- `scripts/diagnose_structured_bw_linear_probe.py -> scripts/diagnostics/diagnose/diagnose_structured_bw_linear_probe.py`
-- `scripts/diagnose_structured_bw_loc_probe.py -> scripts/diagnostics/diagnose/diagnose_structured_bw_loc_probe.py`
-- `scripts/diagnose_structured_bw_local_transport_search.py -> scripts/diagnostics/diagnose/diagnose_structured_bw_local_transport_search.py`
-- `scripts/diagnose_structured_bw_panel_execsources.py -> scripts/diagnostics/diagnose/diagnose_structured_bw_panel_execsources.py`
-- `scripts/diagnose_structured_bw_proxy_credit_alignment.py -> scripts/diagnostics/diagnose/diagnose_structured_bw_proxy_credit_alignment.py`
-- `scripts/diagnose_structured_bw_queue_reward_impulse.py -> scripts/diagnostics/diagnose/diagnose_structured_bw_queue_reward_impulse.py`
-- `scripts/diagnose_structured_bw_representation_probe.py -> scripts/diagnostics/diagnose/diagnose_structured_bw_representation_probe.py`
-- `scripts/diagnose_structured_bw_rule_probe.py -> scripts/diagnostics/diagnose/diagnose_structured_bw_rule_probe.py`
-- `scripts/diagnose_structured_bw_search_target_geometry.py -> scripts/diagnostics/diagnose/diagnose_structured_bw_search_target_geometry.py`
-- `scripts/diagnose_structured_bw_slot_order_sensitivity.py -> scripts/diagnostics/diagnose/diagnose_structured_bw_slot_order_sensitivity.py`
-- `scripts/diagnose_structured_bw_update.py -> scripts/diagnostics/diagnose/diagnose_structured_bw_update.py`
-- `scripts/diagnose_structured_bw_update_direction.py -> scripts/diagnostics/diagnose/diagnose_structured_bw_update_direction.py`
-- `scripts/diagnose_structured_bw_within_state_returns.py -> scripts/diagnostics/diagnose/diagnose_structured_bw_within_state_returns.py`
-- `scripts/diagnose_structured_critic_alignment.py -> scripts/diagnostics/diagnose/diagnose_structured_critic_alignment.py`
-- `scripts/diagnose_structured_sat_bw_mechanisms.py -> scripts/diagnostics/diagnose/diagnose_structured_sat_bw_mechanisms.py`
-- `scripts/diagnose_structured_step_bootstrap_bias.py -> scripts/diagnostics/diagnose/diagnose_structured_step_bootstrap_bias.py`
-- `scripts/diagnose_structured_step_targets.py -> scripts/diagnostics/diagnose/diagnose_structured_step_targets.py`
-- `scripts/diagnose_structured_target_decomposition.py -> scripts/diagnostics/diagnose/diagnose_structured_target_decomposition.py`
+- `scripts/diagnostics/diagnose/diagnose_abcd.py -> scripts/diagnostics/diagnose/diagnose_abcd.py`
+- `scripts/diagnostics/diagnose/diagnose_bw_old_logprob_replay.py -> scripts/diagnostics/diagnose/diagnose_bw_old_logprob_replay.py`
+- `scripts/diagnostics/diagnose/diagnose_native_flow_regime.py -> scripts/diagnostics/diagnose/diagnose_native_flow_regime.py`
+- `scripts/diagnostics/diagnose/diagnose_old_bootstrap_targets.py -> scripts/diagnostics/diagnose/diagnose_old_bootstrap_targets.py`
+- `scripts/diagnostics/diagnose/diagnose_structured_bootstrap_targets.py -> scripts/diagnostics/diagnose/diagnose_structured_bootstrap_targets.py`
+- `scripts/diagnostics/diagnose/diagnose_structured_bw_access_signal_curve.py -> scripts/diagnostics/diagnose/diagnose_structured_bw_access_signal_curve.py`
+- `scripts/diagnostics/diagnose/diagnose_structured_bw_advantage_shape.py -> scripts/diagnostics/diagnose/diagnose_structured_bw_advantage_shape.py`
+- `scripts/diagnostics/diagnose/diagnose_structured_bw_advantage_sources.py -> scripts/diagnostics/diagnose/diagnose_structured_bw_advantage_sources.py`
+- `scripts/diagnostics/diagnose/diagnose_structured_bw_basin_gap.py -> scripts/diagnostics/diagnose/diagnose_structured_bw_basin_gap.py`
+- `scripts/diagnostics/diagnose/diagnose_structured_bw_candidate_hit_rate.py -> scripts/diagnostics/diagnose/diagnose_structured_bw_candidate_hit_rate.py`
+- `scripts/diagnostics/diagnose/diagnose_structured_bw_counterfactual_credit_probe.py -> scripts/diagnostics/diagnose/diagnose_structured_bw_counterfactual_credit_probe.py`
+- `scripts/diagnostics/diagnose/diagnose_structured_bw_det_marginal_teacher.py -> scripts/diagnostics/diagnose/diagnose_structured_bw_det_marginal_teacher.py`
+- `scripts/diagnostics/diagnose/diagnose_structured_bw_exploration_eval.py -> scripts/diagnostics/diagnose/diagnose_structured_bw_exploration_eval.py`
+- `scripts/diagnostics/diagnose/diagnose_structured_bw_flatness_decomposition.py -> scripts/diagnostics/diagnose/diagnose_structured_bw_flatness_decomposition.py`
+- `scripts/diagnostics/diagnose/diagnose_structured_bw_gap_geometry.py -> scripts/diagnostics/diagnose/diagnose_structured_bw_gap_geometry.py`
+- `scripts/diagnostics/diagnose/diagnose_structured_bw_grad_split.py -> scripts/diagnostics/diagnose/diagnose_structured_bw_grad_split.py`
+- `scripts/diagnostics/diagnose/diagnose_structured_bw_heuristic_perturb_impulse.py -> scripts/diagnostics/diagnose/diagnose_structured_bw_heuristic_perturb_impulse.py`
+- `scripts/diagnostics/diagnose/diagnose_structured_bw_interpolation_curve.py -> scripts/diagnostics/diagnose/diagnose_structured_bw_interpolation_curve.py`
+- `scripts/diagnostics/diagnose/diagnose_structured_bw_k2_alpha_curve.py -> scripts/diagnostics/diagnose/diagnose_structured_bw_k2_alpha_curve.py`
+- `scripts/diagnostics/diagnose/diagnose_structured_bw_kstep_override.py -> scripts/diagnostics/diagnose/diagnose_structured_bw_kstep_override.py`
+- `scripts/diagnostics/diagnose/diagnose_structured_bw_kstep_splice.py -> scripts/diagnostics/diagnose/diagnose_structured_bw_kstep_splice.py`
+- `scripts/diagnostics/diagnose/diagnose_structured_bw_linear_probe.py -> scripts/diagnostics/diagnose/diagnose_structured_bw_linear_probe.py`
+- `scripts/diagnostics/diagnose/diagnose_structured_bw_loc_probe.py -> scripts/diagnostics/diagnose/diagnose_structured_bw_loc_probe.py`
+- `scripts/diagnostics/diagnose/diagnose_structured_bw_local_transport_search.py -> scripts/diagnostics/diagnose/diagnose_structured_bw_local_transport_search.py`
+- `scripts/diagnostics/diagnose/diagnose_structured_bw_panel_execsources.py -> scripts/diagnostics/diagnose/diagnose_structured_bw_panel_execsources.py`
+- `scripts/diagnostics/diagnose/diagnose_structured_bw_proxy_credit_alignment.py -> scripts/diagnostics/diagnose/diagnose_structured_bw_proxy_credit_alignment.py`
+- `scripts/diagnostics/diagnose/diagnose_structured_bw_queue_reward_impulse.py -> scripts/diagnostics/diagnose/diagnose_structured_bw_queue_reward_impulse.py`
+- `scripts/diagnostics/diagnose/diagnose_structured_bw_representation_probe.py -> scripts/diagnostics/diagnose/diagnose_structured_bw_representation_probe.py`
+- `scripts/diagnostics/diagnose/diagnose_structured_bw_rule_probe.py -> scripts/diagnostics/diagnose/diagnose_structured_bw_rule_probe.py`
+- `scripts/diagnostics/diagnose/diagnose_structured_bw_search_target_geometry.py -> scripts/diagnostics/diagnose/diagnose_structured_bw_search_target_geometry.py`
+- `scripts/diagnostics/diagnose/diagnose_structured_bw_slot_order_sensitivity.py -> scripts/diagnostics/diagnose/diagnose_structured_bw_slot_order_sensitivity.py`
+- `scripts/diagnostics/diagnose/diagnose_structured_bw_update.py -> scripts/diagnostics/diagnose/diagnose_structured_bw_update.py`
+- `scripts/diagnostics/diagnose/diagnose_structured_bw_update_direction.py -> scripts/diagnostics/diagnose/diagnose_structured_bw_update_direction.py`
+- `scripts/diagnostics/diagnose/diagnose_structured_bw_within_state_returns.py -> scripts/diagnostics/diagnose/diagnose_structured_bw_within_state_returns.py`
+- `scripts/diagnostics/diagnose/diagnose_structured_critic_alignment.py -> scripts/diagnostics/diagnose/diagnose_structured_critic_alignment.py`
+- `scripts/diagnostics/diagnose/diagnose_structured_sat_bw_mechanisms.py -> scripts/diagnostics/diagnose/diagnose_structured_sat_bw_mechanisms.py`
+- `scripts/diagnostics/diagnose/diagnose_structured_step_bootstrap_bias.py -> scripts/diagnostics/diagnose/diagnose_structured_step_bootstrap_bias.py`
+- `scripts/diagnostics/diagnose/diagnose_structured_step_targets.py -> scripts/diagnostics/diagnose/diagnose_structured_step_targets.py`
+- `scripts/diagnostics/diagnose/diagnose_structured_target_decomposition.py -> scripts/diagnostics/diagnose/diagnose_structured_target_decomposition.py`
 - `scripts/eval_fixed_frontsat_bw_variants.py -> scripts/evaluation/eval_fixed_frontsat_bw_variants.py`
 - `scripts/eval_param_sweep.py -> scripts/evaluation/eval_param_sweep.py`
 - `scripts/evaluate_action_head_ablation_best.py -> scripts/evaluation/evaluate_action_head_ablation_best.py`
@@ -173,17 +173,17 @@ This batch also normalizes existing `scripts/diagnostics/**` repo-root bootstrap
 - `scripts/audit_bw_real_update_alignment.py -> scripts/diagnostics/audit/audit_bw_real_update_alignment.py`
 - `scripts/audit_critic_artifact_eval.py -> scripts/diagnostics/audit/audit_critic_artifact_eval.py`
 - `scripts/audit_critic_heldout_seed_sweep.py -> scripts/diagnostics/audit/audit_critic_heldout_seed_sweep.py`
-- `scripts/diagnose_accel_candidate_workload_reward.py -> scripts/diagnostics/diagnose/diagnose_accel_candidate_workload_reward.py`
-- `scripts/diagnose_bw_actor_update_repro.py -> scripts/diagnostics/diagnose/diagnose_bw_actor_update_repro.py`
-- `scripts/diagnose_inductor_bw_cross_compile.py -> scripts/diagnostics/diagnose/diagnose_inductor_bw_cross_compile.py`
-- `scripts/diagnose_queue_regime.py -> scripts/diagnostics/diagnose/diagnose_queue_regime.py`
-- `scripts/diagnose_sat_counterfactual_step.py -> scripts/diagnostics/diagnose/diagnose_sat_counterfactual_step.py`
-- `scripts/diagnose_sat_credit_mismatch.py -> scripts/diagnostics/diagnose/diagnose_sat_credit_mismatch.py`
-- `scripts/diagnose_sat_selection_gap.py -> scripts/diagnostics/diagnose/diagnose_sat_selection_gap.py`
-- `scripts/diagnose_structured_bw_acf_deterministic_baseline.py -> scripts/diagnostics/diagnose/diagnose_structured_bw_acf_deterministic_baseline.py`
-- `scripts/diagnose_structured_bw_clean_candidate_sweep.py -> scripts/diagnostics/diagnose/diagnose_structured_bw_clean_candidate_sweep.py`
-- `scripts/diagnose_structured_bw_native_clean_fixed_fit.py -> scripts/diagnostics/diagnose/diagnose_structured_bw_native_clean_fixed_fit.py`
-- `scripts/diagnose_structured_bw_workload_proportional_fit.py -> scripts/diagnostics/diagnose/diagnose_structured_bw_workload_proportional_fit.py`
+- `scripts/diagnostics/diagnose/diagnose_accel_candidate_workload_reward.py -> scripts/diagnostics/diagnose/diagnose_accel_candidate_workload_reward.py`
+- `scripts/diagnostics/diagnose/diagnose_bw_actor_update_repro.py -> scripts/diagnostics/diagnose/diagnose_bw_actor_update_repro.py`
+- `scripts/diagnostics/diagnose/diagnose_inductor_bw_cross_compile.py -> scripts/diagnostics/diagnose/diagnose_inductor_bw_cross_compile.py`
+- `scripts/diagnostics/diagnose/diagnose_queue_regime.py -> scripts/diagnostics/diagnose/diagnose_queue_regime.py`
+- `scripts/diagnostics/diagnose/diagnose_sat_counterfactual_step.py -> scripts/diagnostics/diagnose/diagnose_sat_counterfactual_step.py`
+- `scripts/diagnostics/diagnose/diagnose_sat_credit_mismatch.py -> scripts/diagnostics/diagnose/diagnose_sat_credit_mismatch.py`
+- `scripts/diagnostics/diagnose/diagnose_sat_selection_gap.py -> scripts/diagnostics/diagnose/diagnose_sat_selection_gap.py`
+- `scripts/diagnostics/diagnose/diagnose_structured_bw_acf_deterministic_baseline.py -> scripts/diagnostics/diagnose/diagnose_structured_bw_acf_deterministic_baseline.py`
+- `scripts/diagnostics/diagnose/diagnose_structured_bw_clean_candidate_sweep.py -> scripts/diagnostics/diagnose/diagnose_structured_bw_clean_candidate_sweep.py`
+- `scripts/diagnostics/diagnose/diagnose_structured_bw_native_clean_fixed_fit.py -> scripts/diagnostics/diagnose/diagnose_structured_bw_native_clean_fixed_fit.py`
+- `scripts/diagnostics/diagnose/diagnose_structured_bw_workload_proportional_fit.py -> scripts/diagnostics/diagnose/diagnose_structured_bw_workload_proportional_fit.py`
 
 ## Executed Stage Credit Batch
 
@@ -193,7 +193,7 @@ Moved the interdependent stage-credit audit helper cluster after updating all di
 - `scripts/audit_stage_qpi_action_credit.py -> scripts/diagnostics/audit/audit_stage_qpi_action_credit.py`
 - `scripts/audit_stage_credit_chain.py -> scripts/diagnostics/audit/audit_stage_credit_chain.py`
 - `scripts/audit_stage_critic_only_fit.py -> scripts/diagnostics/audit/audit_stage_critic_only_fit.py`
-- `scripts/diagnose_reward_action_sensitivity.py -> scripts/diagnostics/diagnose/diagnose_reward_action_sensitivity.py`
+- `scripts/diagnostics/diagnose/diagnose_reward_action_sensitivity.py -> scripts/diagnostics/diagnose/diagnose_reward_action_sensitivity.py`
 
 ## Executed Remaining Audit/Benchmark Batch
 
@@ -224,6 +224,38 @@ Moved low-coupling analysis, export, profiling, probe, and validation utilities 
 - `scripts/profile_native_rollout_step_segments.py -> scripts/benchmarks/profile_native_rollout_step_segments.py`
 - `scripts/probe_structured_bw_value_generalization.py -> scripts/diagnostics/probe/probe_structured_bw_value_generalization.py`
 - `scripts/validate_structured_long_rollout_acceptance.py -> scripts/diagnostics/validation/validate_structured_long_rollout_acceptance.py`
+
+## Executed Diagnose Cluster Batch
+
+Moved the remaining root-level `diagnose_*` scripts into `scripts/diagnostics/diagnose/` as one cluster. A few of these scripts import helper functions from sibling diagnostics, so their imports were updated together instead of moving them piecemeal.
+
+- `scripts/diagnose_bw_best_of_n_readout.py -> scripts/diagnostics/diagnose/diagnose_bw_best_of_n_readout.py`
+- `scripts/diagnose_bw_credit_rank_corr.py -> scripts/diagnostics/diagnose/diagnose_bw_credit_rank_corr.py`
+- `scripts/diagnose_bw_perhead_vs_oldjoint.py -> scripts/diagnostics/diagnose/diagnose_bw_perhead_vs_oldjoint.py`
+- `scripts/diagnose_frontend_critic.py -> scripts/diagnostics/diagnose/diagnose_frontend_critic.py`
+- `scripts/diagnose_joint_head_replay_timeline.py -> scripts/diagnostics/diagnose/diagnose_joint_head_replay_timeline.py`
+- `scripts/diagnose_structured_action_effect_variance.py -> scripts/diagnostics/diagnose/diagnose_structured_action_effect_variance.py`
+- `scripts/diagnose_structured_bw_action_interface_leverage.py -> scripts/diagnostics/diagnose/diagnose_structured_bw_action_interface_leverage.py`
+- `scripts/diagnose_structured_bw_branch_linesearch.py -> scripts/diagnostics/diagnose/diagnose_structured_bw_branch_linesearch.py`
+- `scripts/diagnose_structured_bw_clean_gradient_conflict.py -> scripts/diagnostics/diagnose/diagnose_structured_bw_clean_gradient_conflict.py`
+- `scripts/diagnose_structured_bw_clean_horizon_sensitivity.py -> scripts/diagnostics/diagnose/diagnose_structured_bw_clean_horizon_sensitivity.py`
+- `scripts/diagnose_structured_bw_clean_plateau.py -> scripts/diagnostics/diagnose/diagnose_structured_bw_clean_plateau.py`
+- `scripts/diagnose_structured_bw_credit_decomposition.py -> scripts/diagnostics/diagnose/diagnose_structured_bw_credit_decomposition.py`
+- `scripts/diagnose_structured_bw_credit_mismatch.py -> scripts/diagnostics/diagnose/diagnose_structured_bw_credit_mismatch.py`
+- `scripts/diagnose_structured_bw_cross_follow_policy_consistency.py -> scripts/diagnostics/diagnose/diagnose_structured_bw_cross_follow_policy_consistency.py`
+- `scripts/diagnose_structured_bw_env_leverage.py -> scripts/diagnostics/diagnose/diagnose_structured_bw_env_leverage.py`
+- `scripts/diagnose_structured_bw_fixed_target_interpolation.py -> scripts/diagnostics/diagnose/diagnose_structured_bw_fixed_target_interpolation.py`
+- `scripts/diagnose_structured_bw_fixed_teacher_fit.py -> scripts/diagnostics/diagnose/diagnose_structured_bw_fixed_teacher_fit.py`
+- `scripts/diagnose_structured_bw_fused_head_compare.py -> scripts/diagnostics/diagnose/diagnose_structured_bw_fused_head_compare.py`
+- `scripts/diagnose_structured_bw_local_state_target_ambiguity.py -> scripts/diagnostics/diagnose/diagnose_structured_bw_local_state_target_ambiguity.py`
+- `scripts/diagnose_structured_bw_lookup_vs_shared_fit.py -> scripts/diagnostics/diagnose/diagnose_structured_bw_lookup_vs_shared_fit.py`
+- `scripts/diagnose_structured_bw_online_update_direction.py -> scripts/diagnostics/diagnose/diagnose_structured_bw_online_update_direction.py`
+- `scripts/diagnose_structured_bw_policy_gradient_alignment.py -> scripts/diagnostics/diagnose/diagnose_structured_bw_policy_gradient_alignment.py`
+- `scripts/diagnose_structured_bw_weighted_action_contrast.py -> scripts/diagnostics/diagnose/diagnose_structured_bw_weighted_action_contrast.py`
+- `scripts/diagnose_structured_critic_value_loss.py -> scripts/diagnostics/diagnose/diagnose_structured_critic_value_loss.py`
+- `scripts/diagnose_structured_fixed_policy_rollout_variance.py -> scripts/diagnostics/diagnose/diagnose_structured_fixed_policy_rollout_variance.py`
+- `scripts/diagnose_structured_sat_action_horizon.py -> scripts/diagnostics/diagnose/diagnose_structured_sat_action_horizon.py`
+- `scripts/diagnose_structured_sat_local_swap_horizon.py -> scripts/diagnostics/diagnose/diagnose_structured_sat_local_swap_horizon.py`
 
 ## Full Mapping
 

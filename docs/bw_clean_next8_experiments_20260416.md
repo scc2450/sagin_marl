@@ -60,7 +60,7 @@
 除非某个实验特别注明，否则尽量统一：
 
 - 脚本主入口：
-  - [scripts/diagnose_structured_bw_fixed_teacher_fit.py](/d:/研三上/毕设/sagin_marl/scripts/diagnose_structured_bw_fixed_teacher_fit.py:377)
+  - [scripts/diagnostics/diagnose/diagnose_structured_bw_fixed_teacher_fit.py](/d:/研三上/毕设/sagin_marl/scripts/diagnostics/diagnose/diagnose_structured_bw_fixed_teacher_fit.py:377)
 - checkpoint：
   - [runs/structured_clean/h5_exactgate_trust_kl_lr1e3_u60/actor_best.pt](/d:/研三上/毕设/sagin_marl/runs/structured_clean/h5_exactgate_trust_kl_lr1e3_u60/actor_best.pt:1)
 - config：

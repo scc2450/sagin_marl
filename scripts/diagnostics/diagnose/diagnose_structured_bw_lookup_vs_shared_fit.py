@@ -8,16 +8,16 @@ import sys
 from pathlib import Path
 from typing import Any
 
-ROOT = os.path.dirname(os.path.dirname(__file__))
-if ROOT not in sys.path:
-    sys.path.insert(0, ROOT)
+ROOT = next(parent for parent in Path(__file__).resolve().parents if (parent / "sagin_marl").is_dir())
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 
 import numpy as np
 import torch
 
 from sagin_marl.env.config import load_config
 
-from diagnose_structured_bw_fixed_teacher_fit import (
+from scripts.diagnostics.diagnose.diagnose_structured_bw_fixed_teacher_fit import (
     _collect_panel_bank,
     _configure_train_scope,
     _make_learner,
@@ -26,7 +26,7 @@ from diagnose_structured_bw_fixed_teacher_fit import (
     _safe_summary,
     _set_all_seeds,
 )
-from diagnose_structured_bw_fused_head_compare import _build_actor
+from scripts.diagnostics.diagnose.diagnose_structured_bw_fused_head_compare import _build_actor
 from sagin_marl.rl.structured_mappo import _collate_dataclass, _index_dataclass
 
 

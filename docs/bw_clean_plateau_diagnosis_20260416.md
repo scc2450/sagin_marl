@@ -226,7 +226,7 @@
 
 脚本：
 
-- `scripts/diagnose_structured_bw_local_state_target_ambiguity.py`
+- `scripts/diagnostics/diagnose/diagnose_structured_bw_local_state_target_ambiguity.py`
 
 新结果：
 
@@ -415,22 +415,22 @@
 
 ### 6.4 与当前诊断直接相关的脚本
 
-- `scripts/diagnose_structured_bw_clean_horizon_sensitivity.py`
+- `scripts/diagnostics/diagnose/diagnose_structured_bw_clean_horizon_sensitivity.py`
   - 检查不同 horizon 下 teacher target / gain 的变化
 
-- `scripts/diagnose_structured_bw_clean_plateau.py`
+- `scripts/diagnostics/diagnose/diagnose_structured_bw_clean_plateau.py`
   - 固定 panel 上比较不同 checkpoint 的 local/full gain
 
-- `scripts/diagnose_structured_bw_fixed_teacher_fit.py`
+- `scripts/diagnostics/diagnose/diagnose_structured_bw_fixed_teacher_fit.py`
   - 固定 bank、固定 target 的反复训练诊断
 
-- `scripts/diagnose_structured_bw_online_update_direction.py`
+- `scripts/diagnostics/diagnose/diagnose_structured_bw_online_update_direction.py`
   - 检查一次真实 online update 对固定 panel 的 pre/post 影响
 
-- `scripts/diagnose_structured_bw_clean_gradient_conflict.py`
+- `scripts/diagnostics/diagnose/diagnose_structured_bw_clean_gradient_conflict.py`
   - 检查 clean 监督梯度冲突、`batch_vs_panel_cos`
 
-- `scripts/diagnose_structured_bw_local_state_target_ambiguity.py`
+- `scripts/diagnostics/diagnose/diagnose_structured_bw_local_state_target_ambiguity.py`
   - 检查 `LocalBwState` 以及 actor 内部表征相似但 target 相差很大的样本是否很多
 
 ---

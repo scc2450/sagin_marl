@@ -533,7 +533,7 @@
 
 ### 10.1 新增诊断脚本
 
-- `scripts/diagnose_structured_critic_value_loss.py`
+- `scripts/diagnostics/diagnose/diagnose_structured_critic_value_loss.py`
 
 ### 10.2 诊断 run
 
@@ -934,7 +934,7 @@ run 目录：
 ### 脚本
 
 - `scripts/evaluate_structured.py`
-- `scripts/diagnose_structured_critic_value_loss.py`
+- `scripts/diagnostics/diagnose/diagnose_structured_critic_value_loss.py`
 - `scripts/analysis/analyze_bw_update_hot_cold_direction.py`
 
 ### 测试

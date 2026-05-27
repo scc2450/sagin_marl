@@ -135,7 +135,7 @@ u10 checkpoint eval：
 
 新增/扩展脚本：
 
-- `scripts/diagnose_structured_bw_branch_linesearch.py`
+- `scripts/diagnostics/diagnose/diagnose_structured_bw_branch_linesearch.py`
 
 做法：
 
@@ -203,7 +203,7 @@ u10 checkpoint eval：
 
 继续扩展：
 
-- `scripts/diagnose_structured_bw_branch_linesearch.py`
+- `scripts/diagnostics/diagnose/diagnose_structured_bw_branch_linesearch.py`
 
 新增能力：
 
@@ -476,7 +476,7 @@ live selection source：
 - `sagin_marl/rl/structured_mappo.py`
 - `sagin_marl/rl/structured_bw_update_direction.py`
 - `scripts/train_structured.py`
-- `scripts/diagnose_structured_bw_branch_linesearch.py`
+- `scripts/diagnostics/diagnose/diagnose_structured_bw_branch_linesearch.py`
 - `scripts/evaluate_structured_bw_select.py`
 - `scripts/distill_bw_select_v1.py`
 

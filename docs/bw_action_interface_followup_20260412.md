@@ -151,7 +151,7 @@
 
 后面又补了一步更关键的检查：
 
-- [scripts/diagnose_structured_bw_action_interface_leverage.py](/D:/研三上/毕设/sagin_marl/scripts/diagnose_structured_bw_action_interface_leverage.py)
+- [scripts/diagnostics/diagnose/diagnose_structured_bw_action_interface_leverage.py](/D:/研三上/毕设/sagin_marl/scripts/diagnostics/diagnose/diagnose_structured_bw_action_interface_leverage.py)
 
 它不是测“环境本身”的 leverage，而是测：
 

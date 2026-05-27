@@ -33,7 +33,7 @@
 “两条不同 sat policy 连续跑很多步谁更好”
 
 脚本：
-- [scripts/diagnose_structured_sat_action_horizon.py](/d:/研三上/毕设/sagin_marl/scripts/diagnose_structured_sat_action_horizon.py:1)
+- [scripts/diagnostics/diagnose/diagnose_structured_sat_action_horizon.py](/d:/研三上/毕设/sagin_marl/scripts/diagnostics/diagnose/diagnose_structured_sat_action_horizon.py:1)
 
 ## 3. 两组检查
 

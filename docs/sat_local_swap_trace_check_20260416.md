@@ -6,7 +6,7 @@
 把局部 swap 诊断脚本继续补成了“可追路径”的版本：
 
 - 脚本：
-  [scripts/diagnose_structured_sat_local_swap_horizon.py](/d:/研三上/毕设/sagin_marl/scripts/diagnose_structured_sat_local_swap_horizon.py:1)
+  [scripts/diagnostics/diagnose/diagnose_structured_sat_local_swap_horizon.py](/d:/研三上/毕设/sagin_marl/scripts/diagnostics/diagnose/diagnose_structured_sat_local_swap_horizon.py:1)
 - 新增输出：
   - [runs/sat_local_swap_trace_check_20260416/summary.json](/d:/研三上/毕设/sagin_marl/runs/sat_local_swap_trace_check_20260416/summary.json:1)
   - [runs/sat_local_swap_trace_check_20260416/context_rows.csv](/d:/研三上/毕设/sagin_marl/runs/sat_local_swap_trace_check_20260416/context_rows.csv:1)

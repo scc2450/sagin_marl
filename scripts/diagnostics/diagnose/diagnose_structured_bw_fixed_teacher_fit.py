@@ -9,9 +9,9 @@ import sys
 from pathlib import Path
 from typing import Any
 
-ROOT = os.path.dirname(os.path.dirname(__file__))
-if ROOT not in sys.path:
-    sys.path.insert(0, ROOT)
+ROOT = next(parent for parent in Path(__file__).resolve().parents if (parent / "sagin_marl").is_dir())
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 
 import numpy as np
 import torch
@@ -19,7 +19,6 @@ import torch
 from sagin_marl.env.config import load_config
 from sagin_marl.env.sagin_env import SaginParallelEnv
 from sagin_marl.env.structured_driver import StructuredControlDriver
-from sagin_marl.rl.structured_actor import BwLocReadoutHead
 from sagin_marl.rl.structured_critic import ZeroStructuredCritic
 from sagin_marl.rl.structured_factory import build_structured_modules_from_config
 from sagin_marl.rl.structured_mappo import StructuredMAPPO, _collate_dataclass, _index_dataclass, _to_device_dataclass
@@ -223,6 +222,11 @@ def _refresh_bw_loc_head(
     device: torch.device,
     seed: int,
 ) -> dict[str, float]:
+    try:
+        from sagin_marl.rl.structured_actor import BwLocReadoutHead
+    except ImportError as exc:
+        raise RuntimeError("Current structured actor does not expose the legacy BwLocReadoutHead.") from exc
+
     bw_policy = getattr(actor, "bw_policy", None)
     if bw_policy is None:
         raise RuntimeError("Structured actor is missing bw_policy.")

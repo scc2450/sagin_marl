@@ -325,6 +325,11 @@ def _looks_like_structured_driver_group(obj) -> bool:
     return all(hasattr(obj, name) for name in native_required)
 
 
+def _looks_like_structured_driver(obj) -> bool:
+    """Backward-compatible singular name used by legacy diagnostics."""
+    return _looks_like_structured_driver_group(obj)
+
+
 def _looks_like_python_structured_driver_group(obj) -> bool:
     return bool(getattr(obj, "is_python_structured_driver_group", False))
 

@@ -186,6 +186,17 @@ def _masked_max(tokens: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
     return torch.where(mask.any(dim=-1, keepdim=True), out, torch.zeros_like(out))
 
 
+def _attend(query: torch.Tensor, tokens: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
+    """Legacy single-query masked dot-product attention helper for diagnostics."""
+    if tokens.shape[-2] == 0:
+        return query.new_zeros(query.shape)
+    query_t = query.unsqueeze(-2) if query.ndim == tokens.ndim - 1 else query
+    scores = (query_t * tokens).sum(dim=-1) / max(float(tokens.shape[-1]) ** 0.5, 1.0)
+    weights = _masked_softmax(scores, mask.to(dtype=torch.bool), dim=-1)
+    context = (weights.unsqueeze(-1) * tokens).sum(dim=-2)
+    return context.squeeze(-2) if query.ndim == tokens.ndim - 1 else context
+
+
 def _gather_member_tokens(tokens: torch.Tensor, members: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
     safe_members = members.clamp_min(0)
     batch_size, subset_count, member_slots = safe_members.shape
