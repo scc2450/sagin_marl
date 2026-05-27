@@ -36,7 +36,7 @@ UPDATES=1 ROLLOUT_ENV_STEPS=20 NUM_ENVS=1 bash scripts/run_mac_joint_smoke.sh
 
 ```bash
 conda run -n rl python scripts/train_joint_mcgae.py \
-  --config configs/tmp/structured_joint_mcgae_3uav_20gu_t250_positive_relcritic.yaml \
+  --config configs/current/structured_joint_mcgae_3uav_20gu_t250_positive_relcritic.yaml \
   --run_dir runs/mac_joint_smoke \
   --device cpu \
   --num_envs 1 \

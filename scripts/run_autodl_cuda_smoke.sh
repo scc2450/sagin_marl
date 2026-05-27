@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-CONFIG="${CONFIG:-configs/tmp/structured_joint_mcgae_3uav_20gu_t250_positive_relcritic.yaml}"
+CONFIG="${CONFIG:-configs/current/structured_joint_mcgae_3uav_20gu_t250_positive_relcritic.yaml}"
 RUN_DIR="${RUN_DIR:-runs/autodl_cuda_smoke_$(date +%Y%m%d_%H%M%S)}"
 PYTHON="${PYTHON:-python}"
 COMPILE="${COMPILE:-0}"

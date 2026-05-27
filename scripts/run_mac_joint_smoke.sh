@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-CONFIG="${CONFIG:-configs/tmp/structured_joint_mcgae_3uav_20gu_t250_positive_relcritic.yaml}"
+CONFIG="${CONFIG:-configs/current/structured_joint_mcgae_3uav_20gu_t250_positive_relcritic.yaml}"
 RUN_DIR="${RUN_DIR:-runs/mac_joint_smoke}"
 UPDATES="${UPDATES:-1}"
 NUM_ENVS="${NUM_ENVS:-1}"

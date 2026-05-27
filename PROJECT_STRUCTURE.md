@@ -28,7 +28,7 @@ scripts/evaluate_structured_mixed_heads_native.py
 当前主配置：
 
 ```text
-configs/tmp/structured_joint_mcgae_3uav_20gu_t250_positive_relcritic.yaml
+configs/current/structured_joint_mcgae_3uav_20gu_t250_positive_relcritic.yaml
 ```
 
 ## 顶层目录
@@ -50,7 +50,7 @@ sagin_marl/
 ## 关键配置
 
 ```text
-configs/tmp/structured_joint_mcgae_3uav_20gu_t250_positive_relcritic.yaml
+configs/current/structured_joint_mcgae_3uav_20gu_t250_positive_relcritic.yaml
 ```
 
 当前 joint MC-GAE / 3UAV-20GU / positive reward / relational critic 主配置。注意：
