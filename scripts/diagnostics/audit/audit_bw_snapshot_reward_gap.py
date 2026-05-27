@@ -11,7 +11,12 @@ import sys
 from pathlib import Path
 from typing import Any
 
-ROOT = os.path.dirname(os.path.dirname(__file__))
+ROOT = os.path.abspath(os.path.dirname(__file__))
+while not os.path.isdir(os.path.join(ROOT, "sagin_marl")):
+    parent = os.path.dirname(ROOT)
+    if parent == ROOT:
+        raise RuntimeError("Could not locate repository root.")
+    ROOT = parent
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 

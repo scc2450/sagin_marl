@@ -163,6 +163,31 @@ Moved in the second script cleanup batch because these files had no detected int
 - `scripts/sat_supervised_probe.py -> scripts/experiments/sat/sat_supervised_probe.py`
 - `scripts/solve_bw_flow_bcd_general.py -> scripts/experiments/bw_tools/solve_bw_flow_bcd_general.py`
 
+## Executed Diagnostics Entry Batch
+
+Moved in the next diagnostics cleanup batch because these files had no detected code import dependents outside the mapping file. Shared helpers and interdependent BW/critic/stage audit clusters remain at top level for a later coordinated import refactor.
+
+This batch also normalizes existing `scripts/diagnostics/**` repo-root bootstraps so scripts moved into nested directories can still be launched directly from the repository root.
+
+- `scripts/audit_accel_one_update_lr_effect.py -> scripts/diagnostics/audit/audit_accel_one_update_lr_effect.py`
+- `scripts/audit_accel_positive_signal_breakdown.py -> scripts/diagnostics/audit/audit_accel_positive_signal_breakdown.py`
+- `scripts/audit_accel_ppo_mechanics.py -> scripts/diagnostics/audit/audit_accel_ppo_mechanics.py`
+- `scripts/audit_accel_ppo_update_credit.py -> scripts/diagnostics/audit/audit_accel_ppo_update_credit.py`
+- `scripts/audit_bw_real_update_alignment.py -> scripts/diagnostics/audit/audit_bw_real_update_alignment.py`
+- `scripts/audit_critic_artifact_eval.py -> scripts/diagnostics/audit/audit_critic_artifact_eval.py`
+- `scripts/audit_critic_heldout_seed_sweep.py -> scripts/diagnostics/audit/audit_critic_heldout_seed_sweep.py`
+- `scripts/diagnose_accel_candidate_workload_reward.py -> scripts/diagnostics/diagnose/diagnose_accel_candidate_workload_reward.py`
+- `scripts/diagnose_bw_actor_update_repro.py -> scripts/diagnostics/diagnose/diagnose_bw_actor_update_repro.py`
+- `scripts/diagnose_inductor_bw_cross_compile.py -> scripts/diagnostics/diagnose/diagnose_inductor_bw_cross_compile.py`
+- `scripts/diagnose_queue_regime.py -> scripts/diagnostics/diagnose/diagnose_queue_regime.py`
+- `scripts/diagnose_sat_counterfactual_step.py -> scripts/diagnostics/diagnose/diagnose_sat_counterfactual_step.py`
+- `scripts/diagnose_sat_credit_mismatch.py -> scripts/diagnostics/diagnose/diagnose_sat_credit_mismatch.py`
+- `scripts/diagnose_sat_selection_gap.py -> scripts/diagnostics/diagnose/diagnose_sat_selection_gap.py`
+- `scripts/diagnose_structured_bw_acf_deterministic_baseline.py -> scripts/diagnostics/diagnose/diagnose_structured_bw_acf_deterministic_baseline.py`
+- `scripts/diagnose_structured_bw_clean_candidate_sweep.py -> scripts/diagnostics/diagnose/diagnose_structured_bw_clean_candidate_sweep.py`
+- `scripts/diagnose_structured_bw_native_clean_fixed_fit.py -> scripts/diagnostics/diagnose/diagnose_structured_bw_native_clean_fixed_fit.py`
+- `scripts/diagnose_structured_bw_workload_proportional_fit.py -> scripts/diagnostics/diagnose/diagnose_structured_bw_workload_proportional_fit.py`
+
 ## Full Mapping
 
 | original path | proposed path | phase | risk | note |
