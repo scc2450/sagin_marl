@@ -15,7 +15,7 @@ if ROOT not in sys.path:
 import numpy as np
 import torch
 
-from audit_bw_broad2local_offline import _collect_panel_bank
+from scripts.diagnostics.audit.audit_bw_broad2local_offline import _collect_panel_bank
 from sagin_marl.env.config import load_config
 from sagin_marl.env.sagin_env import SaginParallelEnv
 from sagin_marl.env.structured_driver import StructuredControlDriver

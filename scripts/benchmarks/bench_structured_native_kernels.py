@@ -13,9 +13,9 @@ from typing import Any, Callable
 import numpy as np
 import torch
 
-ROOT = os.path.dirname(os.path.dirname(__file__))
-if ROOT not in sys.path:
-    sys.path.insert(0, ROOT)
+ROOT = next(parent for parent in Path(__file__).resolve().parents if (parent / "sagin_marl").is_dir())
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 
 from sagin_marl.env.config import SaginConfig
 from sagin_marl.env.structured_batch_env_core import (

@@ -43,7 +43,7 @@ SAT stage 的 current/prefix selected 为空，是因为当前 SAT action 尚未
 脚本：
 
 ```text
-scripts/audit_sat_local_world_vhat_probe.py
+scripts/diagnostics/audit/audit_sat_local_world_vhat_probe.py
 ```
 
 artifact：
@@ -1470,7 +1470,7 @@ V(s) = GlobalHead(global_scalars or global_embed)
 脚本：
 
 ```text
-scripts/audit_critic_head_lr_sweep.py
+scripts/diagnostics/audit/audit_critic_head_lr_sweep.py
 ```
 
 输出：
@@ -1934,7 +1934,7 @@ scripts/diagnostics/audit/audit_stage_qpi_action_credit.py:
 scripts/diagnostics/audit/audit_stage_critic_only_fit.py:
   Vπ ceiling probe 默认 future_random_mode="resample"
 
-scripts/audit_critic_vhat_artifact.py:
+scripts/diagnostics/audit/audit_critic_vhat_artifact.py:
   --future_random copy|resample，默认 resample
 ```
 

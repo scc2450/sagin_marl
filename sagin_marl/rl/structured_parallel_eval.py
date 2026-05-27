@@ -280,6 +280,11 @@ def batched_policy_sat_subset_indices(actor, sat_snapshots: Sequence[Any], devic
     return [piece.to(dtype=torch.long).tolist() for piece in _split_cpu_tensor_by_counts(sat_out.subset_index, agent_counts)]
 
 
+def batched_policy_sat_pair_indices(actor, sat_snapshots: Sequence[Any], device: torch.device, deterministic: bool) -> list[list[int]]:
+    """Backward-compatible name used by legacy diagnostic scripts."""
+    return batched_policy_sat_subset_indices(actor, sat_snapshots, device, deterministic)
+
+
 def batched_policy_sat_subset_indices_from_world_batch(
     actor,
     sat_world_batch: Any,

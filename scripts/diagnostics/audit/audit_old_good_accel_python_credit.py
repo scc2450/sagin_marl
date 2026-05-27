@@ -14,7 +14,9 @@ import torch
 
 def _prepare_imports(repo_root: str) -> None:
     root = str(Path(repo_root).resolve())
-    here_root = str(Path(__file__).resolve().parents[1])
+    here_root = str(
+        next(parent for parent in Path(__file__).resolve().parents if (parent / "sagin_marl").is_dir()).resolve()
+    )
     sys.path[:] = [p for p in sys.path if p and str(Path(p).resolve()) != here_root]
     if root not in sys.path:
         sys.path.insert(0, root)

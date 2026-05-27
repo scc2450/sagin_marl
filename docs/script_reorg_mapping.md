@@ -195,6 +195,20 @@ Moved the interdependent stage-credit audit helper cluster after updating all di
 - `scripts/audit_stage_critic_only_fit.py -> scripts/diagnostics/audit/audit_stage_critic_only_fit.py`
 - `scripts/diagnose_reward_action_sensitivity.py -> scripts/diagnostics/diagnose/diagnose_reward_action_sensitivity.py`
 
+## Executed Remaining Audit/Benchmark Batch
+
+Moved the remaining root-level audit and benchmark scripts after updating direct helper imports, documentation command paths, and nested repo-root bootstraps. `audit_bw_broad2local_offline.py` is a shared helper for BW distillation/evaluation/training utilities, so its downstream imports were migrated in the same batch.
+
+- `scripts/audit_bw_broad2local_offline.py -> scripts/diagnostics/audit/audit_bw_broad2local_offline.py`
+- `scripts/audit_critic_head_lr_sweep.py -> scripts/diagnostics/audit/audit_critic_head_lr_sweep.py`
+- `scripts/audit_critic_relearn_after_policy_update.py -> scripts/diagnostics/audit/audit_critic_relearn_after_policy_update.py`
+- `scripts/audit_critic_vhat_artifact.py -> scripts/diagnostics/audit/audit_critic_vhat_artifact.py`
+- `scripts/audit_fixed_critic_benchmark.py -> scripts/diagnostics/audit/audit_fixed_critic_benchmark.py`
+- `scripts/audit_old_good_accel_python_credit.py -> scripts/diagnostics/audit/audit_old_good_accel_python_credit.py`
+- `scripts/audit_sat_local_world_vhat_probe.py -> scripts/diagnostics/audit/audit_sat_local_world_vhat_probe.py`
+- `scripts/bench_structured_training_system.py -> scripts/benchmarks/bench_structured_training_system.py`
+- `scripts/bench_train.py -> scripts/benchmarks/bench_train.py`
+
 ## Full Mapping
 
 | original path | proposed path | phase | risk | note |

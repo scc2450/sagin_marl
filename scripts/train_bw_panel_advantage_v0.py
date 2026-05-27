@@ -18,7 +18,7 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
-from audit_bw_broad2local_offline import _rollout_panel_action_scores
+from scripts.diagnostics.audit.audit_bw_broad2local_offline import _rollout_panel_action_scores
 from sagin_marl.env.config import load_config
 from sagin_marl.rl.structured_factory import build_structured_modules_from_config
 from sagin_marl.rl.structured_mappo import _collate_dataclass, _to_device_dataclass

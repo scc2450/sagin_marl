@@ -10,7 +10,7 @@ ROOT = os.path.dirname(os.path.dirname(__file__))
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
-from audit_bw_broad2local_offline import _load_actor
+from scripts.diagnostics.audit.audit_bw_broad2local_offline import _load_actor
 from distill_bw_winner_bank_v0 import _entries_by_indices, _evaluate_split, _load_winner_bank
 
 import torch

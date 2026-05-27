@@ -25,7 +25,7 @@ from sagin_marl.rl.stage_mcgae import (
 )
 from sagin_marl.rl.structured_mappo import _index_dataclass
 from sagin_marl.rl.structured_train import close_structured_env_group, make_structured_driver_group
-from scripts.audit_fixed_critic_benchmark import (
+from scripts.diagnostics.audit.audit_fixed_critic_benchmark import (
     _corr,
     _critic_values,
     _ev,

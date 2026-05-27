@@ -129,10 +129,10 @@ structured_env_tensor_backend: cuda
 
 ### 4.2 当前用于速度复现的 benchmark
 
-benchmark 脚本是 `scripts/bench_structured_training_system.py`，参数名用连字符：
+benchmark 脚本是 `scripts/benchmarks/bench_structured_training_system.py`，参数名用连字符：
 
 ```powershell
-.venv\Scripts\python.exe scripts\bench_structured_training_system.py `
+.venv\Scripts\python.exe scripts\benchmarks\bench_structured_training_system.py `
   --config configs\phase1_actions_curriculum_joint_3heads_fading_interference_ka_vsat_joint_puremappo_criticdecoupled_diag_timeline_structured.yaml `
   --num-envs 8 `
   --num-updates 1 `
@@ -540,7 +540,7 @@ prepare_accel_stage_local_obs calls_per_profiled_step
 3. 跑普通 benchmark，不开 profiler：
 
 ```powershell
-.venv\Scripts\python.exe scripts\bench_structured_training_system.py `
+.venv\Scripts\python.exe scripts\benchmarks\bench_structured_training_system.py `
   --config configs\phase1_actions_curriculum_joint_3heads_fading_interference_ka_vsat_joint_puremappo_criticdecoupled_diag_timeline_structured.yaml `
   --num-envs 8 `
   --num-updates 1 `

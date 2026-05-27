@@ -10,7 +10,7 @@ from typing import Any
 import numpy as np
 import torch
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = next(parent for parent in Path(__file__).resolve().parents if (parent / "sagin_marl").is_dir())
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
@@ -25,7 +25,7 @@ from sagin_marl.rl.stage_mcgae import (
 )
 from sagin_marl.rl.structured_mappo import _collate_dataclass, _index_dataclass
 from sagin_marl.rl.structured_train import close_structured_env_group, make_structured_driver_group
-from scripts.audit_fixed_critic_benchmark import (
+from scripts.diagnostics.audit.audit_fixed_critic_benchmark import (
     _ev,
     _corr,
     _ridge_predict,

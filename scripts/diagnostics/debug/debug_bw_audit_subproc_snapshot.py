@@ -17,7 +17,7 @@ while not os.path.isdir(os.path.join(ROOT, "sagin_marl")):
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
-from scripts import audit_bw_broad2local_offline as audit
+from scripts.diagnostics.audit import audit_bw_broad2local_offline as audit
 from sagin_marl.rl.structured_parallel_eval import (
     batched_policy_accel_actions,
     batched_policy_sat_pair_indices,

@@ -284,7 +284,7 @@ p_{\text{det}}
 
 ## Phase B：先只做离线 broad2local 审计
 
-继续用你现在已经成熟的 `audit_bw_broad2local_offline.py`。
+继续用你现在已经成熟的 `scripts/diagnostics/audit/audit_bw_broad2local_offline.py`。
 
 但这次只比较三组：
 

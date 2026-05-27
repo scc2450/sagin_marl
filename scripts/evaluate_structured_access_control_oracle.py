@@ -16,7 +16,7 @@ if ROOT not in sys.path:
 import numpy as np
 import torch
 
-from audit_bw_broad2local_offline import (
+from scripts.diagnostics.audit.audit_bw_broad2local_offline import (
     _as_driver_list,
     _batched_bw_actions_from_snapshots,
 )
