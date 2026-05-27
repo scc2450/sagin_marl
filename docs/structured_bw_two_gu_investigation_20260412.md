@@ -658,7 +658,7 @@ run 目录：
 
 ### 13.1 新增离线分析脚本
 
-- `scripts/analyze_bw_update_hot_cold_direction.py`
+- `scripts/analysis/analyze_bw_update_hot_cold_direction.py`
 
 ### 13.2 输出
 
@@ -935,7 +935,7 @@ run 目录：
 
 - `scripts/evaluate_structured.py`
 - `scripts/diagnose_structured_critic_value_loss.py`
-- `scripts/analyze_bw_update_hot_cold_direction.py`
+- `scripts/analysis/analyze_bw_update_hot_cold_direction.py`
 
 ### 测试
 

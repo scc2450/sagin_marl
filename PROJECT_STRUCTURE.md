@@ -179,13 +179,13 @@ scripts/evaluate_thesis_native_methods.py
 论文方法对照 / baseline 汇总入口，适合批量评估 proposed、baseline、Lyapunov 等。
 
 ```text
-scripts/generate_joint_mcgae_training_ppt.py
+scripts/analysis/export/generate_joint_mcgae_training_ppt.py
 ```
 
 根据当前 joint MC-GAE 结果生成简版 PPT。
 
 ```text
-scripts/export_tb_scalars.py
+scripts/analysis/export/export_tb_scalars.py
 ```
 
 导出 TensorBoard scalar 曲线。

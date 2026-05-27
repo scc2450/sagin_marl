@@ -4,7 +4,7 @@
 
 原因很简单：你现在的 Stage 配置里，`carrier_freq=2e9`、`sat_height=500 km` 这些本身是可以放进 3GPP NTN/FR1 语境里的；3GPP 官方概述里，NTN 的 FR1 覆盖 410 MHz–7125 MHz，并明确包含 S-band 的 n256，LEO 典型高度也是 500–2000 km。可你真正不“标准化”的，不是 2 GHz 或 500 km，而是 **带宽/资源预算的语义**：你当前训练用的 `b_acc=2.2e6`、`b_sat_total=8.75e5`，如果把它们直接叫做 NR 载波带宽，就低于 3GPP 官方列出的 FR1 标准化带宽集合下限 5 MHz；所以它们现在更像“有效资源池”，不是标准意义上的 carrier bandwidth。 ([3GPP][1])
 
-你说 `estimate_throughput.py` 和真实跑出来的不一致，这个判断我同意，而且原因也比较明确：
+你说 `scripts/analysis/estimate_throughput.py` 和真实跑出来的不一致，这个判断我同意，而且原因也比较明确：
 它做的不是“真实 episode 吞吐预测”，而是**reset 时刻的一步静态容量探针**。代码里它在 `env.reset(seed)` 后，只做一次 `_associate_users()`，再用全零的 `accel / bw_logits / sat_logits` 去算 `_compute_access_rates()`、`_select_satellites()` 和 `_compute_backhaul_rates()`，最后把 `access_cap`、`backhaul_cap`、`compute_cap_eff` 取最小当 bottleneck。它没有模拟真实 policy 的移动、带宽分配、sat 选择、队列累积、初始队列、溢出/drop，也没有看整条 episode 的动态演化，所以它和实际 eval 不一致是正常的。它更适合叫 **static capacity probe**，不适合当 ground truth。
 
 所以，重新讲一遍 **env 应该怎么改**，我建议你不要再从“把几个数随便调大”开始，而是按下面这套顺序来。
@@ -68,7 +68,7 @@
 这点你前面直觉就是对的。
 如果你把 `b_acc` 和 `b_sat_total` 拉回标准化带宽档位，`task_arrival_rate` 就**绝对不能原封不动**。你当前 Stage 用的是 `task_arrival_rate=1.3e5` bits/slot、`b_acc=2.2e6`、`b_sat_total=8.75e5`；一旦你把带宽提到 10 MHz 档，原来的到达率大概率会把系统直接推到另一个 regime。
 
-但这里我不建议你再用 `estimate_throughput.py` 来定到达率。
+但这里我不建议你再用 `scripts/analysis/estimate_throughput.py` 来定到达率。
 更稳的办法是：
 
 1. 先把资源参数改成标准化 v1。

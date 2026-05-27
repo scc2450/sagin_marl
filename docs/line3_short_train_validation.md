@@ -30,7 +30,7 @@ Secondary metrics:
 - `outflow_arrival_ratio_mean`
 - `drop_ratio_mean`
 
-The updated [summarize_policy_kpi.py](d:/研三上/毕设/sagin_marl/scripts/summarize_policy_kpi.py) now prints all of the metrics above.
+The updated [summarize_policy_kpi.py](d:/研三上/毕设/sagin_marl/scripts/analysis/summarize_policy_kpi.py) now prints all of the metrics above.
 
 ## Run Groups
 
@@ -125,14 +125,14 @@ python scripts/evaluate.py --config configs/stage1_safety_followup/s1_safe_stati
 
 ```powershell
 .\.venv\Scripts\Activate.ps1
-python scripts/summarize_policy_kpi.py --input flat30=runs/line3_short/flat30/eval_trained_seed43000.csv setpool30=runs/line3_short/setpool30/eval_trained_seed43000.csv setpool30_initcritic=runs/line3_short/setpool30_initcritic/eval_trained_seed43000.csv
+python scripts/analysis/summarize_policy_kpi.py --input flat30=runs/line3_short/flat30/eval_trained_seed43000.csv setpool30=runs/line3_short/setpool30/eval_trained_seed43000.csv setpool30_initcritic=runs/line3_short/setpool30_initcritic/eval_trained_seed43000.csv
 ```
 
 ### Compare learned runs against the shared fixed baseline
 
 ```powershell
 .\.venv\Scripts\Activate.ps1
-python scripts/summarize_policy_kpi.py --input flat30=runs/line3_short/flat30/eval_trained_seed43000.csv setpool30=runs/line3_short/setpool30/eval_trained_seed43000.csv setpool30_initcritic=runs/line3_short/setpool30_initcritic/eval_trained_seed43000.csv fixed=runs/line3_short/eval_fixed_shared_seed43000.csv
+python scripts/analysis/summarize_policy_kpi.py --input flat30=runs/line3_short/flat30/eval_trained_seed43000.csv setpool30=runs/line3_short/setpool30/eval_trained_seed43000.csv setpool30_initcritic=runs/line3_short/setpool30_initcritic/eval_trained_seed43000.csv fixed=runs/line3_short/eval_fixed_shared_seed43000.csv
 ```
 
 ## Decision Rules
@@ -164,7 +164,7 @@ What is available now:
 
 - [scripts/evaluate.py](d:/研三上/毕设/sagin_marl/scripts/evaluate.py) for reproducible multi-episode CSV comparison
 - [scripts/render_episode.py](d:/研三上/毕设/sagin_marl/scripts/render_episode.py) for a visual sanity check GIF
-- [scripts/export_debug_episode.py](d:/研三上/毕设/sagin_marl/scripts/export_debug_episode.py) for seed-locked single-episode CSV + markdown summary export
+- [scripts/analysis/export/export_debug_episode.py](d:/研三上/毕设/sagin_marl/scripts/analysis/export/export_debug_episode.py) for seed-locked single-episode CSV + markdown summary export
 
 Limit:
 

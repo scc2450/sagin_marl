@@ -10,9 +10,9 @@ from typing import Dict
 
 from torch.utils.tensorboard import SummaryWriter
 
-ROOT = os.path.dirname(os.path.dirname(__file__))
-if ROOT not in sys.path:
-    sys.path.insert(0, ROOT)
+ROOT = next(parent for parent in Path(__file__).resolve().parents if (parent / "sagin_marl").is_dir())
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 
 
 def _init_structured_tb_layout(writer: SummaryWriter) -> None:

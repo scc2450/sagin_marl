@@ -67,7 +67,7 @@ official CUDA strict full-batch direct path 已收敛为以下契约：
 已通过的正确性验证：
 
 ```powershell
-.venv\Scripts\python.exe scripts\validate_structured_long_rollout_acceptance.py --config configs\phase1_actions_curriculum_joint_3heads_fading_interference_ka_vsat_joint_puremappo_criticdecoupled_diag_timeline_structured.yaml --episodes 1 --num-envs 1 --native-tensor-backend cuda --json-path .tmp_formal_report_current.json
+.venv\Scripts\python.exe scripts\diagnostics\validation\validate_structured_long_rollout_acceptance.py --config configs\phase1_actions_curriculum_joint_3heads_fading_interference_ka_vsat_joint_puremappo_criticdecoupled_diag_timeline_structured.yaml --episodes 1 --num-envs 1 --native-tensor-backend cuda --json-path .tmp_formal_report_current.json
 ```
 
 结果：
@@ -82,7 +82,7 @@ max_trace_diff reward=0 queue_total=0 backlog=0
 
 ```powershell
 $env:TORCH_LOGS='graph_breaks'
-.venv\Scripts\python.exe scripts\validate_structured_long_rollout_acceptance.py --config configs\phase1_actions_curriculum_joint_3heads_fading_interference_ka_vsat_joint_puremappo_criticdecoupled_diag_timeline_structured.yaml --episodes 1 --num-envs 1 --native-tensor-backend cuda --json-path .tmp_formal_report_graphbreaks.json
+.venv\Scripts\python.exe scripts\diagnostics\validation\validate_structured_long_rollout_acceptance.py --config configs\phase1_actions_curriculum_joint_3heads_fading_interference_ka_vsat_joint_puremappo_criticdecoupled_diag_timeline_structured.yaml --episodes 1 --num-envs 1 --native-tensor-backend cuda --json-path .tmp_formal_report_graphbreaks.json
 Remove-Item Env:TORCH_LOGS
 ```
 

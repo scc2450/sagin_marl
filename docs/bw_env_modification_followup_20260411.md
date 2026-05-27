@@ -389,7 +389,7 @@ soft overflow risk 还是偏“快照”，所以又尝试加入“持续没被�
 ### 10.2 具体实现
 
 value probe：
-- `scripts/probe_structured_bw_value_generalization.py`
+- `scripts/diagnostics/probe/probe_structured_bw_value_generalization.py`
 - 输出：`runs/analysis/bw_deadline_mild_value_probe_20260411/summary.json`
 
 credit mismatch probe：

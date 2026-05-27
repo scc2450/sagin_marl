@@ -209,6 +209,22 @@ Moved the remaining root-level audit and benchmark scripts after updating direct
 - `scripts/bench_structured_training_system.py -> scripts/benchmarks/bench_structured_training_system.py`
 - `scripts/bench_train.py -> scripts/benchmarks/bench_train.py`
 
+## Executed Analysis/Profile Utility Batch
+
+Moved low-coupling analysis, export, profiling, probe, and validation utilities out of the script root. These scripts are not current train/eval/render entrypoints; the only import-dependent file in this batch, `profile_joint_critic_step.py`, still imports the root-kept training helpers.
+
+- `scripts/analyze_bw_update_hot_cold_direction.py -> scripts/analysis/analyze_bw_update_hot_cold_direction.py`
+- `scripts/analyze_metrics.py -> scripts/analysis/analyze_metrics.py`
+- `scripts/estimate_throughput.py -> scripts/analysis/estimate_throughput.py`
+- `scripts/export_debug_episode.py -> scripts/analysis/export/export_debug_episode.py`
+- `scripts/export_tb_scalars.py -> scripts/analysis/export/export_tb_scalars.py`
+- `scripts/generate_joint_mcgae_training_ppt.py -> scripts/analysis/export/generate_joint_mcgae_training_ppt.py`
+- `scripts/summarize_policy_kpi.py -> scripts/analysis/summarize_policy_kpi.py`
+- `scripts/profile_joint_critic_step.py -> scripts/benchmarks/profile_joint_critic_step.py`
+- `scripts/profile_native_rollout_step_segments.py -> scripts/benchmarks/profile_native_rollout_step_segments.py`
+- `scripts/probe_structured_bw_value_generalization.py -> scripts/diagnostics/probe/probe_structured_bw_value_generalization.py`
+- `scripts/validate_structured_long_rollout_acceptance.py -> scripts/diagnostics/validation/validate_structured_long_rollout_acceptance.py`
+
 ## Full Mapping
 
 | original path | proposed path | phase | risk | note |

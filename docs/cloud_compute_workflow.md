@@ -191,7 +191,7 @@ tail -n 5 runs/phase1_actions/<RUN_ID>/metrics.csv
 ### 8.2 快速分析指标
 
 ```bash
-python scripts/analyze_metrics.py --run_dir runs/phase1_actions/<RUN_ID> --window 20
+python scripts/analysis/analyze_metrics.py --run_dir runs/phase1_actions/<RUN_ID> --window 20
 ```
 
 ### 8.3 TensorBoard（本地浏览器查看）
@@ -344,6 +344,6 @@ source .venv/bin/activate
 python scripts/train.py --config configs/phase1_actions_curriculum_stage1_accel.yaml --log_dir runs/phase1_actions --run_id exp_cloud_001 --num_envs 16 --vec_backend subproc --torch_threads 2 --updates 400
 python scripts/evaluate.py --config configs/phase1_actions_curriculum_stage1_accel.yaml --run_dir runs/phase1_actions/exp_cloud_001 --episodes 20
 python scripts/evaluate.py --config configs/phase1_actions_curriculum_stage1_accel.yaml --run_dir runs/phase1_actions/exp_cloud_001 --episodes 20 --baseline queue_aware
-python scripts/analyze_metrics.py --run_dir runs/phase1_actions/exp_cloud_001 --window 20
+python scripts/analysis/analyze_metrics.py --run_dir runs/phase1_actions/exp_cloud_001 --window 20
 ```
 

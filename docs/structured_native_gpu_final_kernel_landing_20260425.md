@@ -1426,7 +1426,7 @@ profile 不能只看 kernel launch 数。不得用 `blockDim=1` 或 thread0-only
 扩展现有 `validate_structured_fixed_seed_long_rollout` 验收：
 
 ```text
-脚本：scripts/validate_structured_long_rollout_acceptance.py
+脚本：scripts/diagnostics/validation/validate_structured_long_rollout_acceptance.py
 入口：sagin_marl.rl.structured_eval.validate_structured_fixed_seed_long_rollout
 
 同一 seed、同一 horizon、同一 action replay：

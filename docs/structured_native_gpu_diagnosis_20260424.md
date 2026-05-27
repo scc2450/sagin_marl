@@ -44,7 +44,7 @@
 | `sagin_marl/env/structured_gpu_rollout_runtime.py` | native rollout runtime 的 step program 编排层，决定每个 step 如何串起 env segment 和 actor。 |
 | `sagin_marl/env/structured_kernel_runtime.py` | PyTorch compile/CUDA Graph capture/replay 包装层。 |
 | `sagin_marl/rl/structured_eval.py` | fixed-seed long-rollout parity 校验。 |
-| `scripts/profile_native_rollout_step_segments.py` | 本次新增的独立诊断脚本，运行时 monkey-patch 计时，不修改主内核文件。 |
+| `scripts/benchmarks/profile_native_rollout_step_segments.py` | 本次新增的独立诊断脚本，运行时 monkey-patch 计时，不修改主内核文件。 |
 
 ### 2.2 两个 backend 配置
 
@@ -521,7 +521,7 @@ prepare_accel_stage_local_obs calls_per_profiled_step
 1. 跑 correctness：
 
 ```powershell
-.venv\Scripts\python.exe scripts\validate_structured_long_rollout_acceptance.py `
+.venv\Scripts\python.exe scripts\diagnostics\validation\validate_structured_long_rollout_acceptance.py `
   --config configs\phase1_actions_curriculum_joint_3heads_fading_interference_ka_vsat_joint_puremappo_criticdecoupled_diag_timeline_structured.yaml `
   --episodes 1 `
   --num-envs 1 `
@@ -556,7 +556,7 @@ prepare_accel_stage_local_obs calls_per_profiled_step
 4. 再跑 segment 诊断，确认 `prepare_accel_stage_local_obs` 次数下降：
 
 ```powershell
-.venv\Scripts\python.exe scripts\profile_native_rollout_step_segments.py `
+.venv\Scripts\python.exe scripts\benchmarks\profile_native_rollout_step_segments.py `
   --config configs\phase1_actions_curriculum_joint_3heads_fading_interference_ka_vsat_joint_puremappo_criticdecoupled_diag_timeline_structured.yaml `
   --num-envs 8 `
   --num-updates 1 `
@@ -586,7 +586,7 @@ prepare_accel_stage_local_obs calls_per_profiled_step
 本轮新增文件：
 
 ```text
-scripts/profile_native_rollout_step_segments.py
+scripts/benchmarks/profile_native_rollout_step_segments.py
 docs/structured_native_gpu_diagnosis_20260424.md
 ```
 

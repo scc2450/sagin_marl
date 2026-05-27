@@ -422,7 +422,7 @@ fresh supervised critic 分桶：
 - `sagin_marl/rl/structured_train.py`
 - `sagin_marl/rl/structured_bw_update_direction.py`
 - `scripts/train_structured.py`
-- `scripts/probe_structured_bw_value_generalization.py`
+- `scripts/diagnostics/probe/probe_structured_bw_value_generalization.py`
 
 主要 run：
 

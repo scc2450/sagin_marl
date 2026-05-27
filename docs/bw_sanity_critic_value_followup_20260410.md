@@ -177,7 +177,7 @@ Important implementation detail:
 
 To separate network capacity from online PPO noise, we added:
 
-- `scripts/probe_structured_bw_value_generalization.py`
+- `scripts/diagnostics/probe/probe_structured_bw_value_generalization.py`
 
 Protocol:
 
@@ -436,4 +436,4 @@ Constant-arrival T10 run:
 
 Probe script:
 
-- `scripts/probe_structured_bw_value_generalization.py`
+- `scripts/diagnostics/probe/probe_structured_bw_value_generalization.py`

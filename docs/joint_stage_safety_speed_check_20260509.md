@@ -29,7 +29,7 @@ So these should be treated as alternatives, not stacked safety layers.
 Command shape:
 
 ```text
-scripts/profile_native_rollout_step_segments.py
+scripts/benchmarks/profile_native_rollout_step_segments.py
   config = configs/tmp/structured_sat_mcgae_3uav_20gu_t250_positive_relcritic.yaml
   num_envs = 64
   rollout_env_steps = 40
