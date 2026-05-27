@@ -20,6 +20,13 @@ from sagin_marl.rl.structured_buffer import StructuredRolloutBuffer
 from sagin_marl.rl.structured_factory import build_structured_modules_from_config
 from sagin_marl.rl.structured_mappo import StructuredMAPPO, _index_dataclass
 from sagin_marl.rl import structured_sat_actor_schema as sat_schema
+from sagin_marl.rl.stage_mcgae import (
+    STAGE_ID,
+    force_single_stage_config as _force_single_stage_config,
+    make_stage_optimizers as _make_stage_optimizers,
+    set_seed as _set_seed,
+    stage_optimizer_params as _stage_optimizer_params,
+)
 from sagin_marl.rl.structured_train import close_structured_env_group, make_structured_driver_group
 
 from scripts.diagnose_reward_action_sensitivity import (
@@ -27,59 +34,6 @@ from scripts.diagnose_reward_action_sensitivity import (
     _corr,
     _summ,
 )
-
-
-STAGE_ID = {"accel": 0, "sat": 1, "bw": 2}
-
-
-def _set_seed(seed: int) -> None:
-    random.seed(int(seed))
-    np.random.seed(int(seed))
-    torch.manual_seed(int(seed))
-    if torch.cuda.is_available():
-        torch.cuda.manual_seed_all(int(seed))
-
-
-def _stage_optimizer_params(actor: torch.nn.Module, stage_id: int) -> list[torch.nn.Parameter]:
-    if int(stage_id) == 0:
-        module = getattr(actor, "accel_policy", None)
-    elif int(stage_id) == 1:
-        module = getattr(actor, "sat_subset_policy", None)
-    elif int(stage_id) == 2:
-        module = getattr(actor, "bw_policy", None)
-    else:
-        module = None
-    if module is None:
-        return []
-    return [param for param in module.parameters() if param.requires_grad]
-
-
-def _make_stage_optimizers(actor: torch.nn.Module, actor_lr: float) -> dict[int, torch.optim.Optimizer]:
-    out: dict[int, torch.optim.Optimizer] = {}
-    for stage_id in (0, 1, 2):
-        params = _stage_optimizer_params(actor, stage_id)
-        if params:
-            out[stage_id] = torch.optim.Adam(params, lr=float(actor_lr))
-    return out
-
-
-def _force_single_stage_config(cfg: Any, *, stage_id: int, reward_mode: str | None) -> None:
-    if reward_mode:
-        cfg.reward_mode = str(reward_mode)
-    cfg.train_accel = bool(stage_id == 0)
-    cfg.train_sat = bool(stage_id == 1)
-    cfg.train_bw = bool(stage_id == 2)
-    cfg.exec_accel_source = "policy" if stage_id == 0 else "cluster_center_queue_aware"
-    cfg.exec_sat_source = "policy" if stage_id == 1 else "queue_aware"
-    cfg.exec_bw_source = "policy" if stage_id == 2 else "queue_aware"
-    cfg.structured_actor_update_mode = "ppo"
-    cfg.accel_update_mode = "ppo"
-    cfg.sat_update_mode = "ppo"
-    cfg.bw_update_mode = "ppo"
-    cfg.checkpoint_eval_enabled = False
-    cfg.train_trace_enabled = False
-    cfg.structured_env_backend = "native"
-    cfg.structured_env_tensor_backend = "cuda"
 
 
 def _stage_action_samples(

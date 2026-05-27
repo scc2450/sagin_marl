@@ -17,18 +17,23 @@ import torch
 import torch.nn.functional as F
 
 from sagin_marl.env.config import load_config
+from sagin_marl.rl.stage_mcgae import (
+    STAGE_ID,
+    clone_dataclass_tensors as _clone_dataclass_tensors,
+    collect_one_rollout as _collect_one_rollout,
+    compute_returns_for_views as _compute_returns_for_views,
+    eval_critic as _eval_critic,
+    explained_variance_np as _explained_variance_np,
+    force_single_stage_config as _force_single_stage_config,
+    make_learner as _make_learner,
+    stage_optimizer_params as _stage_optimizer_params,
+)
 from sagin_marl.rl.structured_mappo import _index_dataclass
 from sagin_marl.rl.structured_train import close_structured_env_group, make_structured_driver_group
 
 from scripts.audit_stage_critic_only_fit import (
-    _clone_dataclass_tensors,
-    _compute_returns_for_views,
-    _collect_one_rollout,
     _collect_stage_bank,
-    _eval_critic,
-    _explained_variance_np,
     _heldout_vpi_ceiling_probe,
-    _make_learner,
     _train_critic_only,
 )
 from scripts.audit_stage_credit_chain import (
@@ -39,11 +44,8 @@ from scripts.audit_stage_credit_chain import (
     _standardize_np,
 )
 from scripts.audit_stage_ppo_credit_alignment import (
-    STAGE_ID,
-    _force_single_stage_config,
     _normalize_advantages_like_update,
     _stage_action_samples,
-    _stage_optimizer_params,
 )
 from scripts.audit_stage_qpi_action_credit import _branch_returns_qpi
 from scripts.diagnose_reward_action_sensitivity import _corr, _summ

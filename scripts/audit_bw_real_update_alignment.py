@@ -14,11 +14,11 @@ import numpy as np
 import torch
 
 from sagin_marl.env.config import load_config
+from sagin_marl.rl.stage_mcgae import stage_optimizer_params as _stage_optimizer_params
 from sagin_marl.rl.structured_mappo import _slice_dataclass
 from sagin_marl.rl.structured_train import close_structured_env_group, make_structured_driver_group
 from sagin_marl.utils.torch_compile_cache import report_torch_compile_cache
 
-from scripts.audit_stage_ppo_credit_alignment import _stage_optimizer_params
 from scripts.train_joint_mcgae import (
     STAGES,
     _actor_only_stage_batch,

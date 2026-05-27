@@ -20,13 +20,21 @@ from sagin_marl.env.config import load_config
 from sagin_marl.rl.structured_buffer import StructuredRolloutBuffer
 from sagin_marl.rl.structured_factory import build_structured_modules_from_config
 from sagin_marl.rl.structured_mappo import StructuredMAPPO, _collate_dataclass, _index_dataclass
+from sagin_marl.rl.stage_mcgae import (
+    STAGE_ID,
+    clone_dataclass_tensors as _clone_dataclass_tensors,
+    collect_one_rollout as _collect_one_rollout,
+    compute_returns_for_views as _compute_returns_for_views,
+    eval_critic as _eval_critic,
+    explained_variance_np as _explained_variance_np,
+    force_single_stage_config as _force_single_stage_config,
+    make_learner as _make_learner,
+    set_seed as _set_seed,
+)
 from sagin_marl.rl.structured_train import close_structured_env_group, make_structured_driver_group
 
 from scripts.audit_stage_ppo_credit_alignment import (
-    STAGE_ID,
-    _force_single_stage_config,
     _normalize_advantages_like_update,
-    _set_seed,
     _stage_action_samples,
 )
 from scripts.audit_stage_credit_chain import (
@@ -41,150 +49,6 @@ from scripts.diagnose_reward_action_sensitivity import (
     _corr,
     _summ,
 )
-
-
-def _explained_variance_np(pred: np.ndarray, target: np.ndarray) -> float:
-    pred = np.asarray(pred, dtype=np.float64).reshape(-1)
-    target = np.asarray(target, dtype=np.float64).reshape(-1)
-    if target.size <= 1:
-        return 0.0
-    var = float(np.var(target))
-    if var <= 1.0e-12:
-        return 0.0
-    return 1.0 - float(np.var(target - pred)) / var
-
-
-def _make_learner(cfg: Any, *, device: torch.device, stage_id: int) -> tuple[StructuredMAPPO, Any, Any]:
-    bundle = build_structured_modules_from_config(cfg)
-    actor = bundle.actor.to(device)
-    critic = bundle.critic.to(device) if bundle.critic is not None else None
-    if critic is None:
-        raise RuntimeError("critic-only audit requires a critic.")
-    learner = StructuredMAPPO(
-        actor=actor,
-        critic=critic,
-        gamma=float(cfg.gamma),
-        gae_lambda=float(cfg.gae_lambda),
-        clip_ratio=float(cfg.clip_ratio),
-        value_coef=float(cfg.value_coef),
-        entropy_coef=float(cfg.entropy_coef),
-        max_grad_norm=float(cfg.max_grad_norm),
-        ppo_epochs=int(cfg.ppo_epochs),
-        num_mini_batch=int(cfg.num_mini_batch),
-        actor_optimizer=torch.optim.Adam([p for p in actor.parameters() if p.requires_grad], lr=float(cfg.actor_lr)),
-        critic_optimizer=torch.optim.Adam(critic.parameters(), lr=float(cfg.critic_lr)),
-        device=device,
-        cfg=cfg,
-        train_accel=bool(stage_id == 0),
-        train_sat=bool(stage_id == 1),
-        train_bw=bool(stage_id == 2),
-        exec_accel_source=str(cfg.exec_accel_source),
-        exec_sat_source=str(cfg.exec_sat_source),
-        exec_bw_source=str(cfg.exec_bw_source),
-    )
-    return learner, actor, critic
-
-
-def _collect_one_rollout(
-    learner: StructuredMAPPO,
-    group: Any,
-    *,
-    rollout_env_steps: int,
-    device: torch.device,
-    target: str,
-) -> tuple[StructuredRolloutBuffer, Any, torch.Tensor]:
-    begin_native_rollout = getattr(learner, "begin_native_rollout", None)
-    if callable(begin_native_rollout):
-        begin_native_rollout(
-            group,
-            rollout_env_steps=int(rollout_env_steps),
-            num_envs=int(len(group)),
-        )
-    buffer = StructuredRolloutBuffer()
-    learner.collect_env_horizon_native_tensor_policy(
-        group,
-        buffer=buffer,
-        horizon=int(rollout_env_steps),
-        deterministic=False,
-    )
-    if device.type == "cuda":
-        torch.cuda.synchronize(device)
-    rollout_views = buffer.build_rollout_views(device)
-    batch_view = rollout_views.training_view
-    return_view = rollout_views.return_view
-    if str(target).strip().lower() == "mc":
-        value_override = torch.zeros((int(batch_view.transition_count),), dtype=torch.float32, device=device)
-        old_lam = float(learner.gae_lambda)
-        learner.gae_lambda = 1.0
-        try:
-            gae = learner.compute_returns_and_advantages(
-                buffer,
-                None,
-                return_view=return_view,
-                value_override=value_override,
-            )
-        finally:
-            learner.gae_lambda = old_lam
-    elif str(target).strip().lower() == "train_gae":
-        value_override = learner._rollout_value_override_from_training_view(batch_view)
-        learner._apply_rollout_value_override_to_views(
-            batch_view=batch_view,
-            return_view=return_view,
-            value_override=value_override,
-        )
-        gae = learner.compute_returns_and_advantages(
-            buffer,
-            rollout_views.bootstrap_view,
-            return_view=return_view,
-            value_override=value_override,
-        )
-    else:
-        raise ValueError("--target must be one of {'mc', 'train_gae'}.")
-    returns = torch.as_tensor(gae["returns"], dtype=torch.float32, device=device)
-    return buffer, rollout_views, returns
-
-
-def _compute_returns_for_views(
-    learner: StructuredMAPPO,
-    buffer: StructuredRolloutBuffer,
-    views: Any,
-    *,
-    target: str,
-    device: torch.device,
-) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-    batch_view = views.training_view
-    return_view = views.return_view
-    if str(target).strip().lower() == "mc":
-        value_override = torch.zeros((int(batch_view.transition_count),), dtype=torch.float32, device=device)
-        old_lam = float(learner.gae_lambda)
-        learner.gae_lambda = 1.0
-        try:
-            gae = learner.compute_returns_and_advantages(
-                buffer,
-                None,
-                return_view=return_view,
-                value_override=value_override,
-            )
-        finally:
-            learner.gae_lambda = old_lam
-    elif str(target).strip().lower() == "train_gae":
-        value_override = learner._rollout_value_override_from_training_view(batch_view)
-        learner._apply_rollout_value_override_to_views(
-            batch_view=batch_view,
-            return_view=return_view,
-            value_override=value_override,
-        )
-        gae = learner.compute_returns_and_advantages(
-            buffer,
-            views.bootstrap_view,
-            return_view=return_view,
-            value_override=value_override,
-        )
-    else:
-        raise ValueError("target must be one of {'mc', 'train_gae'}.")
-    returns = torch.as_tensor(gae["returns"], dtype=torch.float32, device=device)
-    advantages = torch.as_tensor(gae["advantages"], dtype=torch.float32, device=device)
-    return returns, advantages, value_override.to(device=device, dtype=torch.float32)
 
 
 def _collect_stage_bank(
@@ -240,44 +104,6 @@ def _collect_stage_bank(
     world_bank = _collate_dataclass(worlds, device)
     target_bank = torch.cat(targets, dim=0).to(device=device, dtype=torch.float32)
     return world_bank, target_bank, summaries
-
-
-def _eval_critic(
-    learner: StructuredMAPPO,
-    *,
-    stage_id: int,
-    world_bank: Any,
-    target: torch.Tensor,
-    batch_size: int,
-    pad_to_batch_size: bool = False,
-) -> tuple[np.ndarray, dict[str, float]]:
-    preds: list[torch.Tensor] = []
-    n = int(target.numel())
-    with torch.no_grad():
-        for start in range(0, n, max(int(batch_size), 1)):
-            stop = min(start + int(batch_size), n)
-            idx = torch.arange(start, stop, device=target.device, dtype=torch.long)
-            real_count = int(idx.numel())
-            if bool(pad_to_batch_size) and real_count > 0 and real_count < int(batch_size):
-                pad = idx.new_full((int(batch_size) - real_count,), int(idx[-1].item()))
-                idx = torch.cat([idx, pad], dim=0)
-            pred = learner._stage_value_eval_from_batch(int(stage_id), _index_dataclass(world_bank, idx))
-            # torch.compile may run this value path under CUDA graphs; clone so
-            # the next compiled invocation cannot overwrite the stored output.
-            preds.append(pred[:real_count].detach().clone())
-    pred_t = torch.cat(preds, dim=0).to(device=target.device, dtype=torch.float32)
-    pred_np = pred_t.detach().cpu().numpy()
-    target_np = target.detach().cpu().numpy()
-    stats = {
-        "mse": float(np.mean((pred_np - target_np) ** 2)),
-        "mae": float(np.mean(np.abs(pred_np - target_np))),
-        "ev": _explained_variance_np(pred_np, target_np),
-        "corr": _corr(pred_np, target_np),
-        "pred": _summ(pred_np),
-        "target": _summ(target_np),
-        "residual": _summ(target_np - pred_np),
-    }
-    return pred_np, stats
 
 
 def _train_critic_only(
@@ -394,26 +220,6 @@ def _train_critic_bank_once(
         "final_train_mse": float(stats["mse"]),
         "final_train_corr": float(stats["corr"]),
     }
-
-
-def _clone_dataclass_tensors(batch: Any, *, device: torch.device | None = None) -> Any:
-    field_names = getattr(batch, "_tensor_fields", None)
-    if field_names is None:
-        from dataclasses import fields, is_dataclass
-
-        if not is_dataclass(batch):
-            raise TypeError("_clone_dataclass_tensors expects a tensor-field dataclass")
-        field_names = tuple(field.name for field in fields(batch))
-    kwargs = {}
-    for field_name in field_names:
-        value = getattr(batch, field_name)
-        if not torch.is_tensor(value):
-            raise TypeError(f"Unsupported field type for {field_name}: {type(value)!r}")
-        tensor = value.detach().clone()
-        if device is not None and tensor.device != device:
-            tensor = tensor.to(device)
-        kwargs[str(field_name)] = tensor
-    return type(batch)(**kwargs)
 
 
 def _run_fixed_policy_fitted_eval(

@@ -15,6 +15,7 @@ import numpy as np
 import torch
 
 from sagin_marl.env.config import load_config
+from sagin_marl.rl.stage_mcgae import stage_optimizer_params as _stage_optimizer_params
 from sagin_marl.rl.structured_mappo import _slice_dataclass
 from sagin_marl.rl.structured_train import close_structured_env_group, make_structured_driver_group
 
@@ -25,7 +26,6 @@ from scripts.train_joint_mcgae import (
 )
 from scripts.train_stage_mcgae import (
     _BwActorLossChunkModule,
-    _stage_optimizer_params,
     _strict_chunk_size,
     _train_stage_critic_on_stage,
 )

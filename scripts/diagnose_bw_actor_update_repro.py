@@ -18,11 +18,13 @@ import numpy as np
 import torch
 
 from sagin_marl.env.config import load_config
+from sagin_marl.rl.stage_mcgae import (
+    make_learner as _make_learner,
+    stage_optimizer_params as _stage_optimizer_params,
+)
 from sagin_marl.rl.structured_train import close_structured_env_group, make_structured_driver_group
 from sagin_marl.utils.torch_compile_cache import report_torch_compile_cache
 
-from scripts.audit_stage_critic_only_fit import _make_learner
-from scripts.audit_stage_ppo_credit_alignment import _stage_optimizer_params
 from scripts.train_joint_mcgae import _actor_only_stage_batch, _collect_joint_rollout
 from scripts.train_stage_mcgae import (
     _cuda_mem,

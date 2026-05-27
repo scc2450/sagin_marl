@@ -16,10 +16,10 @@ import torch.nn.functional as F
 
 from sagin_marl.env.config import load_config
 from sagin_marl.rl.structured_mappo import _index_dataclass
+from sagin_marl.rl.stage_mcgae import make_learner as _make_learner
 from sagin_marl.rl.structured_train import close_structured_env_group, make_structured_driver_group
 from sagin_marl.utils.torch_compile_cache import report_torch_compile_cache
 
-from scripts.audit_stage_critic_only_fit import _make_learner
 from scripts.train_joint_mcgae import _collect_joint_rollout
 from scripts.train_stage_mcgae import _enable_strict_compile_global
 

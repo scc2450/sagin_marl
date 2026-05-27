@@ -21,11 +21,13 @@ import torch
 from sagin_marl.env.config import load_config
 from sagin_marl.rl.structured_factory import build_structured_modules_from_config
 from sagin_marl.rl.structured_mappo import StructuredMAPPO
+from sagin_marl.rl.stage_mcgae import (
+    collect_one_rollout as _collect_one_rollout,
+    stage_optimizer_params as _stage_optimizer_params,
+)
 from sagin_marl.rl.structured_train import close_structured_env_group, make_structured_driver_group
 from sagin_marl.utils.torch_compile_cache import report_torch_compile_cache
 
-from scripts.audit_stage_critic_only_fit import _collect_one_rollout
-from scripts.audit_stage_ppo_credit_alignment import _stage_optimizer_params
 from scripts.train_stage_mcgae import (
     STAGE_NAME,
     _configure_accel_safety_for_training,

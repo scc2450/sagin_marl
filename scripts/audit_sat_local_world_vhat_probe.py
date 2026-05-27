@@ -15,6 +15,15 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from sagin_marl.env.config import load_config
+from sagin_marl.rl.stage_mcgae import (
+    STAGE_ID,
+    clone_dataclass_tensors as _clone_dataclass_tensors,
+    collect_one_rollout as _collect_one_rollout,
+    force_single_stage_config as _force_single_stage_config,
+    make_learner as _make_learner,
+    set_seed as _set_seed,
+)
+from sagin_marl.rl.structured_mappo import _collate_dataclass, _index_dataclass
 from sagin_marl.rl.structured_train import close_structured_env_group, make_structured_driver_group
 from scripts.audit_fixed_critic_benchmark import (
     _ev,
@@ -24,14 +33,6 @@ from scripts.audit_fixed_critic_benchmark import (
     _world_global_features,
     _world_raw_features,
 )
-from scripts.audit_stage_critic_only_fit import (
-    _clone_dataclass_tensors,
-    _collect_one_rollout,
-    _collate_dataclass,
-    _index_dataclass,
-    _make_learner,
-)
-from scripts.audit_stage_ppo_credit_alignment import STAGE_ID, _force_single_stage_config, _set_seed
 
 
 def _to_device_dataclass(batch: Any, device: torch.device) -> Any:

@@ -12,14 +12,18 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from sagin_marl.env.config import load_config
+from sagin_marl.rl.stage_mcgae import (
+    STAGE_ID,
+    eval_critic as _eval_critic,
+    force_single_stage_config as _force_single_stage_config,
+    make_learner as _make_learner,
+    set_seed as _set_seed,
+)
 from sagin_marl.rl.structured_train import close_structured_env_group, make_structured_driver_group
 from scripts.audit_stage_critic_only_fit import (
     _collect_stage_bank,
-    _eval_critic,
-    _make_learner,
     _train_critic_only,
 )
-from scripts.audit_stage_ppo_credit_alignment import STAGE_ID, _force_single_stage_config, _set_seed
 
 
 def _parse_int_list(text: str) -> list[int]:

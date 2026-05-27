@@ -16,9 +16,9 @@ if ROOT not in sys.path:
 import torch
 
 from sagin_marl.env.config import load_config
+from sagin_marl.rl.stage_mcgae import stage_optimizer_params as _stage_optimizer_params
 from sagin_marl.rl.structured_eval import evaluate_structured_actor_exec_sources
 from sagin_marl.rl.structured_train import close_structured_env_group, make_structured_driver_group
-from scripts.audit_stage_ppo_credit_alignment import _stage_optimizer_params
 from scripts.train_joint_mcgae import (
     _actor_only_stage_batch,
     _collect_joint_rollout,

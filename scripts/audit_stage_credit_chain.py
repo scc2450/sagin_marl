@@ -20,15 +20,17 @@ from sagin_marl.env.config import load_config
 from sagin_marl.rl.structured_buffer import StructuredRolloutBuffer
 from sagin_marl.rl.structured_factory import build_structured_modules_from_config
 from sagin_marl.rl.structured_mappo import StructuredMAPPO, _index_dataclass
+from sagin_marl.rl.stage_mcgae import (
+    STAGE_ID,
+    force_single_stage_config as _force_single_stage_config,
+    make_stage_optimizers as _make_stage_optimizers,
+    stage_optimizer_params as _stage_optimizer_params,
+)
 from sagin_marl.rl.structured_train import close_structured_env_group, make_structured_driver_group
 
 from scripts.audit_stage_ppo_credit_alignment import (
-    STAGE_ID,
-    _force_single_stage_config,
-    _make_stage_optimizers,
     _normalize_advantages_like_update,
     _stage_action_samples,
-    _stage_optimizer_params,
 )
 from scripts.audit_stage_qpi_action_credit import (
     _branch_returns_qpi,

@@ -23,12 +23,14 @@ from sagin_marl.rl.structured_mappo import (
     _StructuredMAPPOGpuActorBridge,
     _index_dataclass,
 )
+from sagin_marl.rl.stage_mcgae import (
+    STAGE_ID,
+    force_single_stage_config as _force_single_stage_config,
+    make_stage_optimizers as _make_stage_optimizers,
+)
 from sagin_marl.rl.structured_train import close_structured_env_group, make_structured_driver_group
 
 from scripts.audit_stage_ppo_credit_alignment import (
-    STAGE_ID,
-    _force_single_stage_config,
-    _make_stage_optimizers,
     _normalize_advantages_like_update,
     _stage_action_samples,
 )
