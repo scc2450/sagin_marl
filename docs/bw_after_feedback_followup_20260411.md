@@ -284,7 +284,7 @@ u10 checkpoint eval：
 
 修改脚本：
 
-- `scripts/evaluate_structured_bw_select.py`
+- `scripts/experiments/bw_training/evaluate_structured_bw_select.py`
 
 主要改动：
 
@@ -364,8 +364,8 @@ selection 统计：
 
 使用/修改脚本：
 
-- bank 导出仍来自 `scripts/evaluate_structured_bw_select.py`
-- student 训练与 live eval 脚本为 `scripts/distill_bw_select_v1.py`
+- bank 导出仍来自 `scripts/experiments/bw_training/evaluate_structured_bw_select.py`
+- student 训练与 live eval 脚本为 `scripts/experiments/bw_distill/distill_bw_select_v1.py`
 
 这次没有直接蒸馏成独立 actor，而是先学一个**selector student**：
 
@@ -477,8 +477,8 @@ live selection source：
 - `sagin_marl/rl/structured_bw_update_direction.py`
 - `scripts/train_structured.py`
 - `scripts/diagnostics/diagnose/diagnose_structured_bw_branch_linesearch.py`
-- `scripts/evaluate_structured_bw_select.py`
-- `scripts/distill_bw_select_v1.py`
+- `scripts/experiments/bw_training/evaluate_structured_bw_select.py`
+- `scripts/experiments/bw_distill/distill_bw_select_v1.py`
 
 结果相关：
 

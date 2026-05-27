@@ -18,11 +18,11 @@
 
 ### 2.1 脚本
 
-- `scripts/train_structured_bw_sequence_distill_diagnostic.py`
+- `scripts/experiments/bw_training/train_structured_bw_sequence_distill_diagnostic.py`
 
 这个脚本是新加的 sequence-level 诊断版，和之前的一步版
 
-- `scripts/train_structured_bw_search_distill_diagnostic.py`
+- `scripts/experiments/bw_training/train_structured_bw_search_distill_diagnostic.py`
 
 相对应。
 

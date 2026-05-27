@@ -313,7 +313,7 @@ The following files are the main files involved in the current `BW` PPO path.
 
 - `sagin_marl/rl/structured_eval.py`
   - checkpoint/model evaluation logic
-- `scripts/train_structured_bw_imitation_sanity.py`
+- `scripts/experiments/bw_training/train_structured_bw_imitation_sanity.py`
   - actor-capacity sanity via teacher imitation
 - `scripts/diagnostics/diagnose/diagnose_structured_bw_policy_gradient_alignment.py`
   - gradient / one-step-update alignment diagnostics

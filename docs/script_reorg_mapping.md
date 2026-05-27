@@ -267,6 +267,23 @@ Moved the access-control imitation/evaluation family into one experiment directo
 - `scripts/evaluate_structured_access_control_learned.py -> scripts/experiments/access_control/evaluate_structured_access_control_learned.py`
 - `scripts/evaluate_structured_access_control_oracle.py -> scripts/experiments/access_control/evaluate_structured_access_control_oracle.py`
 
+## Executed BW Experiment Batch
+
+Moved the BW distillation/training/tooling family into experiment subdirectories. This cluster is historical/experimental rather than the current joint MC-GAE training path, but several files import sibling BW helpers, so package imports and repo-root bootstraps were updated together.
+
+- `scripts/check_bw_distill_reload.py -> scripts/experiments/bw_distill/check_bw_distill_reload.py`
+- `scripts/distill_bw_select_v1.py -> scripts/experiments/bw_distill/distill_bw_select_v1.py`
+- `scripts/distill_bw_winner_bank_v0.py -> scripts/experiments/bw_distill/distill_bw_winner_bank_v0.py`
+- `scripts/evaluate_structured_bw_select.py -> scripts/experiments/bw_training/evaluate_structured_bw_select.py`
+- `scripts/train_bw_panel_advantage_v0.py -> scripts/experiments/bw_training/train_bw_panel_advantage_v0.py`
+- `scripts/train_structured_bw_actoronly_debug.py -> scripts/experiments/bw_training/train_structured_bw_actoronly_debug.py`
+- `scripts/train_structured_bw_imitation_sanity.py -> scripts/experiments/bw_training/train_structured_bw_imitation_sanity.py`
+- `scripts/train_structured_bw_search_distill_diagnostic.py -> scripts/experiments/bw_training/train_structured_bw_search_distill_diagnostic.py`
+- `scripts/train_structured_bw_sequence_distill_diagnostic.py -> scripts/experiments/bw_training/train_structured_bw_sequence_distill_diagnostic.py`
+- `scripts/search_bw_sanity_gap.py -> scripts/experiments/bw_tools/search_bw_sanity_gap.py`
+- `scripts/search_structured_bw_reward_alignment.py -> scripts/experiments/bw_tools/search_structured_bw_reward_alignment.py`
+- `scripts/solve_bw_1uav2gu_flow_bcd.py -> scripts/experiments/bw_tools/solve_bw_1uav2gu_flow_bcd.py`
+
 ## Full Mapping
 
 | original path | proposed path | phase | risk | note |

@@ -11,16 +11,16 @@ from dataclasses import fields, is_dataclass
 from pathlib import Path
 from typing import Any
 
-ROOT = os.path.dirname(os.path.dirname(__file__))
-if ROOT not in sys.path:
-    sys.path.insert(0, ROOT)
+ROOT = next(parent for parent in Path(__file__).resolve().parents if (parent / "sagin_marl").is_dir())
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 
 import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from evaluate_structured_bw_select import (
+from scripts.experiments.bw_training.evaluate_structured_bw_select import (
     _build_candidate_panels,
     _episode_metrics_template,
     _episode_row_from_accumulator,
@@ -407,7 +407,7 @@ def _evaluate_live(
     env_group = make_structured_env_group(cfg, num_envs=active_slots, backend=vec_backend)
     drivers = env_group
     if not looks_like_driver_group(drivers):
-        from evaluate_structured_bw_select import _as_driver_list
+        from scripts.experiments.bw_training.evaluate_structured_bw_select import _as_driver_list
 
         drivers = _as_driver_list(env_group)
     rows: list[dict[str, float]] = []

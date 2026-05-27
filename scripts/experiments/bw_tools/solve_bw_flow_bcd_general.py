@@ -11,9 +11,9 @@ from typing import Any
 
 import numpy as np
 
-ROOT = os.path.dirname(os.path.dirname(__file__))
-if ROOT not in sys.path:
-    sys.path.insert(0, ROOT)
+ROOT = next(parent for parent in Path(__file__).resolve().parents if (parent / "sagin_marl").is_dir())
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 
 from sagin_marl.env.config import load_config
 from sagin_marl.env.sagin_env import _quantize_queue_contract_np

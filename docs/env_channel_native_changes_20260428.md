@@ -302,7 +302,7 @@ sagin_marl/rl/structured_mappo.py
 - 删除：`artifacts/bw_1uav2gu_lp_oracle_seed42.json`
 - 删除：`artifacts/bw_1uav2gu_lp_oracle_seed43.json`
 - 删除：`artifacts/bw_1uav2gu_lp_oracle_seed44.json`
-- 新增未跟踪：`scripts/solve_bw_1uav2gu_flow_bcd.py`
+- 新增未跟踪：`scripts/experiments/bw_tools/solve_bw_1uav2gu_flow_bcd.py`
 - 新增未跟踪：`artifacts/bw_oracle/`
 
 这些实验脚本/产物不是环境主路径的一部分，如果后续准备提交，建议单独决定是否保留或清理。

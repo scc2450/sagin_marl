@@ -6,12 +6,12 @@ import os
 import sys
 from pathlib import Path
 
-ROOT = os.path.dirname(os.path.dirname(__file__))
-if ROOT not in sys.path:
-    sys.path.insert(0, ROOT)
+ROOT = next(parent for parent in Path(__file__).resolve().parents if (parent / "sagin_marl").is_dir())
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 
 from scripts.diagnostics.audit.audit_bw_broad2local_offline import _load_actor
-from distill_bw_winner_bank_v0 import _entries_by_indices, _evaluate_split, _load_winner_bank
+from scripts.experiments.bw_distill.distill_bw_winner_bank_v0 import _entries_by_indices, _evaluate_split, _load_winner_bank
 
 import torch
 

@@ -62,8 +62,8 @@ Interpretation:
 
 - `scripts/train_structured.py`
 - `scripts/evaluate_structured.py`
-- `scripts/train_structured_bw_actoronly_debug.py`
-- `scripts/search_bw_sanity_gap.py`
+- `scripts/experiments/bw_training/train_structured_bw_actoronly_debug.py`
+- `scripts/experiments/bw_tools/search_bw_sanity_gap.py`
 
 ## 4. What Was Fixed
 
@@ -145,7 +145,7 @@ This changes the earlier conclusion substantially:
 
 To isolate whether the full PPO/critic path was the problem, an actor-only debug trainer was added:
 
-- `scripts/train_structured_bw_actoronly_debug.py`
+- `scripts/experiments/bw_training/train_structured_bw_actoronly_debug.py`
 
 Run:
 
@@ -193,7 +193,7 @@ This is why a benchmark-gap search was added.
 
 Script:
 
-- `scripts/search_bw_sanity_gap.py`
+- `scripts/experiments/bw_tools/search_bw_sanity_gap.py`
 
 Outputs:
 
