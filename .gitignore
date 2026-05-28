@@ -12,6 +12,8 @@ dist/
 .venv/
 venv/
 
+# thesis
+thesis.pdf
 
 # Test/coverage artifacts
 .pytest_cache/

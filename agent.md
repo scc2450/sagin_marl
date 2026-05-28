@@ -30,7 +30,7 @@ scripts/evaluate_structured_mixed_heads_native.py
 当前主配置：
 
 ```text
-configs/tmp/structured_joint_mcgae_3uav_20gu_t250_positive_relcritic.yaml
+configs/current/structured_joint_mcgae_3uav_20gu_t250_positive_relcritic.yaml
 ```
 
 不要默认使用：
@@ -57,7 +57,7 @@ $env:TORCHINDUCTOR_CACHE_DIR='D:\sagin_cache\torchinductor'
 $env:TRITON_CACHE_DIR='D:\sagin_cache\triton'
 
 .\.venv\Scripts\python.exe scripts\train_joint_mcgae.py `
-  --config configs\tmp\structured_joint_mcgae_3uav_20gu_t250_positive_relcritic.yaml `
+  --config configs\current\structured_joint_mcgae_3uav_20gu_t250_positive_relcritic.yaml `
   --run_dir runs\diagnostics\<run_name> `
   --updates 300 `
   --rollout_env_steps 250 `
@@ -90,7 +90,7 @@ $env:TRITON_CACHE_DIR='D:\sagin_cache\triton'
 
 ```powershell
 .\.venv\Scripts\python.exe scripts\evaluate_structured_mixed_heads_native.py `
-  --config configs\tmp\structured_joint_mcgae_3uav_20gu_t250_positive_relcritic.yaml `
+  --config configs\current\structured_joint_mcgae_3uav_20gu_t250_positive_relcritic.yaml `
   --base_checkpoint runs\diagnostics\<run_name>\final.pt `
   --episodes 64 `
   --num_envs 64 `
@@ -170,37 +170,43 @@ native_eval_stage_grid_8x_final_best/*_summary.json
 ## 当前关键文档
 
 ```text
-docs/joint_mcgae_macro_k5_nogrow_u300_rerun_eval_20260514.md
+docs/README.md
+```
+
+文档区导航；先用它区分当前主线、历史实验、诊断记录和 archive 候选。
+
+```text
+docs/current/joint_mcgae_macro_k5_nogrow_u300_rerun_eval_20260514.md
 ```
 
 K=5 主结果。
 
 ```text
-docs/joint_mcgae_macro_k10_nogrow_u300_eval_20260514.md
+docs/current/joint_mcgae_macro_k10_nogrow_u300_eval_20260514.md
 ```
 
 K=10 对照。
 
 ```text
-docs/joint_mcgae_k5_danger_imitation_ablation_20260515.md
+docs/current/joint_mcgae_k5_danger_imitation_ablation_20260515.md
 ```
 
 danger imitation 消融。
 
 ```text
-docs/joint_mcgae_training_summary_for_slides_20260514.md
+docs/current/joint_mcgae_training_flow_summary_20260514.md
 ```
 
-导师汇报简版。
+joint MC-GAE 训练流程梳理；同名 PPTX 是汇报材料。
 
 ```text
-docs/bw_access_macro_decision_interval_design_20260513.md
+docs/current/bw_access_macro_decision_interval_design_20260513.md
 ```
 
 BW K=5 macro decision 设计。
 
 ```text
-docs/torch_compile_cache_setup_20260510.md
+docs/guides/torch_compile_cache_setup_20260510.md
 ```
 
 torch.compile / Triton cache 路径。
@@ -273,7 +279,7 @@ sagin_marl/rl/structured_factory.py
 
 改 BW macro：
 
-- 查 `docs/bw_access_macro_decision_interval_design_20260513.md`
+- 查 `docs/current/bw_access_macro_decision_interval_design_20260513.md`
 - 查 `scripts/train_joint_mcgae.py`
 - 查 native rollout / BW action history / BW logprob history
 - 确认 K=1 与新路径等价，K=5 只在 macro-start 更新 BW actor。

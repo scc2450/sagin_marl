@@ -13,9 +13,9 @@ from pptx.enum.text import PP_ALIGN
 from pptx.util import Inches, Pt
 
 
-OUT = Path("docs/joint_mcgae_training_flow_summary_20260514.pptx")
-ASSET_DIR = Path("docs/_ppt_formula_assets")
-ASSET_DIR.mkdir(exist_ok=True)
+OUT = Path("docs/assets/slides/joint_mcgae_training_flow_summary_20260514.pptx")
+ASSET_DIR = Path("docs/assets/ppt_formula_assets")
+ASSET_DIR.mkdir(parents=True, exist_ok=True)
 
 FONT_CN = "Microsoft YaHei"
 BLACK = RGBColor(18, 18, 18)

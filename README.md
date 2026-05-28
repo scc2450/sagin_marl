@@ -68,7 +68,7 @@ New-Item -ItemType Directory -Force $env:TMP,$env:TORCHINDUCTOR_CACHE_DIR,$env:T
 详细说明见：
 
 ```text
-docs/torch_compile_cache_setup_20260510.md
+docs/guides/torch_compile_cache_setup_20260510.md
 ```
 
 ## 当前正式训练命令
@@ -223,31 +223,31 @@ runs/diagnostics/<run_name>/
 ## 当前结果文档
 
 ```text
-docs/joint_mcgae_macro_k5_nogrow_u300_rerun_eval_20260514.md
+docs/current/joint_mcgae_macro_k5_nogrow_u300_rerun_eval_20260514.md
 ```
 
 当前 K=5 主结果。
 
 ```text
-docs/joint_mcgae_macro_k10_nogrow_u300_eval_20260514.md
+docs/current/joint_mcgae_macro_k10_nogrow_u300_eval_20260514.md
 ```
 
 K=10 对照。
 
 ```text
-docs/joint_mcgae_k5_danger_imitation_ablation_20260515.md
+docs/current/joint_mcgae_k5_danger_imitation_ablation_20260515.md
 ```
 
 danger imitation 开关消融。
 
 ```text
-docs/joint_mcgae_training_summary_for_slides_20260514.md
+docs/current/joint_mcgae_training_flow_summary_20260514.md
 ```
 
-给导师汇报用的简版材料。
+joint MC-GAE 训练流程梳理；同名 PPTX 是汇报材料。
 
 ```text
-docs/bw_access_macro_decision_interval_design_20260513.md
+docs/current/bw_access_macro_decision_interval_design_20260513.md
 ```
 
 BW macro K 的设计说明。
@@ -342,7 +342,7 @@ sagin_marl/rl/structured_mappo.py
 
 actor/critic eval 与 MAPPO 工具函数。
 
-更简洁的文件导航见 `PROJECT_STRUCTURE.md`。
+更简洁的文件导航见 `PROJECT_STRUCTURE.md`；文档区导航见 `docs/README.md`。
 
 ## 测试
 
