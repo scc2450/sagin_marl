@@ -193,50 +193,6 @@ bw    = queue_aware
 runs/diagnostics/<run_name>/native_eval_stage_grid_8x_final_best/
 ```
 
-## 当前策略渲染命令
-
-当前 joint MC-GAE 策略渲染优先使用：
-
-```text
-scripts/render_structured_episode.py
-```
-
-不要用 `scripts/render_episode.py` 渲染当前 `final.pt`；它是 legacy/PettingZoo actor 入口。
-
-Windows/server9 上推荐使用 portable Python structured backend 导出可视化状态，同时让 actor 仍在 CUDA 上执行：
-
-```powershell
-$env:SAGIN_MARL_NATIVE_CUDA_CACHE='D:\sagin_marl_native_cuda_cache'
-$env:TORCH_CUDA_ARCH_LIST='6.1'
-$env:CUDA_HOME='D:\anaconda3\envs\sagin-rl'
-$env:CUDA_PATH='D:\anaconda3\envs\sagin-rl'
-
-D:\anaconda3\envs\sagin-rl\python.exe scripts\render_structured_episode.py `
-  --config configs\current\structured_joint_mcgae_3uav_20gu_t250_positive_relcritic.yaml `
-  --checkpoint runs\diagnostics\autodl_formal_k5_joint_mcgae_20260524_144214\final.pt `
-  --out runs\renders\autodl_final_policy_seed910000_python.gif `
-  --episode_seed 910000 `
-  --device cuda `
-  --structured_env_backend python `
-  --structured_env_tensor_backend cpu `
-  --policy_mode deterministic `
-  --exec_accel_source policy `
-  --exec_sat_source policy `
-  --exec_bw_source policy `
-  --max_steps 250 `
-  --frame_stride 5 `
-  --fps 8 `
-  --overwrite
-```
-
-说明：
-
-- `--config` 用训练主线配置。
-- `--checkpoint` 指向要渲染的策略，例如正式训练的 `final.pt`。
-- `--episode_seed` 决定渲染哪一条轨迹；和评估 seed 对齐时便于复现。
-- `--frame_stride 5` 表示每 5 个环境 step 保存一帧，`250` step 会生成约 50 帧。
-- `--structured_env_backend python --structured_env_tensor_backend cpu` 是为了避免 native runtime 状态导出生成静态 GIF；渲染不是性能测试，所以优先稳定可视化。
-
 ## 训练输出
 
 典型 run 目录：
