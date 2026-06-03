@@ -33,6 +33,7 @@ htmlcov/
 .idea/
 
 # OS files
+.DS_Store
 Thumbs.db
 Desktop.ini
 

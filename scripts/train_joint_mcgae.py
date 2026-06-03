@@ -19,10 +19,11 @@ import numpy as np
 import torch
 
 from sagin_marl.env.config import load_config
+from sagin_marl.rl.structured_buffer import StructuredRolloutBuffer
 from sagin_marl.rl.structured_factory import build_structured_modules_from_config
 from sagin_marl.rl.structured_mappo import StructuredMAPPO
 from sagin_marl.rl.stage_mcgae import (
-    collect_one_rollout as _collect_one_rollout,
+    compute_returns_for_views,
     stage_optimizer_params as _stage_optimizer_params,
 )
 from sagin_marl.rl.structured_train import close_structured_env_group, make_structured_driver_group
@@ -554,27 +555,57 @@ def _collect_joint_rollout(
     rollout_env_steps: int,
     device: torch.device,
     seed: int,
-) -> tuple[Any, torch.Tensor, dict[int, torch.Tensor], dict[str, float]]:
+    return_target: str,
+) -> tuple[Any, torch.Tensor, dict[int, torch.Tensor], dict[int, torch.Tensor], dict[str, float]]:
+    target_l = str(return_target).strip().lower()
+    if target_l == "bootstrap_gae":
+        target_l = "train_gae"
+    if target_l not in {"mc", "train_gae"}:
+        raise ValueError("return_target must be one of {'mc', 'bootstrap_gae'}.")
     reset_many = getattr(group, "reset_many", None)
     if callable(reset_many):
         reset_many([int(seed) + env for env in range(len(group))])
-    buffer, views, returns = _collect_one_rollout(
-        learner,
+
+    begin_native_rollout = getattr(learner, "begin_native_rollout", None)
+    if callable(begin_native_rollout):
+        begin_native_rollout(
+            group,
+            rollout_env_steps=int(rollout_env_steps),
+            num_envs=int(len(group)),
+        )
+    buffer = StructuredRolloutBuffer()
+    learner.collect_env_horizon_native_tensor_policy(
         group,
-        rollout_env_steps=int(rollout_env_steps),
+        buffer=buffer,
+        horizon=int(rollout_env_steps),
+        deterministic=False,
+    )
+    if device.type == "cuda":
+        torch.cuda.synchronize(device)
+    views = buffer.build_rollout_views(device)
+    returns, advantages, _value_override = compute_returns_for_views(
+        learner,
+        buffer,
+        views,
+        target=target_l,
         device=device,
-        target="mc",
     )
     del buffer
     stage_targets: dict[int, torch.Tensor] = {}
+    stage_advantages: dict[int, torch.Tensor] = {}
     for stage_id in STAGES:
         stage_batch = views.training_view.stage_batches.get(int(stage_id))
         if stage_batch is None or int(stage_batch.num_samples) <= 0:
             raise RuntimeError(f"joint rollout contains no {STAGE_NAME[int(stage_id)]} stage samples.")
         idx = _stage_indices(stage_batch, device=device)
         stage_targets[int(stage_id)] = returns.index_select(0, idx).detach().to(device=device, dtype=torch.float32)
+        stage_advantages[int(stage_id)] = (
+            advantages.index_select(0, idx).detach().to(device=device, dtype=torch.float32)
+        )
 
     reward_stats: dict[str, float] = {}
+    target_label = "mc" if target_l == "mc" else "bootstrap_gae"
+    reward_stats["return_target_code"] = 0.0 if target_l == "mc" else 1.0
     rewards = getattr(views.training_view, "rewards", None)
     if rewards is not None:
         rt = torch.as_tensor(rewards, dtype=torch.float32, device=device).reshape(-1)
@@ -585,11 +616,15 @@ def _collect_joint_rollout(
     for stage_id, target in stage_targets.items():
         name = STAGE_NAME[int(stage_id)]
         stats = _summ_tensor(target)
-        reward_stats[f"{name}_mc_return_mean"] = float(stats["mean"])
-        reward_stats[f"{name}_mc_return_std"] = float(stats["std"])
-        reward_stats[f"{name}_mc_return_min"] = float(stats["min"])
-        reward_stats[f"{name}_mc_return_max"] = float(stats["max"])
-    return views, returns, stage_targets, reward_stats
+        for stat_name, stat_value in stats.items():
+            reward_stats[f"{name}_target_return_{stat_name}"] = float(stat_value)
+            reward_stats[f"{name}_{target_label}_return_{stat_name}"] = float(stat_value)
+        if target_l == "mc":
+            reward_stats[f"{name}_mc_return_mean"] = float(stats["mean"])
+            reward_stats[f"{name}_mc_return_std"] = float(stats["std"])
+            reward_stats[f"{name}_mc_return_min"] = float(stats["min"])
+            reward_stats[f"{name}_mc_return_max"] = float(stats["max"])
+    return views, returns, stage_targets, stage_advantages, reward_stats
 
 
 def _rollout_diagnostics_from_views(views: Any) -> dict[str, float]:
@@ -976,6 +1011,15 @@ def main() -> None:
     parser.add_argument("--num_envs", type=int, default=64)
     parser.add_argument("--rollout_env_steps", type=int, default=250)
     parser.add_argument(
+        "--return_target",
+        choices=("mc", "bootstrap_gae"),
+        default="mc",
+        help=(
+            "Return/advantage target for the joint loop. 'mc' preserves the formal mainline; "
+            "'bootstrap_gae' uses the existing ordinary critic-bootstrapped GAE target path."
+        ),
+    )
+    parser.add_argument(
         "--structured_env_backend",
         default=None,
         help="Override cfg.structured_env_backend, e.g. 'python' for Mac/CPU smoke runs.",
@@ -1011,13 +1055,18 @@ def main() -> None:
         action="store_true",
         help="Disable the accel danger-imitation auxiliary loss after applying the joint training safety defaults.",
     )
+    parser.add_argument(
+        "--disable_torch_compile",
+        action="store_true",
+        help="Disable torch.compile-backed actor/critic paths; useful for Windows CUDA smoke runs.",
+    )
     parser.add_argument("--seed", type=int, default=45210)
     parser.add_argument("--torch_threads", type=int, default=1)
     parser.add_argument("--save_every", type=int, default=50)
     parser.add_argument(
         "--disable_stage_best_save",
         action="store_true",
-        help="Disable lightweight per-stage best-head checkpoints based on each stage *_mc_return_mean.",
+        help="Disable lightweight per-stage best-head checkpoints based on each stage target-return mean.",
     )
     parser.add_argument(
         "--stage_best_dir",
@@ -1048,6 +1097,12 @@ def main() -> None:
     run_dir.mkdir(parents=True, exist_ok=True)
     cfg = load_config(args.config)
     _force_joint_config(cfg, reward_mode=str(args.reward_mode))
+    if bool(args.disable_torch_compile):
+        cfg.critic_compile_enabled = False
+        cfg.stage_actor_compile_enabled = False
+        cfg.accel_actor_compile_enabled = False
+        cfg.sat_actor_compile_enabled = False
+        cfg.bw_actor_compile_enabled = False
     if args.structured_env_backend is not None:
         cfg.structured_env_backend = str(args.structured_env_backend)
     if args.structured_env_tensor_backend is not None:
@@ -1085,6 +1140,14 @@ def main() -> None:
     if device.type == "cuda":
         _enable_strict_compile_global()
     hparams = _resolve_training_hparams(cfg, args)
+    return_target = str(args.return_target).strip().lower()
+    if return_target == "bootstrap_gae":
+        return_target = "train_gae"
+    return_target_label = "mc" if return_target == "mc" else "bootstrap_gae"
+    target_metric_by_stage = {
+        int(stage_id): f"{STAGE_NAME[int(stage_id)]}_{return_target_label}_return_mean"
+        for stage_id in STAGES
+    }
 
     if str(getattr(cfg, "critic_value_mode", "")).lower() == "global_linear":
         raise RuntimeError("joint MC-GAE needs a trainable relational critic; critic_value_mode=global_linear is unsupported.")
@@ -1160,7 +1223,7 @@ def main() -> None:
         update_prev = int(float(prev_row.get("update", 0.0) or 0.0))
         for stage_id in STAGES:
             stage_name = STAGE_NAME[int(stage_id)]
-            metric_name = f"{stage_name}_mc_return_mean"
+            metric_name = target_metric_by_stage[int(stage_id)]
             value = float(prev_row.get(metric_name, float("nan")))
             if math.isfinite(value) and value > stage_best_values[int(stage_id)]:
                 stage_best_values[int(stage_id)] = float(value)
@@ -1190,6 +1253,7 @@ def main() -> None:
             f"actor_epochs={int(hparams['actor_epochs'])} actor_minibatches={int(hparams['actor_minibatches'])} "
             f"actor_lr=({float(hparams['actor_lr_accel']):.2g},{float(hparams['actor_lr_sat']):.2g},{float(hparams['actor_lr_bw']):.2g}) "
             f"actor_opt=({actor_optimizer_names[0]},{actor_optimizer_names[1]},{actor_optimizer_names[2]}) "
+            f"return_target={return_target_label} "
             f"kl_stop={bool(int(hparams['stage_actor_kl_early_stop_enabled']))} "
             f"dyn_lr={bool(int(hparams['stage_actor_dynamic_lr_enabled']))} "
             f"critic_ev_gate={bool(int(hparams['critic_ev_gate_enabled']))} "
@@ -1210,12 +1274,13 @@ def main() -> None:
 
             t_collect = time.perf_counter()
             _append_phase_trace(run_dir, update=update + 1, phase="collect", event="start")
-            views, _all_returns, stage_targets, reward_stats = _collect_joint_rollout(
+            views, _all_returns, stage_targets, stage_advantages, reward_stats = _collect_joint_rollout(
                 learner,
                 group,
                 rollout_env_steps=int(args.rollout_env_steps),
                 device=device,
                 seed=rollout_seed,
+                return_target=return_target,
             )
             rollout_diag_stats = _rollout_diagnostics_from_views(views)
             if device.type == "cuda":
@@ -1378,14 +1443,22 @@ def main() -> None:
             for stage_id in STAGES:
                 stage_batch = views.training_view.stage_batches[int(stage_id)]
                 stage_name = STAGE_NAME[int(stage_id)]
-                _returns_gae, stage_adv, stage_values = _stage_gae_from_mc_targets(
-                    learner,
-                    stage_id=int(stage_id),
-                    stage_batch=stage_batch,
-                    mc_target=stage_targets[int(stage_id)],
-                    device=device,
-                    stage_values=stage_values_after_critic.get(int(stage_id)),
-                )
+                if return_target == "mc":
+                    _returns_gae, stage_adv, stage_values = _stage_gae_from_mc_targets(
+                        learner,
+                        stage_id=int(stage_id),
+                        stage_batch=stage_batch,
+                        mc_target=stage_targets[int(stage_id)],
+                        device=device,
+                        stage_values=stage_values_after_critic.get(int(stage_id)),
+                    )
+                else:
+                    _returns_gae = stage_targets[int(stage_id)].detach().to(device=device, dtype=torch.float32)
+                    stage_adv = stage_advantages[int(stage_id)].detach().to(device=device, dtype=torch.float32)
+                    stage_values = stage_values_after_critic[int(stage_id)].detach().to(
+                        device=device,
+                        dtype=torch.float32,
+                    )
                 stage_adv_norm = _normalize_stage_advantage(
                     stage_adv,
                     enabled=bool(getattr(cfg, "actor_advantage_normalize_enabled", True)),
@@ -1403,6 +1476,7 @@ def main() -> None:
             t_prune = time.perf_counter()
             del views
             del stage_targets
+            del stage_advantages
             gc.collect()
             if device.type == "cuda":
                 torch.cuda.empty_cache()
@@ -1529,7 +1603,7 @@ def main() -> None:
                 summary_payload: dict[str, Any] = {}
                 for stage_id in STAGES:
                     stage_name = STAGE_NAME[int(stage_id)]
-                    metric_name = f"{stage_name}_mc_return_mean"
+                    metric_name = target_metric_by_stage[int(stage_id)]
                     value = float(row.get(metric_name, float("nan")))
                     improved = bool(math.isfinite(value) and value > stage_best_values[int(stage_id)])
                     if improved:
@@ -1584,7 +1658,8 @@ def main() -> None:
 
             print(
                 f"Update {update + 1}/{int(args.updates)} "
-                f"mc[a={row['accel_mc_return_mean']:.3f},s={row['sat_mc_return_mean']:.3f},b={row['bw_mc_return_mean']:.3f}] "
+                f"{return_target_label}[a={row[target_metric_by_stage[0]]:.3f},"
+                f"s={row[target_metric_by_stage[1]]:.3f},b={row[target_metric_by_stage[2]]:.3f}] "
                 f"ev[a={row['accel_critic_final_ev']:.3f},s={row['sat_critic_final_ev']:.3f},b={row['bw_critic_final_ev']:.3f}] "
                 f"kl[a={row.get('approx_kl_accel', 0.0):.4f},s={row.get('approx_kl_sat', 0.0):.4f},b={row.get('approx_kl_bw', 0.0):.4f}] "
                 f"time[c={collect_sec:.1f},v={critic_sec:.1f},p={actor_sec:.1f},tot={row['iteration_sec']:.1f}]",

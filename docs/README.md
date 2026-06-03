@@ -111,4 +111,5 @@
 
 ## 仍在根目录的文档
 
-仓库根目录仍保留 `README.md`、`PROJECT_STRUCTURE.md`、`agent.md` 作为入口。未追踪的 DPP 文档和测试文件暂未纳入本次整理。
+仓库根目录仍保留 `README.md`、`PROJECT_STRUCTURE.md`、`agent.md` 作为入口。DPP 拓扑感知资料已归档到 `archive/legacy/`，对应 smoke 脚本在 `../scripts/experiments/dpp/smoke_topology_aware_dpp.py`；它们来自 `lyapunov-dpp` 分支，不是当前 joint MC-GAE 主线入口。
+`archive/legacy/topology_aware_dpp_summary_20260415.md` 和 `archive/legacy/topology_aware_dpp_quick_start_20260415.md`：`lyapunov-dpp` 分支的拓扑感知 DPP baseline 历史资料；当前分支未默认启用。
