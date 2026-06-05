@@ -60,6 +60,25 @@ def _summ_tensor(x: torch.Tensor) -> dict[str, float]:
     }
 
 
+def _critic_np_stats(pred: np.ndarray, target: np.ndarray) -> dict[str, float]:
+    p = np.asarray(pred, dtype=np.float64).reshape(-1)
+    t = np.asarray(target, dtype=np.float64).reshape(-1)
+    if int(p.size) != int(t.size) or int(t.size) <= 0:
+        return {"ev": float("nan"), "mse": float("nan"), "corr": float("nan")}
+    mse = float(np.mean((p - t) ** 2))
+    if int(t.size) <= 1:
+        ev = 0.0
+        corr = 0.0
+    else:
+        var = float(np.var(t))
+        ev = 0.0 if var <= 1.0e-12 else 1.0 - float(np.var(t - p)) / var
+        if float(np.std(p)) <= 1.0e-12 or float(np.std(t)) <= 1.0e-12:
+            corr = 0.0
+        else:
+            corr = float(np.corrcoef(p, t)[0, 1])
+    return {"ev": float(ev), "mse": float(mse), "corr": float(corr)}
+
+
 def _cuda_mem(prefix: str, device: torch.device) -> dict[str, float]:
     if device.type != "cuda":
         return {}
@@ -166,6 +185,8 @@ def _train_stage_critic_on_stage(
     stage_id: int,
     stage_batch: Any,
     target: torch.Tensor,
+    aux_target: torch.Tensor | None = None,
+    aux_coef: float = 0.0,
     optimizer: torch.optim.Optimizer,
     lr: float,
     epochs: int,
@@ -227,6 +248,22 @@ def _train_stage_critic_on_stage(
     if n <= 0:
         raise RuntimeError(f"{STAGE_NAME[stage_id_i]} critic target is empty.")
     target = target.detach().to(device=learner.device, dtype=torch.float32).reshape(-1)
+    aux_coef_f = max(float(aux_coef or 0.0), 0.0)
+    if aux_target is not None and aux_coef_f > 0.0:
+        aux_target_t: torch.Tensor | None = aux_target.detach().to(
+            device=learner.device,
+            dtype=torch.float32,
+        ).reshape(-1)
+        if int(aux_target_t.numel()) != n:
+            raise RuntimeError(
+                f"{STAGE_NAME[stage_id_i]} aux critic target length {int(aux_target_t.numel())} != samples {n}."
+            )
+    else:
+        aux_target_t = None
+        aux_coef_f = 0.0
+    train_main_loss_sum = 0.0
+    train_aux_loss_sum = 0.0
+    train_loss_chunks = 0
 
     t_train = time.perf_counter()
     outer_minibatches = _env_group_minibatch_indices(
@@ -286,7 +323,16 @@ def _train_stage_critic_on_stage(
                     epoch_forward_sec += time.perf_counter() - t
 
                     t = time.perf_counter()
-                    loss = F.mse_loss(pred, target.index_select(0, idx)) * loss_scale
+                    main_loss = F.mse_loss(pred, target.index_select(0, idx))
+                    if aux_target_t is not None:
+                        aux_loss = F.mse_loss(pred, aux_target_t.index_select(0, idx))
+                        loss = (main_loss + aux_coef_f * aux_loss) * loss_scale
+                        train_aux_loss_sum += float(aux_loss.detach().cpu().item())
+                    else:
+                        aux_loss = None
+                        loss = main_loss * loss_scale
+                    train_main_loss_sum += float(main_loss.detach().cpu().item())
+                    train_loss_chunks += 1
                     _sync()
                     epoch_loss_sec += time.perf_counter() - t
 
@@ -318,7 +364,15 @@ def _train_stage_critic_on_stage(
                         forward_idx = torch.cat([idx, pad], dim=0)
                     loss_scale = float(real_count) / float(max(full_count, 1))
                     pred = learner._stage_value_eval_from_batch(stage_id_i, _index_dataclass(world, forward_idx))[:real_count]
-                    loss = F.mse_loss(pred, target.index_select(0, idx)) * loss_scale
+                    main_loss = F.mse_loss(pred, target.index_select(0, idx))
+                    if aux_target_t is not None:
+                        aux_loss = F.mse_loss(pred, aux_target_t.index_select(0, idx))
+                        loss = (main_loss + aux_coef_f * aux_loss) * loss_scale
+                        train_aux_loss_sum += float(aux_loss.detach().cpu().item())
+                    else:
+                        loss = main_loss * loss_scale
+                    train_main_loss_sum += float(main_loss.detach().cpu().item())
+                    train_loss_chunks += 1
                     loss.backward()
                 torch.nn.utils.clip_grad_norm_(params, float(learner.max_grad_norm))
                 optimizer.step()
@@ -371,6 +425,11 @@ def _train_stage_critic_on_stage(
         torch.cuda.synchronize(learner.device)
     eval_after_sec = time.perf_counter() - t_after
     after_values = torch.as_tensor(after_pred_np, dtype=torch.float32, device=learner.device).reshape(-1)
+    if aux_target_t is not None:
+        aux_after_stats = _critic_np_stats(after_pred_np, aux_target_t.detach().cpu().numpy())
+    else:
+        aux_after_stats = {"ev": float("nan"), "mse": float("nan"), "corr": float("nan")}
+    denom = float(max(int(train_loss_chunks), 1))
     return {
         "critic_lr": float(lr),
         "critic_epochs": float(epochs),
@@ -389,6 +448,12 @@ def _train_stage_critic_on_stage(
         "critic_corr_after": float(after_stats["corr"]),
         "critic_train_final_ev": float(after_stats["ev"]),
         "critic_train_final_mse": float(after_stats["mse"]),
+        "critic_aux_coef": float(aux_coef_f),
+        "critic_loss_main": float(train_main_loss_sum / denom),
+        "critic_loss_aux": float(train_aux_loss_sum / denom) if aux_target_t is not None else 0.0,
+        "critic_aux_ev_after": float(aux_after_stats["ev"]),
+        "critic_aux_mse_after": float(aux_after_stats["mse"]),
+        "critic_aux_corr_after": float(aux_after_stats["corr"]),
     }, after_values, trace_rows
 
 
@@ -1506,28 +1571,31 @@ def _stage_actor_update_full_stage(
     def _index_sample_latent_actions(sample_idx: torch.Tensor) -> torch.Tensor:
         return all_latent_actions.index_select(0, sample_idx.to(device=device, dtype=torch.long).reshape(-1))
 
-    batch_eval = 1024
-    old_chunks: list[torch.Tensor] = []
+    def _eval_stage_logprob_all() -> torch.Tensor:
+        batch_eval = 1024
+        chunks: list[torch.Tensor] = []
+        with torch.no_grad():
+            for start in range(0, sample_count, batch_eval):
+                end = min(int(start) + int(batch_eval), int(sample_count))
+                local_i = _slice_local_samples(start, end)
+                action_i = _slice_sample_actions(start, end)
+                latent_i = _slice_sample_latent_actions(start, end)
+                lp_i, _ent_i, _out_i = learner._stage_actor_eval_from_batch(
+                    stage_id_i,
+                    local_i,
+                    action_i,
+                    num_agents,
+                    compute_entropy=False,
+                    latent_actions=latent_i if stage_id_i == 0 else None,
+                )
+                chunks.append(lp_i.detach())
+        return torch.cat(chunks, dim=0).to(device=device, dtype=torch.float32)
+
     old_t0 = time.perf_counter()
-    with torch.no_grad():
-        for start in range(0, sample_count, batch_eval):
-            end = min(int(start) + int(batch_eval), int(sample_count))
-            local_i = _slice_local_samples(start, end)
-            action_i = _slice_sample_actions(start, end)
-            latent_i = _slice_sample_latent_actions(start, end)
-            lp_i, _ent_i, _out_i = learner._stage_actor_eval_from_batch(
-                stage_id_i,
-                local_i,
-                action_i,
-                num_agents,
-                compute_entropy=False,
-                latent_actions=latent_i if stage_id_i == 0 else None,
-            )
-            old_chunks.append(lp_i.detach())
+    old_logprob = _eval_stage_logprob_all()
     if device.type == "cuda":
         torch.cuda.synchronize(device)
     old_logprob_sec = time.perf_counter() - old_t0
-    old_logprob = torch.cat(old_chunks, dim=0).to(device=device, dtype=torch.float32)
 
     cfg = getattr(learner, "cfg", None)
     parity_enabled = bool(getattr(cfg, "stage_actor_logprob_parity_check_enabled", True))
@@ -1884,6 +1952,59 @@ def _stage_actor_update_full_stage(
             early_stop_reason = "clip"
             break
 
+    credit_diag_t0 = time.perf_counter()
+    post_logprob = _eval_stage_logprob_all()
+    if device.type == "cuda":
+        torch.cuda.synchronize(device)
+    credit_diag_sec = time.perf_counter() - credit_diag_t0
+
+    def _masked_scalar_mean(values: torch.Tensor, mask: torch.Tensor) -> float:
+        mask_b = mask.detach().to(device=values.device, dtype=torch.bool).reshape(-1)
+        values_f = values.detach().to(dtype=torch.float32).reshape(-1)
+        if int(mask_b.sum().detach().cpu().item()) <= 0:
+            return 0.0
+        return float(values_f[mask_b].mean().detach().cpu().item())
+
+    with torch.no_grad():
+        delta_logprob = (post_logprob - old_logprob).detach().to(dtype=torch.float32).reshape(-1)
+        ratio_full = torch.exp(torch.clamp(delta_logprob, min=-20.0, max=20.0))
+        credit = (adv.detach().to(dtype=torch.float32).reshape(-1) * delta_logprob).detach()
+        adv_pos = adv > 0.0
+        adv_neg = adv < 0.0
+        adv_nonzero = adv.abs() > 1.0e-8
+        direction_agree = ((adv_pos & (delta_logprob > 0.0)) | (adv_neg & (delta_logprob < 0.0))) & adv_nonzero
+        direction_wrong = ((adv_pos & (delta_logprob < 0.0)) | (adv_neg & (delta_logprob > 0.0))) & adv_nonzero
+        nonzero_count = int(adv_nonzero.sum().detach().cpu().item())
+        nonzero_denom = float(max(nonzero_count, 1))
+        credit_stats = _summ_tensor(credit)
+        delta_stats = _summ_tensor(delta_logprob)
+        ratio_stats = _summ_tensor(ratio_full)
+        full_clip_frac = float(
+            (torch.abs(ratio_full - 1.0) > float(learner.clip_ratio))
+            .to(dtype=torch.float32)
+            .mean()
+            .detach()
+            .cpu()
+            .item()
+        )
+        credit_positive_frac = float((credit > 0.0).to(dtype=torch.float32).mean().detach().cpu().item())
+        direction_agree_frac = float(direction_agree.to(dtype=torch.float32).sum().detach().cpu().item() / nonzero_denom)
+        direction_wrong_frac = float(direction_wrong.to(dtype=torch.float32).sum().detach().cpu().item() / nonzero_denom)
+        adv_pos_frac = float(adv_pos.to(dtype=torch.float32).mean().detach().cpu().item())
+        adv_neg_frac = float(adv_neg.to(dtype=torch.float32).mean().detach().cpu().item())
+        pos_count = int(adv_pos.sum().detach().cpu().item())
+        neg_count = int(adv_neg.sum().detach().cpu().item())
+        pos_delta_positive_frac = (
+            float(((delta_logprob > 0.0) & adv_pos).to(dtype=torch.float32).sum().detach().cpu().item() / float(pos_count))
+            if pos_count > 0
+            else 0.0
+        )
+        neg_delta_negative_frac = (
+            float(((delta_logprob < 0.0) & adv_neg).to(dtype=torch.float32).sum().detach().cpu().item() / float(neg_count))
+            if neg_count > 0
+            else 0.0
+        )
+
     return {
         "actor_samples": float(sample_count),
         "actor_epochs": float(epochs),
@@ -1901,7 +2022,34 @@ def _stage_actor_update_full_stage(
         f"grad_norm_{stage_name}": float(last_grad_norm),
         f"approx_kl_{stage_name}": float(last_kl),
         f"clip_frac_{stage_name}": float(last_clip_frac),
+        "full_update_kl": float((-delta_logprob).mean().detach().cpu().item()),
+        "full_update_clip_frac": float(full_clip_frac),
+        "full_update_ratio_mean": float(ratio_stats["mean"]),
+        "full_update_ratio_std": float(ratio_stats["std"]),
+        "full_update_ratio_min": float(ratio_stats["min"]),
+        "full_update_ratio_max": float(ratio_stats["max"]),
+        "delta_logprob_mean": float(delta_stats["mean"]),
+        "delta_logprob_std": float(delta_stats["std"]),
+        "delta_logprob_min": float(delta_stats["min"]),
+        "delta_logprob_max": float(delta_stats["max"]),
+        "delta_logprob_abs_mean": float(delta_logprob.abs().mean().detach().cpu().item()),
+        "delta_logprob_when_adv_positive_mean": _masked_scalar_mean(delta_logprob, adv_pos),
+        "delta_logprob_when_adv_negative_mean": _masked_scalar_mean(delta_logprob, adv_neg),
+        "credit_mean": float(credit_stats["mean"]),
+        "credit_std": float(credit_stats["std"]),
+        "credit_min": float(credit_stats["min"]),
+        "credit_max": float(credit_stats["max"]),
+        "credit_positive_frac": float(credit_positive_frac),
+        "credit_direction_agree_frac": float(direction_agree_frac),
+        "credit_direction_wrong_frac": float(direction_wrong_frac),
+        "credit_adv_positive_delta_positive_frac": float(pos_delta_positive_frac),
+        "credit_adv_negative_delta_negative_frac": float(neg_delta_negative_frac),
+        "credit_when_adv_positive_mean": _masked_scalar_mean(credit, adv_pos),
+        "credit_when_adv_negative_mean": _masked_scalar_mean(credit, adv_neg),
+        "adv_positive_frac": float(adv_pos_frac),
+        "adv_negative_frac": float(adv_neg_frac),
         "old_logprob_mean": float(old_logprob.mean().detach().cpu().item()),
+        "post_logprob_mean": float(post_logprob.mean().detach().cpu().item()),
         "old_logprob_parity_abs_mean": float(parity_abs_mean),
         "old_logprob_parity_abs_max": float(parity_abs_max),
         "old_logprob_parity_bad_frac": float(parity_bad_frac),
@@ -1909,6 +2057,7 @@ def _stage_actor_update_full_stage(
         "adv_std": float(adv.std(unbiased=False).detach().cpu().item()),
         "actor_old_logprob_sec": float(old_logprob_sec),
         "actor_update_loop_sec": float(update_loop_sec),
+        "actor_credit_diag_sec": float(credit_diag_sec),
         "actor_compile_enabled": float(1.0 if actor_loss_compile_enabled else 0.0),
         "actor_chunk_size": float(actor_chunk_preferred),
         "danger_imitation_loss": float(last_danger_loss),

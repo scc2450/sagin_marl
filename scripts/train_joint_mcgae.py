@@ -548,6 +548,78 @@ def _load_existing_metrics(path: Path, *, max_update: int | None = None) -> list
     return rows
 
 
+def _canonical_return_target(target: str) -> str:
+    target_l = str(target).strip().lower()
+    if target_l == "bootstrap_gae":
+        target_l = "train_gae"
+    if target_l in {"n_step", "n-step"}:
+        target_l = "nstep"
+    if target_l not in {"mc", "train_gae", "mixed", "bootstrap_mc_aux", "nstep"}:
+        raise ValueError(
+            "return_target must be one of {'mc', 'bootstrap_gae', 'mixed', 'bootstrap_mc_aux', 'nstep'}."
+        )
+    return target_l
+
+
+def _return_target_label(target: str) -> str:
+    target_l = _canonical_return_target(target)
+    if target_l == "train_gae":
+        return "bootstrap_gae"
+    return target_l
+
+
+def _return_target_code(target: str) -> float:
+    return {
+        "mc": 0.0,
+        "train_gae": 1.0,
+        "mixed": 2.0,
+        "bootstrap_mc_aux": 3.0,
+        "nstep": 4.0,
+    }[_canonical_return_target(target)]
+
+
+def _target_mix_alpha_for_update(
+    *,
+    update: int,
+    alpha_start: float,
+    alpha_end: float,
+    warmup_updates: int,
+    anneal_updates: int,
+) -> float:
+    update_i = max(int(update), 0)
+    warmup_i = max(int(warmup_updates), 0)
+    anneal_i = max(int(anneal_updates), 0)
+    start = float(alpha_start)
+    end = float(alpha_end)
+    if update_i < warmup_i:
+        return float(start)
+    if anneal_i <= 0:
+        return float(end)
+    progress = min(max((update_i - warmup_i) / float(anneal_i), 0.0), 1.0)
+    return float(start + (end - start) * progress)
+
+
+def _target_advantage_after_critic(target: str) -> bool:
+    return _canonical_return_target(target) in {"mixed", "nstep"}
+
+
+def _return_target_for_update(
+    *,
+    base_return_target: str,
+    schedule: str,
+    update: int,
+    switch_update: int,
+) -> str:
+    schedule_l = str(schedule).strip().lower()
+    if schedule_l == "fixed":
+        return _canonical_return_target(base_return_target)
+    if schedule_l == "mc_then_bootstrap":
+        if int(switch_update) < 0:
+            raise ValueError("--target_switch_update must be >= 0.")
+        return "mc" if int(update) < int(switch_update) else "train_gae"
+    raise ValueError("return_target_schedule must be one of {'fixed', 'mc_then_bootstrap'}.")
+
+
 def _collect_joint_rollout(
     learner: StructuredMAPPO,
     group: Any,
@@ -556,12 +628,17 @@ def _collect_joint_rollout(
     device: torch.device,
     seed: int,
     return_target: str,
-) -> tuple[Any, torch.Tensor, dict[int, torch.Tensor], dict[int, torch.Tensor], dict[str, float]]:
-    target_l = str(return_target).strip().lower()
-    if target_l == "bootstrap_gae":
-        target_l = "train_gae"
-    if target_l not in {"mc", "train_gae"}:
-        raise ValueError("return_target must be one of {'mc', 'bootstrap_gae'}.")
+    target_mix_alpha: float = 0.0,
+    return_nstep_horizon: int = 1,
+) -> tuple[
+    Any,
+    torch.Tensor,
+    dict[int, torch.Tensor],
+    dict[int, torch.Tensor],
+    dict[int, torch.Tensor],
+    dict[str, float],
+]:
+    target_l = _canonical_return_target(return_target)
     reset_many = getattr(group, "reset_many", None)
     if callable(reset_many):
         reset_many([int(seed) + env for env in range(len(group))])
@@ -583,16 +660,26 @@ def _collect_joint_rollout(
     if device.type == "cuda":
         torch.cuda.synchronize(device)
     views = buffer.build_rollout_views(device)
-    returns, advantages, _value_override = compute_returns_for_views(
+    returns, advantages, _value_override, target_info = compute_returns_for_views(
         learner,
         buffer,
         views,
         target=target_l,
         device=device,
+        target_mix_alpha=float(target_mix_alpha),
+        return_nstep_horizon=int(return_nstep_horizon),
+        return_info=True,
     )
     del buffer
     stage_targets: dict[int, torch.Tensor] = {}
     stage_advantages: dict[int, torch.Tensor] = {}
+    stage_aux_targets: dict[int, torch.Tensor] = {}
+    extra_stage_targets: dict[str, dict[int, torch.Tensor]] = {}
+    extra_return_vectors = {
+        "mc": target_info.get("mc_returns"),
+        "bootstrap_gae": target_info.get("bootstrap_gae_returns"),
+        "mc_aux": target_info.get("mc_aux_returns"),
+    }
     for stage_id in STAGES:
         stage_batch = views.training_view.stage_batches.get(int(stage_id))
         if stage_batch is None or int(stage_batch.num_samples) <= 0:
@@ -602,10 +689,22 @@ def _collect_joint_rollout(
         stage_advantages[int(stage_id)] = (
             advantages.index_select(0, idx).detach().to(device=device, dtype=torch.float32)
         )
+        for label, vector in extra_return_vectors.items():
+            if not torch.is_tensor(vector):
+                continue
+            extra_stage_targets.setdefault(str(label), {})[int(stage_id)] = vector.index_select(0, idx).detach().to(
+                device=device,
+                dtype=torch.float32,
+            )
+    if target_l == "bootstrap_mc_aux" and "mc_aux" in extra_stage_targets:
+        stage_aux_targets = dict(extra_stage_targets["mc_aux"])
 
     reward_stats: dict[str, float] = {}
-    target_label = "mc" if target_l == "mc" else "bootstrap_gae"
-    reward_stats["return_target_code"] = 0.0 if target_l == "mc" else 1.0
+    target_label = _return_target_label(target_l)
+    reward_stats["return_target_code"] = _return_target_code(target_l)
+    reward_stats["active_return_target_code"] = _return_target_code(target_l)
+    reward_stats["target_mix_alpha"] = float(target_info.get("target_mix_alpha", target_mix_alpha))
+    reward_stats["return_nstep_horizon"] = float(target_info.get("return_nstep_horizon", return_nstep_horizon))
     rewards = getattr(views.training_view, "rewards", None)
     if rewards is not None:
         rt = torch.as_tensor(rewards, dtype=torch.float32, device=device).reshape(-1)
@@ -619,12 +718,25 @@ def _collect_joint_rollout(
         for stat_name, stat_value in stats.items():
             reward_stats[f"{name}_target_return_{stat_name}"] = float(stat_value)
             reward_stats[f"{name}_{target_label}_return_{stat_name}"] = float(stat_value)
+        for extra_label, targets_by_stage in extra_stage_targets.items():
+            extra_target = targets_by_stage.get(int(stage_id))
+            if extra_target is None:
+                continue
+            extra_stats = _summ_tensor(extra_target)
+            for stat_name, stat_value in extra_stats.items():
+                reward_stats[f"{name}_{extra_label}_return_{stat_name}"] = float(stat_value)
         if target_l == "mc":
             reward_stats[f"{name}_mc_return_mean"] = float(stats["mean"])
             reward_stats[f"{name}_mc_return_std"] = float(stats["std"])
             reward_stats[f"{name}_mc_return_min"] = float(stats["min"])
             reward_stats[f"{name}_mc_return_max"] = float(stats["max"])
-    return views, returns, stage_targets, stage_advantages, reward_stats
+        mc_extra = extra_stage_targets.get("mc", {}).get(int(stage_id))
+        gae_extra = extra_stage_targets.get("bootstrap_gae", {}).get(int(stage_id))
+        if mc_extra is not None and gae_extra is not None:
+            diff_stats = _summ_tensor(mc_extra - gae_extra)
+            for stat_name, stat_value in diff_stats.items():
+                reward_stats[f"{name}_mc_gae_target_diff_{stat_name}"] = float(stat_value)
+    return views, returns, stage_targets, stage_advantages, stage_aux_targets, reward_stats
 
 
 def _rollout_diagnostics_from_views(views: Any) -> dict[str, float]:
@@ -1012,13 +1124,40 @@ def main() -> None:
     parser.add_argument("--rollout_env_steps", type=int, default=250)
     parser.add_argument(
         "--return_target",
-        choices=("mc", "bootstrap_gae"),
+        choices=("mc", "bootstrap_gae", "mixed", "bootstrap_mc_aux", "nstep"),
         default="mc",
         help=(
             "Return/advantage target for the joint loop. 'mc' preserves the formal mainline; "
-            "'bootstrap_gae' uses the existing ordinary critic-bootstrapped GAE target path."
+            "'bootstrap_gae' uses the existing ordinary critic-bootstrapped GAE target path; "
+            "'mixed' linearly mixes MC and bootstrap-GAE targets; 'bootstrap_mc_aux' trains "
+            "the critic with a MC auxiliary loss; 'nstep' uses truncated MC with value bootstrap."
         ),
     )
+    parser.add_argument(
+        "--return_target_schedule",
+        choices=("fixed", "mc_then_bootstrap"),
+        default="fixed",
+        help=(
+            "Schedule for selecting the active return target each update. 'fixed' preserves the "
+            "legacy behavior; 'mc_then_bootstrap' uses MC before --target_switch_update and "
+            "bootstrap-GAE afterwards."
+        ),
+    )
+    parser.add_argument(
+        "--target_switch_update",
+        type=int,
+        default=100,
+        help=(
+            "Zero-based update index where mc_then_bootstrap switches to bootstrap-GAE. "
+            "The default 100 means updates 1-100 use MC and updates 101+ use bootstrap-GAE."
+        ),
+    )
+    parser.add_argument("--target_mix_alpha_start", type=float, default=1.0)
+    parser.add_argument("--target_mix_alpha_end", type=float, default=0.3)
+    parser.add_argument("--target_mix_warmup_updates", type=int, default=50)
+    parser.add_argument("--target_mix_anneal_updates", type=int, default=200)
+    parser.add_argument("--mc_aux_critic_coef", type=float, default=0.3)
+    parser.add_argument("--return_nstep_horizon", type=int, default=64)
     parser.add_argument(
         "--structured_env_backend",
         default=None,
@@ -1140,12 +1279,21 @@ def main() -> None:
     if device.type == "cuda":
         _enable_strict_compile_global()
     hparams = _resolve_training_hparams(cfg, args)
-    return_target = str(args.return_target).strip().lower()
-    if return_target == "bootstrap_gae":
-        return_target = "train_gae"
-    return_target_label = "mc" if return_target == "mc" else "bootstrap_gae"
+    return_target = _canonical_return_target(str(args.return_target))
+    return_target_label = _return_target_label(return_target)
+    return_target_schedule = str(args.return_target_schedule).strip().lower()
+    if int(args.target_switch_update) < 0:
+        raise ValueError("--target_switch_update must be >= 0.")
+    if int(args.target_mix_warmup_updates) < 0:
+        raise ValueError("--target_mix_warmup_updates must be >= 0.")
+    if int(args.target_mix_anneal_updates) < 0:
+        raise ValueError("--target_mix_anneal_updates must be >= 0.")
+    if int(args.return_nstep_horizon) <= 0:
+        raise ValueError("--return_nstep_horizon must be > 0.")
+    if float(args.mc_aux_critic_coef) < 0.0:
+        raise ValueError("--mc_aux_critic_coef must be >= 0.")
     target_metric_by_stage = {
-        int(stage_id): f"{STAGE_NAME[int(stage_id)]}_{return_target_label}_return_mean"
+        int(stage_id): f"{STAGE_NAME[int(stage_id)]}_target_return_mean"
         for stage_id in STAGES
     }
 
@@ -1254,6 +1402,12 @@ def main() -> None:
             f"actor_lr=({float(hparams['actor_lr_accel']):.2g},{float(hparams['actor_lr_sat']):.2g},{float(hparams['actor_lr_bw']):.2g}) "
             f"actor_opt=({actor_optimizer_names[0]},{actor_optimizer_names[1]},{actor_optimizer_names[2]}) "
             f"return_target={return_target_label} "
+            f"return_target_schedule={return_target_schedule} "
+            f"target_switch_update={int(args.target_switch_update)} "
+            f"target_mix=({float(args.target_mix_alpha_start):.3g}->{float(args.target_mix_alpha_end):.3g},"
+            f"warmup={int(args.target_mix_warmup_updates)},anneal={int(args.target_mix_anneal_updates)}) "
+            f"mc_aux_coef={float(args.mc_aux_critic_coef):.3g} "
+            f"nstep={int(args.return_nstep_horizon)} "
             f"kl_stop={bool(int(hparams['stage_actor_kl_early_stop_enabled']))} "
             f"dyn_lr={bool(int(hparams['stage_actor_dynamic_lr_enabled']))} "
             f"critic_ev_gate={bool(int(hparams['critic_ev_gate_enabled']))} "
@@ -1271,16 +1425,32 @@ def main() -> None:
             update_t0 = time.perf_counter()
             rollout_seed = int(args.seed) + update * 100_000
             _append_phase_trace(run_dir, update=update + 1, phase="update", event="start", seed=rollout_seed)
+            active_return_target = _return_target_for_update(
+                base_return_target=return_target,
+                schedule=return_target_schedule,
+                update=int(update),
+                switch_update=int(args.target_switch_update),
+            )
+            active_return_target_label = _return_target_label(active_return_target)
+            target_mix_alpha = _target_mix_alpha_for_update(
+                update=int(update),
+                alpha_start=float(args.target_mix_alpha_start),
+                alpha_end=float(args.target_mix_alpha_end),
+                warmup_updates=int(args.target_mix_warmup_updates),
+                anneal_updates=int(args.target_mix_anneal_updates),
+            )
 
             t_collect = time.perf_counter()
             _append_phase_trace(run_dir, update=update + 1, phase="collect", event="start")
-            views, _all_returns, stage_targets, stage_advantages, reward_stats = _collect_joint_rollout(
+            views, _all_returns, stage_targets, stage_advantages, stage_aux_targets, reward_stats = _collect_joint_rollout(
                 learner,
                 group,
                 rollout_env_steps=int(args.rollout_env_steps),
                 device=device,
                 seed=rollout_seed,
-                return_target=return_target,
+                return_target=active_return_target,
+                target_mix_alpha=float(target_mix_alpha),
+                return_nstep_horizon=int(args.return_nstep_horizon),
             )
             rollout_diag_stats = _rollout_diagnostics_from_views(views)
             if device.type == "cuda":
@@ -1318,6 +1488,8 @@ def main() -> None:
                     stage_id=int(stage_id),
                     stage_batch=stage_batch,
                     target=stage_targets[int(stage_id)],
+                    aux_target=stage_aux_targets.get(int(stage_id)),
+                    aux_coef=float(args.mc_aux_critic_coef) if active_return_target == "bootstrap_mc_aux" else 0.0,
                     optimizer=critic_optimizer,
                     lr=critic_lr,
                     epochs=critic_epochs,
@@ -1366,6 +1538,12 @@ def main() -> None:
                             stage_id=int(stage_id),
                             stage_batch=stage_batch,
                             target=stage_targets[int(stage_id)],
+                            aux_target=stage_aux_targets.get(int(stage_id)),
+                            aux_coef=(
+                                float(args.mc_aux_critic_coef)
+                                if active_return_target == "bootstrap_mc_aux"
+                                else 0.0
+                            ),
                             optimizer=critic_optimizer,
                             lr=critic_lr,
                             epochs=int(extra_epochs),
@@ -1443,7 +1621,7 @@ def main() -> None:
             for stage_id in STAGES:
                 stage_batch = views.training_view.stage_batches[int(stage_id)]
                 stage_name = STAGE_NAME[int(stage_id)]
-                if return_target == "mc":
+                if active_return_target == "mc":
                     _returns_gae, stage_adv, stage_values = _stage_gae_from_mc_targets(
                         learner,
                         stage_id=int(stage_id),
@@ -1452,6 +1630,13 @@ def main() -> None:
                         device=device,
                         stage_values=stage_values_after_critic.get(int(stage_id)),
                     )
+                elif _target_advantage_after_critic(active_return_target):
+                    _returns_gae = stage_targets[int(stage_id)].detach().to(device=device, dtype=torch.float32)
+                    stage_values = stage_values_after_critic[int(stage_id)].detach().to(
+                        device=device,
+                        dtype=torch.float32,
+                    )
+                    stage_adv = _returns_gae - stage_values
                 else:
                     _returns_gae = stage_targets[int(stage_id)].detach().to(device=device, dtype=torch.float32)
                     stage_adv = stage_advantages[int(stage_id)].detach().to(device=device, dtype=torch.float32)
@@ -1580,6 +1765,19 @@ def main() -> None:
                 "critic_ev_hard_floor": float(hparams["critic_ev_hard_floor"]),
                 "critic_ev_extra_epochs": float(hparams["critic_ev_extra_epochs"]),
                 "critic_ev_max_retries": float(hparams["critic_ev_max_retries"]),
+                "base_return_target_code": _return_target_code(return_target),
+                "active_return_target_code": _return_target_code(active_return_target),
+                "return_target_schedule_code": 0.0 if return_target_schedule == "fixed" else 1.0,
+                "target_switch_update": float(args.target_switch_update),
+                "target_mix_alpha": float(target_mix_alpha),
+                "target_mix_alpha_start": float(args.target_mix_alpha_start),
+                "target_mix_alpha_end": float(args.target_mix_alpha_end),
+                "target_mix_warmup_updates": float(args.target_mix_warmup_updates),
+                "target_mix_anneal_updates": float(args.target_mix_anneal_updates),
+                "mc_aux_critic_coef": (
+                    float(args.mc_aux_critic_coef) if active_return_target == "bootstrap_mc_aux" else 0.0
+                ),
+                "return_nstep_horizon": float(args.return_nstep_horizon),
                 "actor_lr": float(hparams["actor_lr"]),
                 "actor_lr_config_accel": float(hparams["actor_lr_accel"]),
                 "actor_lr_config_sat": float(hparams["actor_lr_sat"]),
@@ -1658,7 +1856,7 @@ def main() -> None:
 
             print(
                 f"Update {update + 1}/{int(args.updates)} "
-                f"{return_target_label}[a={row[target_metric_by_stage[0]]:.3f},"
+                f"{active_return_target_label}[a={row[target_metric_by_stage[0]]:.3f},"
                 f"s={row[target_metric_by_stage[1]]:.3f},b={row[target_metric_by_stage[2]]:.3f}] "
                 f"ev[a={row['accel_critic_final_ev']:.3f},s={row['sat_critic_final_ev']:.3f},b={row['bw_critic_final_ev']:.3f}] "
                 f"kl[a={row.get('approx_kl_accel', 0.0):.4f},s={row.get('approx_kl_sat', 0.0):.4f},b={row.get('approx_kl_bw', 0.0):.4f}] "
