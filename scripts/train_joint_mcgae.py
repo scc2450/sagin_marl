@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import copy
 import csv
 import gc
 import json
@@ -8,6 +9,7 @@ import math
 import random
 import sys
 import time
+from dataclasses import fields, is_dataclass
 from pathlib import Path
 from typing import Any
 
@@ -19,6 +21,12 @@ import numpy as np
 import torch
 
 from sagin_marl.env.config import load_config
+from sagin_marl.rl.structured_bw_update_direction import (
+    _select_dataclass_batch as _select_probe_dataclass_batch,
+    _summarize_branch_alignment as _summarize_probe_branch_alignment,
+    evaluate_bw_advantage_alignment,
+    write_bw_update_direction_probe_payload,
+)
 from sagin_marl.rl.structured_buffer import StructuredRolloutBuffer
 from sagin_marl.rl.structured_factory import build_structured_modules_from_config
 from sagin_marl.rl.structured_mappo import StructuredMAPPO
@@ -51,6 +59,13 @@ STAGE_ACTOR_PREFIX = {
     0: "accel_policy.",
     1: "sat_subset_policy.",
     2: "bw_policy.",
+}
+
+BW_ALIGNMENT_JUDGEMENT_CODE = {
+    "inconclusive_or_consistent": 0.0,
+    "logprob_interface_suspect": 1.0,
+    "critic_advantage_suspect": 2.0,
+    "both_suspect": 3.0,
 }
 
 
@@ -168,6 +183,429 @@ def _actor_only_stage_batch(stage_batch: Any) -> _ActorOnlyStageBatch:
         bw_latent_count=_clone_optional(getattr(stage_batch, "bw_latent_count", None)),
         bw_logprob_raw_per_agent=_clone_optional(getattr(stage_batch, "bw_logprob_raw_per_agent", None)),
     )
+
+
+def _parse_positive_int_csv(text: str) -> list[int]:
+    values: list[int] = []
+    for token in str(text or "").split(","):
+        token = token.strip()
+        if not token:
+            continue
+        value = int(token)
+        if value <= 0:
+            raise ValueError("positive integer CSV values must be > 0")
+        values.append(int(value))
+    return values
+
+
+def _dataclass_batch_leading_dim(batch: Any) -> int | None:
+    if not is_dataclass(batch):
+        return None
+    for field in fields(batch):
+        value = getattr(batch, field.name)
+        if torch.is_tensor(value) and value.ndim > 0:
+            return int(value.shape[0])
+        if isinstance(value, np.ndarray) and value.ndim > 0:
+            return int(value.shape[0])
+    return None
+
+
+def _stage_local_positions(
+    positions: list[int],
+    *,
+    num_samples: int,
+    num_agents: int,
+    local_batch_n: int | None,
+) -> list[int]:
+    if local_batch_n == int(num_samples) * int(num_agents):
+        return [int(pos) * int(num_agents) + agent for pos in positions for agent in range(int(num_agents))]
+    if local_batch_n in (None, int(num_samples)):
+        return list(positions)
+    raise RuntimeError(
+        "Unsupported stage local batch leading dimension: "
+        f"local_batch_n={local_batch_n}, samples={num_samples}, agents={num_agents}."
+    )
+
+
+def _joint_bw_advantage_probe_context(
+    learner: StructuredMAPPO,
+    *,
+    stage_batch: Any,
+    advantages: torch.Tensor,
+    raw_advantages: torch.Tensor,
+    values: torch.Tensor,
+    returns: torch.Tensor,
+    sample_limit: int,
+    sample_seed: int,
+    device: torch.device,
+) -> dict[str, Any] | None:
+    """Build the BW alignment context from the exact joint-loop actor inputs."""
+
+    if int(getattr(stage_batch, "num_samples", 0)) <= 0:
+        return None
+    num_samples = int(stage_batch.num_samples)
+    num_agents = int(stage_batch.num_agents)
+    all_positions = list(range(num_samples))
+    advantages_t = advantages.detach().to(device=device, dtype=torch.float32).reshape(-1)
+    values_t = values.detach().to(device=device, dtype=torch.float32).reshape(-1)
+    returns_t = returns.detach().to(device=device, dtype=torch.float32).reshape(-1)
+    if advantages_t.numel() != num_samples or values_t.numel() != num_samples or returns_t.numel() != num_samples:
+        raise RuntimeError(
+            "BW advantage probe input shapes do not match BW stage samples: "
+            f"samples={num_samples}, adv={advantages_t.numel()}, values={values_t.numel()}, returns={returns_t.numel()}."
+        )
+
+    local_batch_n = _dataclass_batch_leading_dim(stage_batch.local_batch)
+
+    def _build_batch(positions: list[int]) -> dict[str, Any] | None:
+        if not positions:
+            return None
+        pos_tensor = torch.as_tensor(positions, dtype=torch.long, device=device)
+        local_batch = _select_probe_dataclass_batch(
+            stage_batch.local_batch,
+            _stage_local_positions(
+                positions,
+                num_samples=num_samples,
+                num_agents=num_agents,
+                local_batch_n=local_batch_n,
+            ),
+            device,
+        )
+        return {
+            "positions": list(positions),
+            "sample_count": int(len(positions)),
+            "num_agents": int(num_agents),
+            "local_batch": local_batch,
+            "joint_actions": stage_batch.actions.index_select(
+                0,
+                pos_tensor.to(stage_batch.actions.device),
+            ).to(device),
+            "old_logprobs": stage_batch.old_logprobs.index_select(
+                0,
+                pos_tensor.to(stage_batch.old_logprobs.device),
+            ).to(device),
+            "advantages": advantages_t.index_select(0, pos_tensor),
+            "values": values_t.index_select(0, pos_tensor),
+            "returns": returns_t.index_select(0, pos_tensor),
+        }
+
+    logprob_batch = _build_batch(all_positions)
+    if logprob_batch is None:
+        return None
+
+    snapshot_states = list(getattr(stage_batch, "bw_stage_states", None) or [])
+    candidate_positions = [
+        int(pos)
+        for pos, snapshot_state in enumerate(snapshot_states[:num_samples])
+        if snapshot_state is not None
+    ]
+    action_gap_batch = None
+    selected_positions: list[int] = []
+    if candidate_positions:
+        rng = np.random.default_rng(int(sample_seed))
+        selected_count = min(max(int(sample_limit), 1), len(candidate_positions))
+        selected_positions = sorted(
+            rng.choice(
+                np.asarray(candidate_positions, dtype=np.int64),
+                size=int(selected_count),
+                replace=False,
+            ).astype(np.int64).tolist()
+        )
+        action_gap_batch = _build_batch(selected_positions)
+
+    transition_indices = np.asarray(
+        getattr(stage_batch, "transition_indices", np.arange(num_samples, dtype=np.int64)),
+        dtype=np.int64,
+    ).reshape(-1)
+    selected_transition_indices = (
+        transition_indices[np.asarray(selected_positions, dtype=np.int64)].astype(np.int64).tolist()
+        if selected_positions
+        else []
+    )
+    return {
+        "selected_indices": transition_indices.astype(np.int64).tolist(),
+        "sample_count": int(logprob_batch["sample_count"]),
+        "num_agents": int(logprob_batch["num_agents"]),
+        "local_batch": logprob_batch["local_batch"],
+        "joint_actions": logprob_batch["joint_actions"],
+        "old_logprobs": logprob_batch["old_logprobs"],
+        "advantages": logprob_batch["advantages"],
+        "values": logprob_batch["values"],
+        "returns": logprob_batch["returns"],
+        "raw_advantages": raw_advantages.detach().to(device=device, dtype=torch.float32).reshape(-1),
+        "logprob_sample_count": int(logprob_batch["sample_count"]),
+        "action_gap_selected_indices": list(selected_transition_indices),
+        "action_gap_sample_count": 0 if action_gap_batch is None else int(action_gap_batch["sample_count"]),
+        "action_gap_joint_actions": None if action_gap_batch is None else action_gap_batch["joint_actions"],
+        "action_gap_advantages": None if action_gap_batch is None else action_gap_batch["advantages"],
+        "action_gap_values": None if action_gap_batch is None else action_gap_batch["values"],
+        "action_gap_returns": None if action_gap_batch is None else action_gap_batch["returns"],
+        "snapshot_states": [snapshot_states[int(pos)] for pos in selected_positions],
+        "action_gap_positions": list(selected_positions),
+    }
+
+
+def _flatten_bw_alignment_metrics(alignment_eval: dict[str, Any]) -> dict[str, float]:
+    def _float_from(mapping: Any, key: str, default: float = 0.0) -> float:
+        if not isinstance(mapping, dict):
+            return float(default)
+        value = mapping.get(key, default)
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return float(default)
+
+    def _summary_mean(mapping: Any, key: str, default: float = 0.0) -> float:
+        if not isinstance(mapping, dict):
+            return float(default)
+        summary = mapping.get(key, {})
+        return _float_from(summary, "mean", default) if isinstance(summary, dict) else float(default)
+
+    logprob = alignment_eval.get("logprob_alignment", {})
+    critic = alignment_eval.get("critic_alignment", {})
+    branch = alignment_eval.get("branch_alignment", {})
+    branch_primary = branch.get("primary", {}) if isinstance(branch, dict) else {}
+    true_action = alignment_eval.get("true_action_alignment", {})
+    true_decomp = true_action.get("advantage_decomposition", {}) if isinstance(true_action, dict) else {}
+    judgement = str(alignment_eval.get("judgement", "inconclusive_or_consistent"))
+    return {
+        "bw_probe_sample_count": _float_from(alignment_eval, "sample_count"),
+        "bw_probe_action_gap_sample_count": _float_from(alignment_eval, "action_gap_sample_count"),
+        "bw_probe_judgement_code": float(BW_ALIGNMENT_JUDGEMENT_CODE.get(judgement, -1.0)),
+        "bw_probe_old_logprob_replay_abs_diff_mean": _summary_mean(logprob, "old_logprob_replay_abs_diff"),
+        "bw_probe_corr_advantage_vs_delta_logprob": _float_from(logprob, "corr_advantage_vs_delta_logprob"),
+        "bw_probe_mean_delta_logprob_pos_adv": _float_from(logprob, "mean_delta_logprob_pos_adv"),
+        "bw_probe_mean_delta_logprob_neg_adv": _float_from(logprob, "mean_delta_logprob_neg_adv"),
+        "bw_probe_pos_adv_logprob_up_frac": _float_from(logprob, "pos_adv_logprob_up_frac"),
+        "bw_probe_neg_adv_logprob_down_frac": _float_from(logprob, "neg_adv_logprob_down_frac"),
+        "bw_probe_corr_advantage_vs_action_gap_k": _float_from(critic, "corr_advantage_vs_action_gap_k"),
+        "bw_probe_mean_action_gap_k_pos_adv": _float_from(critic, "mean_action_gap_k_pos_adv"),
+        "bw_probe_mean_action_gap_k_neg_adv": _float_from(critic, "mean_action_gap_k_neg_adv"),
+        "bw_probe_pos_adv_action_gap_positive_frac": _float_from(critic, "pos_adv_action_gap_positive_frac"),
+        "bw_probe_neg_adv_action_gap_negative_frac": _float_from(critic, "neg_adv_action_gap_negative_frac"),
+        "bw_probe_branch_sample_count": _float_from(branch_primary, "sample_count"),
+        "bw_probe_corr_advantage_vs_branch_delta": _float_from(branch_primary, "corr_advantage_vs_branch_delta"),
+        "bw_probe_corr_raw_advantage_vs_branch_delta": _float_from(
+            branch_primary,
+            "corr_raw_advantage_vs_branch_delta",
+        ),
+        "bw_probe_sign_agree_raw_advantage_branch_delta": _float_from(
+            branch_primary,
+            "sign_agree_raw_advantage_branch_delta",
+        ),
+        "bw_probe_corr_branch_delta_vs_delta_logprob": _float_from(branch_primary, "corr_branch_delta_vs_delta_logprob"),
+        "bw_probe_raw_pos_branch_delta_positive_frac": _float_from(
+            branch_primary,
+            "raw_pos_branch_delta_positive_frac",
+        ),
+        "bw_probe_branch_delta_pos_logprob_up_frac": _float_from(
+            branch_primary,
+            "branch_delta_pos_logprob_up_frac",
+        ),
+        "bw_probe_true_mc_sample_count": _float_from(true_action, "sample_count"),
+        "bw_probe_corr_advantage_vs_true_adv_mc": _float_from(true_action, "corr_advantage_vs_true_adv_mc"),
+        "bw_probe_sign_agree_advantage_true_adv_mc": _float_from(
+            true_action,
+            "sign_agree_advantage_true_adv_mc",
+        ),
+        "bw_probe_corr_true_adv_mc_vs_delta_logprob": _float_from(true_action, "corr_true_adv_mc_vs_delta_logprob"),
+        "bw_probe_corr_raw_advantage_vs_true_adv_mc": _float_from(
+            true_decomp,
+            "corr_raw_advantage_vs_true_adv_mc",
+        ),
+        "bw_probe_return_target_sampled_q_error_abs_mean": _float_from(
+            true_decomp,
+            "return_target_sampled_q_error_abs_mean",
+        ),
+        "bw_probe_value_policy_q_error_abs_mean": _float_from(true_decomp, "value_policy_q_error_abs_mean"),
+    }
+
+
+def _native_bw_branch_probe_before_update(
+    learner: StructuredMAPPO,
+    *,
+    stage_batch: Any,
+    advantages: torch.Tensor,
+    raw_advantages: torch.Tensor,
+    sample_limit: int,
+    sample_seed: int,
+    horizon: int,
+    device: torch.device,
+) -> dict[str, Any] | None:
+    rollout_program = getattr(learner, "_native_rollout_program", None)
+    runtime = None if rollout_program is None else getattr(rollout_program, "runtime", None)
+    history = None if runtime is None else getattr(runtime, "history", None)
+    if history is None or not hasattr(learner, "_native_vs_ref_rollout_returns_from_history"):
+        return None
+    num_samples = int(getattr(stage_batch, "num_samples", 0))
+    if num_samples <= 0:
+        return None
+    num_agents = max(int(stage_batch.num_agents), 1)
+    transition_indices = np.asarray(
+        getattr(stage_batch, "transition_indices", np.arange(num_samples, dtype=np.int64)),
+        dtype=np.int64,
+    ).reshape(-1)
+    if int(transition_indices.size) != num_samples:
+        raise RuntimeError("native BW branch probe requires one transition index per BW sample.")
+    if np.any((transition_indices - 2) % 3 != 0):
+        raise RuntimeError("native BW branch probe got transition indices inconsistent with BW stage_id=2.")
+    source_num_envs = max(int(getattr(history, "num_envs", 0) or 0), 1)
+    history_capacity = max(int(getattr(history, "capacity", 0) or 0), 1)
+    history_rows_all = ((transition_indices - 2) // 3).astype(np.int64, copy=False)
+    source_steps_all = np.floor_divide(history_rows_all, int(source_num_envs)).astype(np.int64, copy=False)
+    max_start_step = int(history_capacity) - max(int(horizon), 1)
+    eligible_positions_np = np.flatnonzero(source_steps_all <= int(max_start_step)).astype(np.int64, copy=False)
+    if int(eligible_positions_np.size) <= 0:
+        return None
+    sample_count = min(max(int(sample_limit), 1), int(eligible_positions_np.size))
+    rng = np.random.default_rng(int(sample_seed))
+    selected_positions = sorted(
+        rng.choice(eligible_positions_np, size=int(sample_count), replace=False)
+        .astype(np.int64)
+        .tolist()
+    )
+    pos_t = torch.as_tensor(selected_positions, dtype=torch.long, device=device)
+    local_batch_n = _dataclass_batch_leading_dim(stage_batch.local_batch)
+    selected_local = _select_probe_dataclass_batch(
+        stage_batch.local_batch,
+        _stage_local_positions(
+            selected_positions,
+            num_samples=num_samples,
+            num_agents=num_agents,
+            local_batch_n=local_batch_n,
+        ),
+        device,
+    )
+    selected_actions = stage_batch.actions.index_select(
+        0,
+        pos_t.to(stage_batch.actions.device),
+    ).to(device=device, dtype=torch.float32)
+    selected_old_logprobs = stage_batch.old_logprobs.index_select(
+        0,
+        pos_t.to(stage_batch.old_logprobs.device),
+    ).to(device=device, dtype=torch.float32)
+    selected_advantages = advantages.detach().to(device=device, dtype=torch.float32).reshape(-1).index_select(0, pos_t)
+    selected_raw_advantages = (
+        raw_advantages.detach().to(device=device, dtype=torch.float32).reshape(-1).index_select(0, pos_t)
+    )
+    flat_ref_action = None
+    with torch.no_grad():
+        ref_out = learner.actor.act_bw(selected_local, deterministic=True)
+        flat_ref_action = ref_out.action.reshape(int(sample_count), int(num_agents), -1).detach()
+    paired_actions = torch.empty(
+        (int(sample_count) * 2,) + tuple(selected_actions.shape[1:]),
+        dtype=torch.float32,
+        device=device,
+    )
+    paired_actions[0::2] = flat_ref_action.to(device=device, dtype=torch.float32)
+    paired_actions[1::2] = selected_actions
+    history_rows = history_rows_all[np.asarray(selected_positions, dtype=np.int64)].astype(np.int64, copy=False)
+    paired_history_rows = np.repeat(history_rows, 2).astype(np.int64, copy=False).tolist()
+    branch_returns = learner._native_vs_ref_rollout_returns_from_history(
+        stage_id=2,
+        history_rows=paired_history_rows,
+        first_actions=paired_actions,
+        horizon=max(int(horizon), 1),
+    ).detach()
+    ref_returns = branch_returns[0::2].to(device=device, dtype=torch.float32)
+    sampled_returns = branch_returns[1::2].to(device=device, dtype=torch.float32)
+    branch_delta = (sampled_returns - ref_returns).detach()
+    return {
+        "selected_positions": list(selected_positions),
+        "transition_indices": transition_indices[np.asarray(selected_positions, dtype=np.int64)].astype(
+            np.int64,
+            copy=False,
+        ).tolist(),
+        "history_rows": history_rows.astype(np.int64, copy=False).tolist(),
+        "horizon": int(max(int(horizon), 1)),
+        "num_agents": int(num_agents),
+        "local_batch": selected_local,
+        "actions": selected_actions.detach(),
+        "old_logprobs": selected_old_logprobs.detach(),
+        "advantages": selected_advantages.detach(),
+        "raw_advantages": selected_raw_advantages.detach(),
+        "ref_returns": ref_returns.detach(),
+        "sampled_returns": sampled_returns.detach(),
+        "branch_delta": branch_delta.detach(),
+    }
+
+
+def _finalize_native_bw_branch_probe(
+    learner: StructuredMAPPO,
+    probe: dict[str, Any],
+    *,
+    device: torch.device,
+) -> tuple[dict[str, float], dict[str, Any]]:
+    actions = probe["actions"].to(device=device, dtype=torch.float32)
+    num_samples = int(actions.shape[0])
+    num_agents = int(probe["num_agents"])
+    flat_action = actions.reshape(int(num_samples) * int(num_agents), -1)
+    with torch.inference_mode():
+        post_eval = learner.actor.evaluate_bw(probe["local_batch"], flat_action)
+    post_logprob = post_eval.logprob.reshape(int(num_samples), int(num_agents)).sum(dim=1)
+    old_logprob = probe["old_logprobs"].to(device=device, dtype=torch.float32).reshape(-1)
+    delta_logprob = (post_logprob - old_logprob).detach()
+    advantages = probe["advantages"].to(device=device, dtype=torch.float32).reshape(-1)
+    raw_advantages = probe["raw_advantages"].to(device=device, dtype=torch.float32).reshape(-1)
+    branch_delta = probe["branch_delta"].to(device=device, dtype=torch.float32).reshape(-1)
+    summary = _summarize_probe_branch_alignment(
+        norm_advantages=advantages.detach().cpu().numpy().astype(np.float64),
+        raw_advantages=raw_advantages.detach().cpu().numpy().astype(np.float64),
+        branch_deltas=branch_delta.detach().cpu().numpy().astype(np.float64),
+        delta_logprob=delta_logprob.detach().cpu().numpy().astype(np.float64),
+    )
+    metrics = {
+        "bw_probe_native_branch_enabled": 1.0,
+        "bw_probe_native_branch_horizon": float(probe.get("horizon", 0)),
+        "bw_probe_native_branch_sample_count": float(summary.get("sample_count", 0.0)),
+        "bw_probe_native_corr_advantage_vs_branch_delta": float(
+            summary.get("corr_advantage_vs_branch_delta", 0.0)
+        ),
+        "bw_probe_native_corr_raw_advantage_vs_branch_delta": float(
+            summary.get("corr_raw_advantage_vs_branch_delta", 0.0)
+        ),
+        "bw_probe_native_sign_agree_raw_advantage_branch_delta": float(
+            summary.get("sign_agree_raw_advantage_branch_delta", 0.0)
+        ),
+        "bw_probe_native_corr_branch_delta_vs_delta_logprob": float(
+            summary.get("corr_branch_delta_vs_delta_logprob", 0.0)
+        ),
+        "bw_probe_native_branch_delta_abs_mean": float(summary.get("branch_delta_abs_mean", 0.0)),
+        "bw_probe_native_branch_delta_snr": float(summary.get("branch_delta_snr", 0.0)),
+        "bw_probe_native_raw_pos_branch_delta_positive_frac": float(
+            summary.get("raw_pos_branch_delta_positive_frac", 0.0)
+        ),
+        "bw_probe_native_branch_delta_pos_logprob_up_frac": float(
+            summary.get("branch_delta_pos_logprob_up_frac", 0.0)
+        ),
+        "bw_probe_native_mean_branch_delta_times_delta_logprob": float(
+            summary.get("mean_branch_delta_times_delta_logprob", 0.0)
+        ),
+        "bw_probe_native_mean_abs_delta_logprob": float(summary.get("mean_abs_delta_logprob", 0.0)),
+    }
+    examples = []
+    for idx in range(min(int(num_samples), 8)):
+        examples.append(
+            {
+                "position": int(probe["selected_positions"][idx]),
+                "transition_index": int(probe["transition_indices"][idx]),
+                "history_row": int(probe["history_rows"][idx]),
+                "advantage": float(advantages[idx].detach().cpu().item()),
+                "raw_advantage": float(raw_advantages[idx].detach().cpu().item()),
+                "ref_return": float(probe["ref_returns"][idx].detach().cpu().item()),
+                "sampled_return": float(probe["sampled_returns"][idx].detach().cpu().item()),
+                "branch_delta": float(branch_delta[idx].detach().cpu().item()),
+                "delta_logprob": float(delta_logprob[idx].detach().cpu().item()),
+            }
+        )
+    payload = {
+        "enabled": True,
+        "horizon": int(probe.get("horizon", 0)),
+        "sample_count": int(num_samples),
+        "summary": summary,
+        "examples": examples,
+    }
+    return metrics, payload
 
 
 def _set_seed(seed: int) -> None:
@@ -423,6 +861,543 @@ def _skipped_stage_actor_stats(
         f"actor_lr_low_count_{suffix}": float(hparams.get(f"actor_lr_low_count_{suffix}", 0)),
         f"actor_skipped_by_critic_ev_{suffix}": 1.0,
     }
+
+
+def _parse_guarded_bw_backtrack_factors(value: str) -> list[float]:
+    factors: list[float] = []
+    for chunk in str(value or "").replace(";", ",").split(","):
+        text = chunk.strip()
+        if not text:
+            continue
+        factor = float(text)
+        if not math.isfinite(factor) or factor <= 0.0:
+            raise ValueError("--guarded_bw_backtrack_factors must contain positive finite floats.")
+        factors.append(float(factor))
+    if not factors:
+        raise ValueError("--guarded_bw_backtrack_factors must contain at least one positive factor.")
+    return factors
+
+
+def _set_optimizer_lrs(optimizer: torch.optim.Optimizer, lrs: list[float], *, scale: float = 1.0) -> None:
+    if len(lrs) != len(optimizer.param_groups):
+        raise RuntimeError("optimizer lr snapshot does not match param group count.")
+    for group, lr in zip(optimizer.param_groups, lrs):
+        group["lr"] = float(lr) * float(scale)
+
+
+def _snapshot_params(params: list[torch.nn.Parameter]) -> list[torch.Tensor]:
+    return [p.detach().clone(memory_format=torch.preserve_format) for p in params]
+
+
+def _restore_params(params: list[torch.nn.Parameter], snapshot: list[torch.Tensor]) -> None:
+    if len(params) != len(snapshot):
+        raise RuntimeError("parameter snapshot length mismatch.")
+    with torch.no_grad():
+        for param, saved in zip(params, snapshot):
+            param.copy_(saved.to(device=param.device, dtype=param.dtype))
+
+
+def _guard_reject_code(
+    stats: dict[str, float],
+    *,
+    min_positive_credit: float,
+    min_credit_mean: float,
+    max_full_kl: float,
+    max_full_clip: float,
+    branch_alignment_enabled: bool = False,
+    min_branch_delta_logprob_product: float = 0.0,
+    min_branch_positive_logprob_up_frac: float = 0.0,
+    min_branch_corr_delta_logprob: float = -1.0,
+) -> float:
+    code = 0
+
+    def _finite_metric(key: str) -> float:
+        value = float(stats.get(key, float("nan")))
+        return value if math.isfinite(value) else float("nan")
+
+    positive_credit = _finite_metric("credit_when_adv_positive_mean")
+    if not math.isfinite(positive_credit) or positive_credit < float(min_positive_credit):
+        code |= 1
+    credit_mean = _finite_metric("credit_mean")
+    if not math.isfinite(credit_mean) or credit_mean < float(min_credit_mean):
+        code |= 2
+    full_kl = _finite_metric("full_update_kl")
+    if float(max_full_kl) > 0.0 and (not math.isfinite(full_kl) or full_kl > float(max_full_kl)):
+        code |= 4
+    full_clip = _finite_metric("full_update_clip_frac")
+    if float(max_full_clip) > 0.0 and (not math.isfinite(full_clip) or full_clip > float(max_full_clip)):
+        code |= 8
+    if bool(branch_alignment_enabled):
+        available = _finite_metric("guard_branch_available")
+        if not math.isfinite(available) or available < 0.5:
+            code |= 16
+        product = _finite_metric("guard_branch_mean_delta_times_delta_logprob_mean")
+        if (
+            math.isfinite(float(min_branch_delta_logprob_product))
+            and (not math.isfinite(product) or product < float(min_branch_delta_logprob_product))
+        ):
+            code |= 32
+        pos_frac = _finite_metric("guard_branch_positive_logprob_up_frac_min")
+        if (
+            math.isfinite(float(min_branch_positive_logprob_up_frac))
+            and float(min_branch_positive_logprob_up_frac) > 0.0
+            and (not math.isfinite(pos_frac) or pos_frac < float(min_branch_positive_logprob_up_frac))
+        ):
+            code |= 64
+        corr = _finite_metric("guard_branch_corr_delta_logprob_min")
+        if (
+            math.isfinite(float(min_branch_corr_delta_logprob))
+            and float(min_branch_corr_delta_logprob) > -1.0
+            and (not math.isfinite(corr) or corr < float(min_branch_corr_delta_logprob))
+        ):
+            code |= 128
+    return float(code)
+
+
+def _guarded_bw_branch_candidate_metrics(
+    learner: StructuredMAPPO,
+    branch_probes: list[dict[str, Any]] | None,
+    *,
+    device: torch.device,
+) -> dict[str, float]:
+    if not branch_probes:
+        return {
+            "guard_branch_enabled": 1.0,
+            "guard_branch_available": 0.0,
+            "guard_branch_horizon_count": 0.0,
+        }
+
+    horizon_metrics: list[dict[str, float]] = []
+    out: dict[str, float] = {
+        "guard_branch_enabled": 1.0,
+        "guard_branch_available": 0.0,
+        "guard_branch_horizon_count": 0.0,
+    }
+    for branch_probe in branch_probes:
+        native_metrics, _native_payload = _finalize_native_bw_branch_probe(
+            learner,
+            branch_probe,
+            device=device,
+        )
+        sample_count = float(native_metrics.get("bw_probe_native_branch_sample_count", 0.0))
+        if sample_count <= 0.0:
+            continue
+        horizon = int(native_metrics.get("bw_probe_native_branch_horizon", branch_probe.get("horizon", 0)))
+        suffix = f"h{horizon}"
+        for key, value in native_metrics.items():
+            if key.startswith("bw_probe_native_"):
+                out[key.replace("bw_probe_native_", f"guard_branch_{suffix}_", 1)] = float(value)
+        horizon_metrics.append(native_metrics)
+
+    if not horizon_metrics:
+        return out
+
+    def _series(key: str) -> list[float]:
+        values: list[float] = []
+        for metrics in horizon_metrics:
+            value = float(metrics.get(key, float("nan")))
+            if math.isfinite(value):
+                values.append(value)
+        return values
+
+    def _mean(values: list[float]) -> float:
+        return float(np.mean(np.asarray(values, dtype=np.float64))) if values else float("nan")
+
+    def _min(values: list[float]) -> float:
+        return float(np.min(np.asarray(values, dtype=np.float64))) if values else float("nan")
+
+    sample_counts = _series("bw_probe_native_branch_sample_count")
+    products = _series("bw_probe_native_mean_branch_delta_times_delta_logprob")
+    pos_fracs = _series("bw_probe_native_branch_delta_pos_logprob_up_frac")
+    corrs = _series("bw_probe_native_corr_branch_delta_vs_delta_logprob")
+    out.update(
+        {
+            "guard_branch_available": 1.0,
+            "guard_branch_horizon_count": float(len(horizon_metrics)),
+            "guard_branch_sample_count_mean": _mean(sample_counts),
+            "guard_branch_sample_count_min": _min(sample_counts),
+            "guard_branch_mean_delta_times_delta_logprob_mean": _mean(products),
+            "guard_branch_mean_delta_times_delta_logprob_min": _min(products),
+            "guard_branch_positive_logprob_up_frac_mean": _mean(pos_fracs),
+            "guard_branch_positive_logprob_up_frac_min": _min(pos_fracs),
+            "guard_branch_corr_delta_logprob_mean": _mean(corrs),
+            "guard_branch_corr_delta_logprob_min": _min(corrs),
+        }
+    )
+    return out
+
+
+BRANCH_REJECT_BITS = 32 | 64 | 128
+
+
+def _guard_branch_product(stats: dict[str, float]) -> float:
+    value = float(stats.get("guard_branch_mean_delta_times_delta_logprob_mean", float("nan")))
+    return value if math.isfinite(value) else -float("inf")
+
+
+def _guard_branch_candidate_sort_key(stats: dict[str, float]) -> tuple[float, float, float, float]:
+    product = _guard_branch_product(stats)
+    pos_frac = float(stats.get("guard_branch_positive_logprob_up_frac_min", float("nan")))
+    corr = float(stats.get("guard_branch_corr_delta_logprob_min", float("nan")))
+    full_kl = float(stats.get("full_update_kl", float("nan")))
+    return (
+        product,
+        pos_frac if math.isfinite(pos_frac) else -float("inf"),
+        corr if math.isfinite(corr) else -float("inf"),
+        -full_kl if math.isfinite(full_kl) else -float("inf"),
+    )
+
+
+def _branch_reject_only(reject_code: float) -> bool:
+    code = int(reject_code)
+    return code != 0 and (code & ~BRANCH_REJECT_BITS) == 0
+
+
+def _guard_failure_stats(
+    *,
+    stage_id: int,
+    stage_batch: Any,
+    stage_advantages: torch.Tensor,
+    hparams: dict[str, float | int],
+    actor_optimizers: dict[int, torch.optim.Optimizer],
+    attempts: int,
+    last_reject_code: float,
+    last_stats: dict[str, float] | None,
+    best_stats: dict[str, float] | None = None,
+    best_attempt: int = 0,
+    best_step_scale: float = 0.0,
+    branch_accept_mode: str = "first",
+) -> dict[str, float]:
+    stats = _skipped_stage_actor_stats(
+        stage_id=int(stage_id),
+        stage_batch=stage_batch,
+        stage_advantages=stage_advantages,
+        hparams=hparams,
+        actor_optimizers=actor_optimizers,
+    )
+    stage_name = STAGE_NAME[int(stage_id)]
+    suffix = _stage_metric_suffix(int(stage_id))
+    stats[f"actor_skipped_by_critic_ev_{suffix}"] = 0.0
+    zero_metric_keys = (
+        "full_update_kl",
+        "full_update_clip_frac",
+        "full_update_ratio_mean",
+        "full_update_ratio_std",
+        "full_update_ratio_min",
+        "full_update_ratio_max",
+        "delta_logprob_mean",
+        "delta_logprob_std",
+        "delta_logprob_min",
+        "delta_logprob_max",
+        "delta_logprob_abs_mean",
+        "delta_logprob_when_adv_positive_mean",
+        "delta_logprob_when_adv_negative_mean",
+        "credit_mean",
+        "credit_std",
+        "credit_min",
+        "credit_max",
+        "credit_positive_frac",
+        "credit_direction_agree_frac",
+        "credit_direction_wrong_frac",
+        "credit_adv_positive_delta_positive_frac",
+        "credit_adv_negative_delta_negative_frac",
+        "credit_when_adv_positive_mean",
+        "credit_when_adv_negative_mean",
+    )
+    for key in zero_metric_keys:
+        stats[key] = 0.0
+    stats.update(
+        {
+            f"approx_kl_{stage_name}": 0.0,
+            f"clip_frac_{stage_name}": 0.0,
+            "guard_enabled": 1.0,
+            "guard_accepted": 0.0,
+            "guard_skipped": 1.0,
+            "guard_attempts": float(attempts),
+            "guard_step_scale": 0.0,
+            "guard_reject_code": float(last_reject_code),
+            "guard_candidate_reject_code": float(last_reject_code),
+            "guard_branch_accept_mode_code": 1.0 if str(branch_accept_mode).strip().lower() == "best_score" else 0.0,
+            "guard_branch_selected_attempt": 0.0,
+            "guard_branch_selected_step_scale": 0.0,
+            "guard_branch_fallback_reject_code": 0.0,
+        }
+    )
+    if last_stats is not None:
+        for key in (
+            "full_update_kl",
+            "full_update_clip_frac",
+            "credit_mean",
+            "credit_when_adv_positive_mean",
+            "delta_logprob_when_adv_positive_mean",
+            "delta_logprob_when_adv_negative_mean",
+            "raw_credit_mean",
+            "raw_credit_when_raw_adv_positive_mean",
+            "delta_logprob_when_raw_adv_positive_mean",
+            "delta_logprob_when_raw_adv_negative_mean",
+            "raw_adv_positive_delta_positive_frac",
+        ):
+            stats[f"guard_last_{key}"] = float(last_stats.get(key, float("nan")))
+        for key, value in last_stats.items():
+            if key.startswith("guard_branch_"):
+                stats[f"guard_last_{key}"] = float(value)
+    if best_stats is not None:
+        stats["guard_best_attempt"] = float(best_attempt)
+        stats["guard_best_step_scale"] = float(best_step_scale)
+        stats["guard_best_reject_code"] = float(
+            best_stats.get("guard_candidate_reject_code", best_stats.get("guard_reject_code", float("nan")))
+        )
+        for key in (
+            "full_update_kl",
+            "full_update_clip_frac",
+            "credit_mean",
+            "credit_when_adv_positive_mean",
+            "delta_logprob_when_adv_positive_mean",
+            "raw_credit_mean",
+            "raw_credit_when_raw_adv_positive_mean",
+            "delta_logprob_when_raw_adv_positive_mean",
+            "raw_adv_positive_delta_positive_frac",
+        ):
+            stats[f"guard_best_{key}"] = float(best_stats.get(key, float("nan")))
+        for key, value in best_stats.items():
+            if key.startswith("guard_branch_"):
+                stats[f"guard_best_{key}"] = float(value)
+    return stats
+
+
+def _guarded_bw_actor_update(
+    learner: StructuredMAPPO,
+    *,
+    stage_id: int,
+    stage_batch: Any,
+    stage_advantages: torch.Tensor,
+    stage_raw_advantages: torch.Tensor | None,
+    optimizer: torch.optim.Optimizer,
+    epochs: int,
+    minibatches: int,
+    hparams: dict[str, float | int],
+    actor_optimizers: dict[int, torch.optim.Optimizer],
+    parity_dump_dir: Path | None,
+    parity_dump_tag: str | None,
+    parity_topk: int,
+    kl_stop_threshold: float | None,
+    backtrack_factors: list[float],
+    min_positive_credit: float,
+    min_credit_mean: float,
+    max_full_kl: float,
+    max_full_clip: float,
+    branch_alignment_enabled: bool,
+    branch_probes: list[dict[str, Any]] | None,
+    min_branch_delta_logprob_product: float,
+    min_branch_positive_logprob_up_frac: float,
+    min_branch_corr_delta_logprob: float,
+    branch_accept_mode: str,
+    branch_fallback_mode: str,
+    branch_fallback_min_product: float,
+) -> dict[str, float]:
+    if int(stage_id) != 2:
+        raise ValueError("guarded BW actor update can only be used for stage_id=2.")
+    params = _stage_optimizer_params(learner.actor, int(stage_id))
+    param_snapshot = _snapshot_params(params)
+    optimizer_snapshot = copy.deepcopy(optimizer.state_dict())
+    rng_snapshot = copy.deepcopy(_rng_state_payload(learner.device))
+    base_lrs = [float(group.get("lr", 0.0)) for group in optimizer.param_groups]
+    last_stats: dict[str, float] | None = None
+    last_reject_code = 0.0
+    best_stats: dict[str, float] | None = None
+    best_attempt = 0
+    best_factor = 0.0
+    best_param_snapshot: list[torch.Tensor] | None = None
+    best_optimizer_snapshot: dict[str, Any] | None = None
+    best_rng_snapshot: dict[str, Any] | None = None
+    accepted_best_stats: dict[str, float] | None = None
+    accepted_best_attempt = 0
+    accepted_best_factor = 0.0
+    accepted_best_param_snapshot: list[torch.Tensor] | None = None
+    accepted_best_optimizer_snapshot: dict[str, Any] | None = None
+    accepted_best_rng_snapshot: dict[str, Any] | None = None
+    accept_mode = str(branch_accept_mode or "first").strip().lower()
+    fallback_mode = str(branch_fallback_mode or "skip").strip().lower()
+
+    for attempt_idx, factor in enumerate(backtrack_factors, start=1):
+        _restore_params(params, param_snapshot)
+        optimizer.load_state_dict(copy.deepcopy(optimizer_snapshot))
+        _restore_rng_state_payload(copy.deepcopy(rng_snapshot), learner.device)
+        _set_optimizer_lrs(optimizer, base_lrs, scale=float(factor))
+        if learner.device.type == "cuda":
+            torch.cuda.synchronize(learner.device)
+        stats = _stage_actor_update_full_stage(
+            learner,
+            stage_id=int(stage_id),
+            stage_batch=stage_batch,
+            stage_advantages=stage_advantages,
+            stage_raw_advantages=stage_raw_advantages,
+            optimizer=optimizer,
+            epochs=int(epochs),
+            minibatches=int(minibatches),
+            parity_dump_dir=parity_dump_dir,
+            parity_dump_tag=parity_dump_tag,
+            parity_topk=int(parity_topk),
+            kl_stop_threshold=kl_stop_threshold,
+        )
+        if bool(branch_alignment_enabled):
+            stats.update(
+                _guarded_bw_branch_candidate_metrics(
+                    learner,
+                    branch_probes,
+                    device=learner.device,
+                )
+            )
+        else:
+            stats["guard_branch_enabled"] = 0.0
+        reject_code = _guard_reject_code(
+            stats,
+            min_positive_credit=float(min_positive_credit),
+            min_credit_mean=float(min_credit_mean),
+            max_full_kl=float(max_full_kl),
+            max_full_clip=float(max_full_clip),
+            branch_alignment_enabled=bool(branch_alignment_enabled),
+            min_branch_delta_logprob_product=float(min_branch_delta_logprob_product),
+            min_branch_positive_logprob_up_frac=float(min_branch_positive_logprob_up_frac),
+            min_branch_corr_delta_logprob=float(min_branch_corr_delta_logprob),
+        )
+        last_stats = dict(stats)
+        last_reject_code = float(reject_code)
+        stats["guard_candidate_reject_code"] = float(reject_code)
+        stats["guard_reject_code"] = float(reject_code)
+        if (
+            bool(branch_alignment_enabled)
+            and fallback_mode == "best_safe"
+            and _branch_reject_only(float(reject_code))
+            and _guard_branch_product(stats) >= float(branch_fallback_min_product)
+            and (
+                best_stats is None
+                or _guard_branch_candidate_sort_key(stats) > _guard_branch_candidate_sort_key(best_stats)
+            )
+        ):
+            best_stats = dict(stats)
+            best_attempt = int(attempt_idx)
+            best_factor = float(factor)
+            best_param_snapshot = _snapshot_params(params)
+            best_optimizer_snapshot = copy.deepcopy(optimizer.state_dict())
+            best_rng_snapshot = copy.deepcopy(_rng_state_payload(learner.device))
+        if reject_code == 0.0:
+            if bool(branch_alignment_enabled) and accept_mode == "best_score":
+                if (
+                    accepted_best_stats is None
+                    or _guard_branch_candidate_sort_key(stats) > _guard_branch_candidate_sort_key(accepted_best_stats)
+                ):
+                    accepted_best_stats = dict(stats)
+                    accepted_best_attempt = int(attempt_idx)
+                    accepted_best_factor = float(factor)
+                    accepted_best_param_snapshot = _snapshot_params(params)
+                    accepted_best_optimizer_snapshot = copy.deepcopy(optimizer.state_dict())
+                    accepted_best_rng_snapshot = copy.deepcopy(_rng_state_payload(learner.device))
+                continue
+            _set_optimizer_lrs(optimizer, base_lrs, scale=1.0)
+            stats.update(
+                {
+                    "guard_enabled": 1.0,
+                    "guard_accepted": 1.0,
+                    "guard_skipped": 0.0,
+                    "guard_attempts": float(attempt_idx),
+                    "guard_step_scale": float(factor),
+                    "guard_reject_code": 0.0,
+                    "guard_candidate_reject_code": 0.0,
+                    "guard_branch_accept_mode_code": 1.0 if accept_mode == "best_score" else 0.0,
+                    "guard_branch_selected_attempt": float(attempt_idx),
+                    "guard_branch_selected_step_scale": float(factor),
+                    "guard_branch_fallback_mode_code": 1.0 if fallback_mode == "best_safe" else 0.0,
+                    "guard_branch_fallback_accepted": 0.0,
+                    "guard_branch_fallback_reject_code": 0.0,
+                }
+            )
+            return stats
+
+    if (
+        accepted_best_stats is not None
+        and accepted_best_param_snapshot is not None
+        and accepted_best_optimizer_snapshot is not None
+    ):
+        _restore_params(params, accepted_best_param_snapshot)
+        optimizer.load_state_dict(copy.deepcopy(accepted_best_optimizer_snapshot))
+        if accepted_best_rng_snapshot is not None:
+            _restore_rng_state_payload(copy.deepcopy(accepted_best_rng_snapshot), learner.device)
+        _set_optimizer_lrs(optimizer, base_lrs, scale=1.0)
+        if learner.device.type == "cuda":
+            torch.cuda.synchronize(learner.device)
+        accepted_best_stats.update(
+            {
+                "guard_enabled": 1.0,
+                "guard_accepted": 1.0,
+                "guard_skipped": 0.0,
+                "guard_attempts": float(len(backtrack_factors)),
+                "guard_step_scale": float(accepted_best_factor),
+                "guard_reject_code": 0.0,
+                "guard_candidate_reject_code": 0.0,
+                "guard_branch_accept_mode_code": 1.0,
+                "guard_branch_selected_attempt": float(accepted_best_attempt),
+                "guard_branch_selected_step_scale": float(accepted_best_factor),
+                "guard_branch_fallback_mode_code": 1.0 if fallback_mode == "best_safe" else 0.0,
+                "guard_branch_fallback_accepted": 0.0,
+                "guard_branch_fallback_reject_code": 0.0,
+            }
+        )
+        return accepted_best_stats
+
+    if best_stats is not None and best_param_snapshot is not None and best_optimizer_snapshot is not None:
+        fallback_reject_code = float(
+            best_stats.get("guard_candidate_reject_code", best_stats.get("guard_reject_code", last_reject_code))
+        )
+        _restore_params(params, best_param_snapshot)
+        optimizer.load_state_dict(copy.deepcopy(best_optimizer_snapshot))
+        if best_rng_snapshot is not None:
+            _restore_rng_state_payload(copy.deepcopy(best_rng_snapshot), learner.device)
+        _set_optimizer_lrs(optimizer, base_lrs, scale=1.0)
+        if learner.device.type == "cuda":
+            torch.cuda.synchronize(learner.device)
+        best_stats.update(
+            {
+                "guard_enabled": 1.0,
+                "guard_accepted": 1.0,
+                "guard_skipped": 0.0,
+                "guard_attempts": float(len(backtrack_factors)),
+                "guard_step_scale": float(best_factor),
+                "guard_reject_code": 0.0,
+                "guard_candidate_reject_code": float(fallback_reject_code),
+                "guard_branch_accept_mode_code": 1.0 if accept_mode == "best_score" else 0.0,
+                "guard_branch_selected_attempt": float(best_attempt),
+                "guard_branch_selected_step_scale": float(best_factor),
+                "guard_branch_fallback_mode_code": 1.0,
+                "guard_branch_fallback_accepted": 1.0,
+                "guard_branch_fallback_reject_code": float(fallback_reject_code),
+                "guard_branch_fallback_attempt": float(best_attempt),
+                "guard_branch_fallback_step_scale": float(best_factor),
+                "guard_branch_fallback_product": float(_guard_branch_product(best_stats)),
+            }
+        )
+        return best_stats
+
+    _restore_params(params, param_snapshot)
+    optimizer.load_state_dict(copy.deepcopy(optimizer_snapshot))
+    _restore_rng_state_payload(copy.deepcopy(rng_snapshot), learner.device)
+    _set_optimizer_lrs(optimizer, base_lrs, scale=1.0)
+    if learner.device.type == "cuda":
+        torch.cuda.synchronize(learner.device)
+    return _guard_failure_stats(
+        stage_id=int(stage_id),
+        stage_batch=stage_batch,
+        stage_advantages=stage_advantages,
+        hparams=hparams,
+        actor_optimizers=actor_optimizers,
+        attempts=len(backtrack_factors),
+        last_reject_code=float(last_reject_code),
+        last_stats=last_stats,
+        best_stats=best_stats,
+        best_attempt=int(best_attempt),
+        best_step_scale=float(best_factor),
+        branch_accept_mode=accept_mode,
+    )
 
 
 def _rng_state_payload(device: torch.device) -> dict[str, Any]:
@@ -1114,6 +2089,20 @@ def _resolve_training_hparams(cfg: Any, args: argparse.Namespace) -> dict[str, f
     return hparams
 
 
+def _explicit_stage_actor_lr_override(args: argparse.Namespace, stage_id: int) -> float | None:
+    stage_specific = {
+        0: getattr(args, "accel_actor_lr", None),
+        1: getattr(args, "sat_actor_lr", None),
+        2: getattr(args, "bw_actor_lr", None),
+    }[int(stage_id)]
+    if stage_specific is not None:
+        return float(stage_specific)
+    generic = getattr(args, "actor_lr", None)
+    if generic is not None:
+        return float(generic)
+    return None
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Joint accel/sat/bw MC-critic + A_gae(V) training loop.")
     parser.add_argument("--config", required=True)
@@ -1219,14 +2208,195 @@ def main() -> None:
     )
     parser.add_argument("--bw_parity_topk", type=int, default=16)
     parser.add_argument(
+        "--guarded_bw_update",
+        action="store_true",
+        help=(
+            "Enable BW-only candidate PPO updates with credit/KL/clip acceptance guards. "
+            "Rejected candidates are rolled back and retried with --guarded_bw_backtrack_factors; "
+            "if all candidates fail, the BW actor update is skipped for that iteration."
+        ),
+    )
+    parser.add_argument(
+        "--guarded_bw_backtrack_factors",
+        default="1.0,0.3,0.1,0.03,0.01,0.003,0.001",
+        help="Comma-separated candidate step scales for --guarded_bw_update.",
+    )
+    parser.add_argument(
+        "--guarded_bw_min_positive_credit",
+        type=float,
+        default=0.0,
+        help="Minimum mean A_norm*delta_logprob over positive-advantage BW samples for accepting a candidate.",
+    )
+    parser.add_argument(
+        "--guarded_bw_min_credit_mean",
+        type=float,
+        default=0.0,
+        help="Minimum mean A_norm*delta_logprob over all BW samples for accepting a candidate.",
+    )
+    parser.add_argument(
+        "--guarded_bw_max_full_kl",
+        type=float,
+        default=0.03,
+        help="Maximum post-update full-batch BW KL for accepting a candidate; <=0 disables this check.",
+    )
+    parser.add_argument(
+        "--guarded_bw_max_full_clip",
+        type=float,
+        default=0.25,
+        help="Maximum post-update full-batch BW clip fraction for accepting a candidate; <=0 disables this check.",
+    )
+    parser.add_argument(
+        "--guarded_bw_branch_alignment",
+        action="store_true",
+        help=(
+            "Require guarded BW candidates to improve native branch-alignment diagnostics. "
+            "This is a mechanism probe/trust-region experiment and requires "
+            "--guarded_bw_update plus --bw_advantage_alignment_branch_samples > 0."
+        ),
+    )
+    parser.add_argument(
+        "--guarded_bw_min_branch_delta_logprob_product",
+        type=float,
+        default=0.0,
+        help=(
+            "Minimum mean branch_delta * delta_logprob across guarded BW branch horizons. "
+            "Used only with --guarded_bw_branch_alignment."
+        ),
+    )
+    parser.add_argument(
+        "--guarded_bw_min_branch_positive_logprob_up_frac",
+        type=float,
+        default=0.5,
+        help=(
+            "Minimum per-horizon fraction of branch-positive BW samples whose logprob rises. "
+            "Used only with --guarded_bw_branch_alignment; <=0 disables this check."
+        ),
+    )
+    parser.add_argument(
+        "--guarded_bw_min_branch_corr_delta_logprob",
+        type=float,
+        default=-1.0,
+        help=(
+            "Minimum per-horizon corr(branch_delta, delta_logprob). "
+            "Used only with --guarded_bw_branch_alignment; <=-1 disables this check."
+        ),
+    )
+    parser.add_argument(
+        "--guarded_bw_branch_accept_mode",
+        choices=["first", "best_score"],
+        default="first",
+        help=(
+            "How to choose among guarded BW candidates that pass all hard guards. "
+            "'first' preserves backtracking behavior; 'best_score' evaluates all factors and selects the "
+            "candidate with the best branch product/positive-up/correlation score."
+        ),
+    )
+    parser.add_argument(
+        "--guarded_bw_branch_fallback",
+        choices=["skip", "best_safe"],
+        default="skip",
+        help=(
+            "Fallback used when all branch-alignment candidates fail. "
+            "'skip' preserves hard guard behavior; 'best_safe' accepts the branch-rejected candidate with the "
+            "least branch_delta*dlogprob damage, but only if non-branch credit/KL/clip guards passed."
+        ),
+    )
+    parser.add_argument(
+        "--guarded_bw_branch_fallback_min_product",
+        type=float,
+        default=-float("inf"),
+        help=(
+            "Minimum branch_delta*dlogprob product allowed by --guarded_bw_branch_fallback best_safe. "
+            "Use a negative finite value to cap tolerated branch damage."
+        ),
+    )
+    parser.add_argument(
         "--diagnose_critic_timing",
         action="store_true",
         help="Record per-stage critic timing rows without changing the update math.",
+    )
+    parser.add_argument(
+        "--bw_advantage_alignment_probe",
+        action="store_true",
+        help=(
+            "Run an optional BW update-direction probe after each BW actor update. "
+            "It compares PPO advantages/logprob movement against branch/true action gaps "
+            "without changing the training loss."
+        ),
+    )
+    parser.add_argument(
+        "--bw_advantage_alignment_sample_limit",
+        type=int,
+        default=16,
+        help="Number of BW snapshot samples used by the expensive action-gap/branch/true-MC probe.",
+    )
+    parser.add_argument(
+        "--bw_advantage_alignment_k_steps",
+        type=int,
+        default=20,
+        help="Horizon used for the deterministic sampled-vs-reference action-gap probe.",
+    )
+    parser.add_argument(
+        "--bw_advantage_alignment_true_mc_samples",
+        type=int,
+        default=0,
+        help="Stochastic true-advantage Monte-Carlo samples per selected BW action; 0 disables this extra probe.",
+    )
+    parser.add_argument(
+        "--bw_advantage_alignment_branch_samples",
+        type=int,
+        default=0,
+        help="Stochastic branch samples per selected BW action for each branch horizon; 0 disables branch probes.",
+    )
+    parser.add_argument(
+        "--bw_advantage_alignment_branch_horizons",
+        default="2,5,10",
+        help="Comma-separated branch horizons used when --bw_advantage_alignment_branch_samples > 0.",
     )
     args = parser.parse_args()
 
     if int(args.torch_threads) > 0:
         torch.set_num_threads(int(args.torch_threads))
+    guarded_bw_backtrack_factors = _parse_guarded_bw_backtrack_factors(str(args.guarded_bw_backtrack_factors))
+    if not math.isfinite(float(args.guarded_bw_min_positive_credit)):
+        raise ValueError("--guarded_bw_min_positive_credit must be finite.")
+    if not math.isfinite(float(args.guarded_bw_min_credit_mean)):
+        raise ValueError("--guarded_bw_min_credit_mean must be finite.")
+    if not math.isfinite(float(args.guarded_bw_max_full_kl)):
+        raise ValueError("--guarded_bw_max_full_kl must be finite.")
+    if not math.isfinite(float(args.guarded_bw_max_full_clip)):
+        raise ValueError("--guarded_bw_max_full_clip must be finite.")
+    if bool(args.guarded_bw_branch_alignment) and not bool(args.guarded_bw_update):
+        raise ValueError("--guarded_bw_branch_alignment requires --guarded_bw_update.")
+    if not math.isfinite(float(args.guarded_bw_min_branch_delta_logprob_product)):
+        raise ValueError("--guarded_bw_min_branch_delta_logprob_product must be finite.")
+    if not math.isfinite(float(args.guarded_bw_min_branch_positive_logprob_up_frac)):
+        raise ValueError("--guarded_bw_min_branch_positive_logprob_up_frac must be finite.")
+    if not (0.0 <= float(args.guarded_bw_min_branch_positive_logprob_up_frac) <= 1.0):
+        raise ValueError("--guarded_bw_min_branch_positive_logprob_up_frac must be in [0, 1].")
+    if not math.isfinite(float(args.guarded_bw_min_branch_corr_delta_logprob)):
+        raise ValueError("--guarded_bw_min_branch_corr_delta_logprob must be finite.")
+    if not (-1.0 <= float(args.guarded_bw_min_branch_corr_delta_logprob) <= 1.0):
+        raise ValueError("--guarded_bw_min_branch_corr_delta_logprob must be in [-1, 1].")
+    if bool(args.guarded_bw_branch_alignment) is False and str(args.guarded_bw_branch_fallback) != "skip":
+        raise ValueError("--guarded_bw_branch_fallback requires --guarded_bw_branch_alignment.")
+    if bool(args.guarded_bw_branch_alignment) is False and str(args.guarded_bw_branch_accept_mode) != "first":
+        raise ValueError("--guarded_bw_branch_accept_mode best_score requires --guarded_bw_branch_alignment.")
+    if math.isnan(float(args.guarded_bw_branch_fallback_min_product)):
+        raise ValueError("--guarded_bw_branch_fallback_min_product must not be NaN.")
+    if int(args.bw_advantage_alignment_sample_limit) <= 0:
+        raise ValueError("--bw_advantage_alignment_sample_limit must be > 0.")
+    if int(args.bw_advantage_alignment_k_steps) <= 0:
+        raise ValueError("--bw_advantage_alignment_k_steps must be > 0.")
+    if int(args.bw_advantage_alignment_true_mc_samples) < 0:
+        raise ValueError("--bw_advantage_alignment_true_mc_samples must be >= 0.")
+    if int(args.bw_advantage_alignment_branch_samples) < 0:
+        raise ValueError("--bw_advantage_alignment_branch_samples must be >= 0.")
+    if bool(args.guarded_bw_branch_alignment) and int(args.bw_advantage_alignment_branch_samples) <= 0:
+        raise ValueError("--guarded_bw_branch_alignment requires --bw_advantage_alignment_branch_samples > 0.")
+    bw_advantage_alignment_branch_horizons = _parse_positive_int_csv(
+        str(args.bw_advantage_alignment_branch_horizons)
+    )
     device = torch.device(args.device)
     if device.type == "cuda" and not torch.cuda.is_available():
         raise RuntimeError("CUDA requested but torch.cuda.is_available() is false.")
@@ -1275,6 +2445,11 @@ def main() -> None:
         if int(args.sat_decision_interval) < 1:
             raise ValueError("--sat_decision_interval must be >= 1.")
         cfg.sat_decision_interval = int(args.sat_decision_interval)
+    if (
+        (bool(args.bw_advantage_alignment_probe) or bool(args.guarded_bw_branch_alignment))
+        and int(args.bw_advantage_alignment_branch_samples) > 0
+    ):
+        cfg.structured_native_history_snapshots_enabled = "true"
     report_torch_compile_cache(context="train_joint_mcgae", device=device, cfg=cfg)
     if device.type == "cuda":
         _enable_strict_compile_global()
@@ -1345,6 +2520,9 @@ def main() -> None:
                     if key in opt_state:
                         optimizer.load_state_dict(opt_state[key])
                         break
+                lr_override = _explicit_stage_actor_lr_override(args, int(stage_id))
+                if lr_override is not None:
+                    _set_optimizer_lr(optimizer, float(lr_override))
         start_update = max(int(resume_state.get("update", 0) or 0), 0)
         saved_hparams = resume_state.get("hparams")
         if isinstance(saved_hparams, dict):
@@ -1616,7 +2794,11 @@ def main() -> None:
             _append_phase_trace(run_dir, update=update + 1, phase="actor", event="start")
             actor_metrics: dict[str, float] = {}
             adv_metrics: dict[str, float] = {}
+            bw_alignment_probe_metrics: dict[str, float] = {}
             stage_actor_inputs: dict[int, torch.Tensor] = {}
+            stage_actor_raw_inputs: dict[int, torch.Tensor] = {}
+            stage_actor_returns_inputs: dict[int, torch.Tensor] = {}
+            stage_actor_values_inputs: dict[int, torch.Tensor] = {}
             actor_stage_batches: dict[int, _ActorOnlyStageBatch] = {}
             for stage_id in STAGES:
                 stage_batch = views.training_view.stage_batches[int(stage_id)]
@@ -1656,7 +2838,26 @@ def main() -> None:
                 adv_metrics.update({f"{stage_name}_value_{k}": v for k, v in value_stats.items()})
                 adv_metrics[f"{stage_name}_critic_final_ev"] = _tensor_ev(stage_values, stage_targets[int(stage_id)])
                 stage_actor_inputs[int(stage_id)] = stage_adv_norm
+                stage_actor_raw_inputs[int(stage_id)] = stage_adv.detach().to(device=device, dtype=torch.float32)
+                stage_actor_returns_inputs[int(stage_id)] = _returns_gae.detach().to(device=device, dtype=torch.float32)
+                stage_actor_values_inputs[int(stage_id)] = stage_values.detach().to(device=device, dtype=torch.float32)
                 actor_stage_batches[int(stage_id)] = _actor_only_stage_batch(stage_batch)
+
+            bw_alignment_probe_context: dict[str, Any] | None = None
+            bw_alignment_pre_actor = None
+            bw_native_branch_probes: list[dict[str, Any]] = []
+            if bool(args.bw_advantage_alignment_probe):
+                bw_alignment_probe_context = _joint_bw_advantage_probe_context(
+                    learner,
+                    stage_batch=views.training_view.stage_batches[2],
+                    advantages=stage_actor_inputs[2],
+                    raw_advantages=stage_actor_raw_inputs[2],
+                    values=stage_actor_values_inputs[2],
+                    returns=stage_actor_returns_inputs[2],
+                    sample_limit=int(args.bw_advantage_alignment_sample_limit),
+                    sample_seed=int(args.seed) + 7_000_000 + int(update) * 10_000,
+                    device=device,
+                )
 
             t_prune = time.perf_counter()
             del views
@@ -1667,11 +2868,47 @@ def main() -> None:
                 torch.cuda.empty_cache()
                 torch.cuda.synchronize(device)
             adv_metrics["pre_actor_prune_rollout_view_sec"] = float(time.perf_counter() - t_prune)
+            branch_alignment_needed = (
+                bool(args.bw_advantage_alignment_probe) or bool(args.guarded_bw_branch_alignment)
+            ) and int(args.bw_advantage_alignment_branch_samples) > 0
+            if branch_alignment_needed:
+                _append_phase_trace(run_dir, update=update + 1, phase="bw_native_branch_probe", event="start")
+                native_branch_horizons = (
+                    list(bw_advantage_alignment_branch_horizons)
+                    if bw_advantage_alignment_branch_horizons
+                    else [int(args.bw_advantage_alignment_k_steps)]
+                )
+                for horizon in sorted({int(value) for value in native_branch_horizons if int(value) > 0}):
+                    branch_probe = _native_bw_branch_probe_before_update(
+                        learner,
+                        stage_batch=actor_stage_batches[2],
+                        advantages=stage_actor_inputs[2],
+                        raw_advantages=stage_actor_raw_inputs[2],
+                        sample_limit=int(args.bw_advantage_alignment_sample_limit),
+                        sample_seed=int(args.seed) + 10_000_000 + int(update) * 10_000 + int(horizon) * 101,
+                        horizon=int(horizon),
+                        device=device,
+                    )
+                    if branch_probe is not None:
+                        bw_native_branch_probes.append(branch_probe)
+                _append_phase_trace(
+                    run_dir,
+                    update=update + 1,
+                    phase="bw_native_branch_probe",
+                    event="end",
+                    horizons=",".join(str(int(probe.get("horizon", 0))) for probe in bw_native_branch_probes),
+                    samples=0.0
+                    if not bw_native_branch_probes
+                    else float(len(bw_native_branch_probes[0]["selected_positions"])),
+                )
+            if bool(args.bw_advantage_alignment_probe) and bw_alignment_probe_context is not None:
+                bw_alignment_pre_actor = copy.deepcopy(learner.actor).to(device).eval()
 
             for stage_id in STAGES:
                 stage_batch = actor_stage_batches[int(stage_id)]
                 stage_name = STAGE_NAME[int(stage_id)]
                 stage_adv_norm = stage_actor_inputs[int(stage_id)]
+                stage_adv_raw = stage_actor_raw_inputs[int(stage_id)]
                 _append_phase_trace(
                     run_dir,
                     update=update + 1,
@@ -1698,12 +2935,59 @@ def main() -> None:
                         hparams=hparams,
                         actor_optimizers=actor_optimizers,
                     )
+                elif int(stage_id) == 2 and bool(args.guarded_bw_update):
+                    stats = _guarded_bw_actor_update(
+                        learner,
+                        stage_id=int(stage_id),
+                        stage_batch=stage_batch,
+                        stage_advantages=stage_adv_norm,
+                        stage_raw_advantages=stage_adv_raw,
+                        optimizer=actor_optimizers[int(stage_id)],
+                        epochs=int(hparams["actor_epochs"]),
+                        minibatches=int(hparams["actor_minibatches"]),
+                        hparams=hparams,
+                        actor_optimizers=actor_optimizers,
+                        parity_dump_dir=run_dir / "diagnostics" / "bw_parity",
+                        parity_dump_tag=f"u{update + 1:04d}_{stage_name}",
+                        parity_topk=int(args.bw_parity_topk),
+                        kl_stop_threshold=(
+                            float(hparams[f"actor_kl_stop_threshold_{stage_name}"])
+                            if bool(int(hparams.get("stage_actor_kl_early_stop_enabled", 0)))
+                            else None
+                        ),
+                        backtrack_factors=guarded_bw_backtrack_factors,
+                        min_positive_credit=float(args.guarded_bw_min_positive_credit),
+                        min_credit_mean=float(args.guarded_bw_min_credit_mean),
+                        max_full_kl=float(args.guarded_bw_max_full_kl),
+                        max_full_clip=float(args.guarded_bw_max_full_clip),
+                        branch_alignment_enabled=bool(args.guarded_bw_branch_alignment),
+                        branch_probes=bw_native_branch_probes,
+                        min_branch_delta_logprob_product=float(
+                            args.guarded_bw_min_branch_delta_logprob_product
+                        ),
+                        min_branch_positive_logprob_up_frac=float(
+                            args.guarded_bw_min_branch_positive_logprob_up_frac
+                        ),
+                        min_branch_corr_delta_logprob=float(args.guarded_bw_min_branch_corr_delta_logprob),
+                        branch_accept_mode=str(args.guarded_bw_branch_accept_mode),
+                        branch_fallback_mode=str(args.guarded_bw_branch_fallback),
+                        branch_fallback_min_product=float(args.guarded_bw_branch_fallback_min_product),
+                    )
+                    stats.update(
+                        _maybe_adjust_stage_actor_lr(
+                            actor_optimizers[int(stage_id)],
+                            stage_id=int(stage_id),
+                            stage_metrics=stats,
+                            hparams=hparams,
+                        )
+                    )
                 else:
                     stats = _stage_actor_update_full_stage(
                         learner,
                         stage_id=int(stage_id),
                         stage_batch=stage_batch,
                         stage_advantages=stage_adv_norm,
+                        stage_raw_advantages=stage_adv_raw,
                         optimizer=actor_optimizers[int(stage_id)],
                         epochs=int(hparams["actor_epochs"]),
                         minibatches=int(hparams["actor_minibatches"]),
@@ -1733,6 +3017,67 @@ def main() -> None:
                     kl=float(stats.get(f"approx_kl_{stage_name}", stats.get("approx_kl", float("nan")))),
                     samples=float(stats.get("actor_samples", float("nan"))),
                 )
+            if bw_alignment_pre_actor is not None and bw_alignment_probe_context is not None:
+                _append_phase_trace(run_dir, update=update + 1, phase="bw_advantage_alignment_probe", event="start")
+                alignment_eval = evaluate_bw_advantage_alignment(
+                    pre_actor=bw_alignment_pre_actor,
+                    post_actor=learner.actor,
+                    probe_context=bw_alignment_probe_context,
+                    cfg=cfg,
+                    device=device,
+                    k_steps=int(args.bw_advantage_alignment_k_steps),
+                    true_mc_enabled=int(args.bw_advantage_alignment_true_mc_samples) > 0,
+                    true_mc_samples=int(args.bw_advantage_alignment_true_mc_samples),
+                    true_mc_seed=int(args.seed) + 8_000_000 + int(update) * 10_000,
+                    branch_enabled=int(args.bw_advantage_alignment_branch_samples) > 0,
+                    branch_horizons=bw_advantage_alignment_branch_horizons,
+                    branch_samples=int(args.bw_advantage_alignment_branch_samples),
+                    branch_seed=int(args.seed) + 9_000_000 + int(update) * 10_000,
+                    branch_ref_mode="deterministic",
+                    branch_follow_policy_mode="stochastic",
+                )
+                if bw_native_branch_probes:
+                    native_payloads: list[dict[str, Any]] = []
+                    primary_metrics: dict[str, float] | None = None
+                    primary_payload: dict[str, Any] | None = None
+                    primary_horizon = max(int(probe.get("horizon", 0)) for probe in bw_native_branch_probes)
+                    for branch_probe in bw_native_branch_probes:
+                        native_metrics, native_payload = _finalize_native_bw_branch_probe(
+                            learner,
+                            branch_probe,
+                            device=device,
+                        )
+                        horizon = int(native_payload.get("horizon", 0))
+                        native_payloads.append(native_payload)
+                        suffix = f"h{horizon}"
+                        for key, value in native_metrics.items():
+                            if key.startswith("bw_probe_native_"):
+                                bw_alignment_probe_metrics[
+                                    key.replace("bw_probe_native_", f"bw_probe_native_{suffix}_", 1)
+                                ] = float(value)
+                        if int(horizon) == int(primary_horizon):
+                            primary_metrics = native_metrics
+                            primary_payload = native_payload
+                    if primary_payload is not None:
+                        alignment_eval["native_branch_alignment"] = primary_payload
+                    alignment_eval["native_branch_alignment_by_horizon"] = native_payloads
+                    if primary_metrics is not None:
+                        bw_alignment_probe_metrics.update(primary_metrics)
+                probe_path = run_dir / "diagnostics" / "bw_advantage_alignment" / f"update{update + 1:04d}.json"
+                write_bw_update_direction_probe_payload(probe_path, alignment_eval)
+                bw_alignment_probe_metrics.update(_flatten_bw_alignment_metrics(alignment_eval))
+                _append_phase_trace(
+                    run_dir,
+                    update=update + 1,
+                    phase="bw_advantage_alignment_probe",
+                    event="end",
+                    judgement=str(alignment_eval.get("judgement", "")),
+                    action_gap_samples=float(alignment_eval.get("action_gap_sample_count", 0.0)),
+                )
+                del bw_alignment_pre_actor
+                if device.type == "cuda":
+                    torch.cuda.empty_cache()
+                    torch.cuda.synchronize(device)
             sync_native = getattr(learner, "_sync_native_actor_cuda_bindings_after_update", None)
             _append_phase_trace(run_dir, update=update + 1, phase="native_sync", event="start")
             if callable(sync_native):
@@ -1794,6 +3139,7 @@ def main() -> None:
                 **critic_metrics,
                 **adv_metrics,
                 **actor_metrics,
+                **bw_alignment_probe_metrics,
                 **_cuda_mem("update_end", device),
             }
             stage_best_metrics: dict[str, float] = {}

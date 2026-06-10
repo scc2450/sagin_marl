@@ -1521,6 +1521,7 @@ def _stage_actor_update_full_stage(
     stage_id: int,
     stage_batch: Any,
     stage_advantages: torch.Tensor,
+    stage_raw_advantages: torch.Tensor | None = None,
     optimizer: torch.optim.Optimizer,
     epochs: int,
     minibatches: int,
@@ -1774,6 +1775,13 @@ def _stage_actor_update_full_stage(
     adv = stage_advantages.detach().to(device=device, dtype=torch.float32).reshape(-1)
     if int(adv.numel()) != sample_count:
         raise RuntimeError(f"advantage length {int(adv.numel())} != {stage_name} stage samples {sample_count}.")
+    raw_adv: torch.Tensor | None = None
+    if stage_raw_advantages is not None:
+        raw_adv = stage_raw_advantages.detach().to(device=device, dtype=torch.float32).reshape(-1)
+        if int(raw_adv.numel()) != sample_count:
+            raise RuntimeError(
+                f"raw advantage length {int(raw_adv.numel())} != {stage_name} stage samples {sample_count}."
+            )
     entropy_coef = float(learner.entropy_coef_by_stage[stage_id_i])
     outer_minibatches = _env_group_minibatch_indices(
         stage_batch,
@@ -2004,6 +2012,84 @@ def _stage_actor_update_full_stage(
             if neg_count > 0
             else 0.0
         )
+        raw_adv_diag: dict[str, float] = {"raw_adv_available": 0.0}
+        if raw_adv is not None:
+            raw_adv_t = raw_adv.detach().to(dtype=torch.float32).reshape(-1)
+            raw_pos = raw_adv_t > 0.0
+            raw_neg = raw_adv_t < 0.0
+            raw_nonzero = raw_adv_t.abs() > 1.0e-8
+            raw_credit = (raw_adv_t * delta_logprob).detach()
+            raw_direction_agree = (
+                ((raw_pos & (delta_logprob > 0.0)) | (raw_neg & (delta_logprob < 0.0))) & raw_nonzero
+            )
+            raw_direction_wrong = (
+                ((raw_pos & (delta_logprob < 0.0)) | (raw_neg & (delta_logprob > 0.0))) & raw_nonzero
+            )
+            norm_raw_nonzero = adv_nonzero & raw_nonzero
+            norm_raw_agree = ((adv_pos & raw_pos) | (adv_neg & raw_neg)) & norm_raw_nonzero
+            norm_raw_disagree = ((adv_pos & raw_neg) | (adv_neg & raw_pos)) & norm_raw_nonzero
+            raw_credit_stats = _summ_tensor(raw_credit)
+
+            def _frac_mask(mask: torch.Tensor, denom_mask: torch.Tensor) -> float:
+                denom_count = int(denom_mask.to(dtype=torch.bool).sum().detach().cpu().item())
+                if denom_count <= 0:
+                    return 0.0
+                return float((mask & denom_mask).to(dtype=torch.float32).sum().detach().cpu().item() / float(denom_count))
+
+            raw_pos_count = int(raw_pos.sum().detach().cpu().item())
+            raw_neg_count = int(raw_neg.sum().detach().cpu().item())
+            raw_nonzero_count = int(raw_nonzero.sum().detach().cpu().item())
+            norm_raw_count = int(norm_raw_nonzero.sum().detach().cpu().item())
+            raw_adv_diag = {
+                "raw_adv_available": 1.0,
+                "raw_adv_positive_frac": float(raw_pos.to(dtype=torch.float32).mean().detach().cpu().item()),
+                "raw_adv_negative_frac": float(raw_neg.to(dtype=torch.float32).mean().detach().cpu().item()),
+                "norm_raw_adv_sign_agree_frac": float(
+                    norm_raw_agree.to(dtype=torch.float32).sum().detach().cpu().item() / float(max(norm_raw_count, 1))
+                ),
+                "norm_raw_adv_sign_disagree_frac": float(
+                    norm_raw_disagree.to(dtype=torch.float32).sum().detach().cpu().item() / float(max(norm_raw_count, 1))
+                ),
+                "norm_adv_positive_raw_adv_negative_within_norm_positive_frac": _frac_mask(raw_neg, adv_pos),
+                "norm_adv_negative_raw_adv_positive_within_norm_negative_frac": _frac_mask(raw_pos, adv_neg),
+                "raw_adv_positive_delta_positive_frac": (
+                    float(((delta_logprob > 0.0) & raw_pos).to(dtype=torch.float32).sum().detach().cpu().item() / float(raw_pos_count))
+                    if raw_pos_count > 0
+                    else 0.0
+                ),
+                "raw_adv_positive_delta_negative_frac": (
+                    float(((delta_logprob < 0.0) & raw_pos).to(dtype=torch.float32).sum().detach().cpu().item() / float(raw_pos_count))
+                    if raw_pos_count > 0
+                    else 0.0
+                ),
+                "raw_adv_negative_delta_negative_frac": (
+                    float(((delta_logprob < 0.0) & raw_neg).to(dtype=torch.float32).sum().detach().cpu().item() / float(raw_neg_count))
+                    if raw_neg_count > 0
+                    else 0.0
+                ),
+                "raw_adv_negative_delta_positive_frac": (
+                    float(((delta_logprob > 0.0) & raw_neg).to(dtype=torch.float32).sum().detach().cpu().item() / float(raw_neg_count))
+                    if raw_neg_count > 0
+                    else 0.0
+                ),
+                "delta_logprob_when_raw_adv_positive_mean": _masked_scalar_mean(delta_logprob, raw_pos),
+                "delta_logprob_when_raw_adv_negative_mean": _masked_scalar_mean(delta_logprob, raw_neg),
+                "raw_credit_mean": float(raw_credit_stats["mean"]),
+                "raw_credit_std": float(raw_credit_stats["std"]),
+                "raw_credit_min": float(raw_credit_stats["min"]),
+                "raw_credit_max": float(raw_credit_stats["max"]),
+                "raw_credit_positive_frac": float(
+                    (raw_credit > 0.0).to(dtype=torch.float32).mean().detach().cpu().item()
+                ),
+                "raw_credit_direction_agree_frac": float(
+                    raw_direction_agree.to(dtype=torch.float32).sum().detach().cpu().item() / float(max(raw_nonzero_count, 1))
+                ),
+                "raw_credit_direction_wrong_frac": float(
+                    raw_direction_wrong.to(dtype=torch.float32).sum().detach().cpu().item() / float(max(raw_nonzero_count, 1))
+                ),
+                "raw_credit_when_raw_adv_positive_mean": _masked_scalar_mean(raw_credit, raw_pos),
+                "raw_credit_when_raw_adv_negative_mean": _masked_scalar_mean(raw_credit, raw_neg),
+            }
 
     return {
         "actor_samples": float(sample_count),
@@ -2048,6 +2134,7 @@ def _stage_actor_update_full_stage(
         "credit_when_adv_negative_mean": _masked_scalar_mean(credit, adv_neg),
         "adv_positive_frac": float(adv_pos_frac),
         "adv_negative_frac": float(adv_neg_frac),
+        **raw_adv_diag,
         "old_logprob_mean": float(old_logprob.mean().detach().cpu().item()),
         "post_logprob_mean": float(post_logprob.mean().detach().cpu().item()),
         "old_logprob_parity_abs_mean": float(parity_abs_mean),
@@ -2300,6 +2387,7 @@ def main() -> None:
                 stage_id=stage_id,
                 stage_batch=stage_batch,
                 stage_advantages=stage_adv_norm,
+                stage_raw_advantages=stage_adv,
                 optimizer=actor_optimizer,
                 epochs=int(actor_epochs),
                 minibatches=int(actor_minibatches),

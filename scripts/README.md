@@ -65,6 +65,17 @@ summarize_policy_kpi.py
 
 Use these when examining completed runs rather than launching training. `analyze_thesis_fairness.py` is the thesis fairness/metric helper and imports the thesis evaluation utilities from `scripts/evaluation/`.
 
+### `analysis/phase2/`
+
+Phase 2 degradation-analysis summarizers:
+
+```text
+summarize_h2_probe.py
+summarize_matched_step.py
+```
+
+Use these to summarize the BW branch-alignment / H2 probe and matched-step calibration run folders produced by `scripts/experiments/phase2/`.
+
 ### `analysis/export/`
 
 Export and presentation helpers:
@@ -229,6 +240,18 @@ evaluate_structured_access_control_oracle.py
 
 Use this for access-bid/access-control experiments outside the current formal joint MC-GAE training path.
 
+### `experiments/phase2/`
+
+Phase 2 late-degradation experiment drivers:
+
+```text
+run_4090_bw_matrix.sh
+run_4090_h2_probe.sh
+run_4090_matched_step.sh
+```
+
+Use these on 4090-class CUDA machines to reproduce the BW continuation matrix, H2 branch-alignment probe, and matched-step calibration experiments. These are experiment drivers, not current mainline training entrypoints; they expect existing Phase 2 checkpoints under `runs/phase2/`.
+
 ### `experiments/bw_distill/`
 
 BW distillation and offline data scripts:
@@ -320,6 +343,7 @@ Use this quick routing table:
 | Fairness/KPI analysis | `scripts/analysis/analyze_thesis_fairness.py` or `scripts/analysis/summarize_policy_kpi.py` |
 | Runtime profiling | `scripts/benchmarks/` |
 | Debug critic/advantage/BW/SAT mechanism | `scripts/diagnostics/` |
+| Phase 2 degradation experiments | `scripts/experiments/phase2/` plus `scripts/analysis/phase2/` |
 | Access-control experiments | `scripts/experiments/access_control/` |
 | BW distillation or BW-only experiments | `scripts/experiments/bw_*` |
 | SAT offline/supervised checks | `scripts/experiments/sat/` or `scripts/evaluation/sat/` |
@@ -331,6 +355,7 @@ Use this placement rule:
 
 - Current mainline entrypoint: only keep at top-level if it is part of the primary user workflow.
 - Analysis or plotting: `scripts/analysis/` or `scripts/analysis/plots/`.
+- Phase-specific analysis helpers: `scripts/analysis/<phase-or-topic>/`.
 - Export/report generation: `scripts/analysis/export/`.
 - Benchmark/profiling: `scripts/benchmarks/`.
 - Mechanism audit or diagnosis: `scripts/diagnostics/audit/`, `scripts/diagnostics/diagnose/`, or `scripts/diagnostics/probe/`.
