@@ -514,6 +514,30 @@ def _print_phase2_bw_summary(
             ],
         ),
         (
+            "BW-local selected-sample advantage update",
+            [
+                "local_adv_enabled",
+                "local_adv_mode_code",
+                "local_adv_horizon",
+                "local_adv_sample_count",
+                "local_adv_alpha",
+                "local_adv_normalized",
+                "local_adv_normalization_code",
+                "local_adv_branch_delta_mean",
+                "local_adv_branch_delta_std",
+                "local_adv_branch_delta_abs_mean",
+                "local_adv_branch_delta_positive_frac",
+                "local_adv_target_mean",
+                "local_adv_target_std",
+                "local_adv_target_positive_frac",
+                "local_adv_target_nonzero_frac",
+                "local_adv_target_branch_sign_agree_frac",
+                "local_adv_branch_product",
+                "local_adv_branch_positive_logprob_up_frac",
+                "local_adv_branch_negative_logprob_down_frac",
+            ],
+        ),
+        (
             "Guarded BW candidate / branch-alignment acceptance",
             [
                 "guard_enabled",
@@ -680,6 +704,10 @@ def _print_phase2_bw_summary(
     guard_fallback_reject_code = _mean(metric_cache.get("guard_branch_fallback_reject_code", []))
     guard_fallback_product = _mean(metric_cache.get("guard_branch_fallback_product", []))
     guard_fallback_step = _mean(metric_cache.get("guard_branch_fallback_step_scale", []))
+    local_enabled = _mean(metric_cache.get("local_adv_enabled", []))
+    local_product = _mean(metric_cache.get("local_adv_branch_product", []))
+    local_pos_up = _mean(metric_cache.get("local_adv_branch_positive_logprob_up_frac", []))
+    local_nonzero = _mean(metric_cache.get("local_adv_target_nonzero_frac", []))
 
     print("\nInterpretation flags")
     if raw_available is None or raw_available < 0.5:
@@ -733,6 +761,16 @@ def _print_phase2_bw_summary(
             f"pos_up {norm_pos_up:.3f} vs {raw_pos_up:.3f}, "
             f"mean_dlogp {norm_pos_dlogp:.3g} vs {raw_pos_dlogp:.3g}."
         )
+    if local_enabled is not None and local_enabled > 0.5:
+        if local_product is not None and local_product <= 0.0:
+            print(
+                "- BW-local update is enabled but branch_delta*dlogprob is still non-positive; "
+                "check whether branch_delta is too noisy, sample count is too small, or policy step geometry dominates."
+            )
+        if local_pos_up is not None and local_pos_up < 0.5:
+            print("- BW-local update does not raise logprob for most branch-positive samples; H2 is not fixed by local targets alone.")
+        if local_nonzero is not None and local_nonzero < 0.5:
+            print("- BW-local target has many zeroed/near-zero samples; sign_gate or branch_delta scale may be too sparse.")
     native_branch_samples = _mean(probe_cache.get("bw_probe_native_branch_sample_count", []))
     native_raw_branch_agree = _mean(probe_cache.get("bw_probe_native_sign_agree_raw_advantage_branch_delta", []))
     native_raw_pos_branch_pos = _mean(probe_cache.get("bw_probe_native_raw_pos_branch_delta_positive_frac", []))

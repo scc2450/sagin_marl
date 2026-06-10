@@ -31,9 +31,15 @@ METRIC_FIELDS = {
     "guard_skipped": ("bw_actor_guard_skipped",),
     "guard_step_scale": ("bw_actor_guard_step_scale",),
     "branch_product": (
+        "bw_actor_local_adv_branch_product",
         "bw_actor_guard_branch_mean_delta_times_delta_logprob_mean",
         "bw_actor_raw_branch_delta_times_delta_logprob_mean",
     ),
+    "local_adv_enabled": ("bw_actor_local_adv_enabled",),
+    "local_adv_product": ("bw_actor_local_adv_branch_product",),
+    "local_adv_pos_up": ("bw_actor_local_adv_branch_positive_logprob_up_frac",),
+    "local_adv_nonzero": ("bw_actor_local_adv_target_nonzero_frac",),
+    "local_adv_sample_count": ("bw_actor_local_adv_sample_count",),
     "probe_h2_product": ("bw_probe_native_h2_mean_branch_delta_times_delta_logprob",),
     "probe_h5_product": ("bw_probe_native_h5_mean_branch_delta_times_delta_logprob",),
     "probe_h10_product": ("bw_probe_native_h10_mean_branch_delta_times_delta_logprob",),
@@ -239,6 +245,11 @@ def write_csv(rows: list[dict[str, object]], path: Path) -> None:
         "guard_skipped",
         "guard_step_scale",
         "branch_product",
+        "local_adv_enabled",
+        "local_adv_product",
+        "local_adv_pos_up",
+        "local_adv_nonzero",
+        "local_adv_sample_count",
         "probe_h2_product",
         "probe_h5_product",
         "probe_h10_product",
@@ -267,8 +278,8 @@ def print_markdown(rows: list[dict[str, object]]) -> None:
             str(row.get("method", "")),
         ),
     )
-    print("| scenario | method | reward | vs freeze | bw_kl | clip | abs_dlogp | pos_up | neg_down | branch_prod | eval_reward |")
-    print("| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |")
+    print("| scenario | method | reward | vs freeze | bw_kl | clip | abs_dlogp | pos_up | neg_down | branch_prod | local_pos_up | eval_reward |")
+    print("| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |")
     for row in rows_sorted:
         reward_value = row.get("eval_reward") if row.get("eval_reward") not in (None, "") else row.get("reward")
         vs_freeze = (
@@ -277,7 +288,7 @@ def print_markdown(rows: list[dict[str, object]]) -> None:
             else row.get("reward_vs_freeze")
         )
         print(
-            "| {scenario} | {method} | {reward} | {vs_freeze} | {bw_kl} | {bw_clip} | {bw_abs} | {pos_up} | {neg_down} | {branch} | {eval_reward} |".format(
+            "| {scenario} | {method} | {reward} | {vs_freeze} | {bw_kl} | {bw_clip} | {bw_abs} | {pos_up} | {neg_down} | {branch} | {local_pos_up} | {eval_reward} |".format(
                 scenario=row.get("scenario", ""),
                 method=row.get("method", ""),
                 reward=_fmt(reward_value),
@@ -288,6 +299,7 @@ def print_markdown(rows: list[dict[str, object]]) -> None:
                 pos_up=_fmt(row.get("pos_up"), digits=4),
                 neg_down=_fmt(row.get("neg_down"), digits=4),
                 branch=_fmt(row.get("branch_product"), digits=5),
+                local_pos_up=_fmt(row.get("local_adv_pos_up"), digits=4),
                 eval_reward=_fmt(row.get("eval_reward"), digits=4),
             )
         )

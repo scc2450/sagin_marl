@@ -68,6 +68,12 @@ BW_ALIGNMENT_JUDGEMENT_CODE = {
     "both_suspect": 3.0,
 }
 
+BW_LOCAL_ADVANTAGE_MODE_CODE = {
+    "branch": 1.0,
+    "mix": 2.0,
+    "sign_gate": 3.0,
+}
+
 
 def _append_phase_trace(run_dir: Path, *, update: int, phase: str, event: str, **payload: Any) -> None:
     """Write a low-overhead heartbeat so interrupted runs reveal the hot phase."""
@@ -606,6 +612,186 @@ def _finalize_native_bw_branch_probe(
         "examples": examples,
     }
     return metrics, payload
+
+
+def _index_optional_sample_tensor(value: Any, positions: list[int]) -> torch.Tensor | None:
+    if value is None or not torch.is_tensor(value):
+        return None
+    if value.ndim <= 0:
+        return None
+    if int(value.shape[0]) <= max(positions, default=-1):
+        return None
+    pos_t = torch.as_tensor(positions, dtype=torch.long, device=value.device)
+    return value.index_select(0, pos_t).detach().clone()
+
+
+def _index_optional_sample_array(value: Any, positions: list[int], *, default: int = -1) -> np.ndarray:
+    if value is None:
+        return np.full((len(positions),), int(default), dtype=np.int64)
+    arr = np.asarray(value, dtype=np.int64).reshape(-1)
+    if int(arr.size) <= max(positions, default=-1):
+        return np.full((len(positions),), int(default), dtype=np.int64)
+    return arr[np.asarray(positions, dtype=np.int64)].astype(np.int64, copy=True)
+
+
+def _bw_local_selected_stage_batch(source_stage_batch: Any, probe: dict[str, Any]) -> _ActorOnlyStageBatch:
+    positions = [int(pos) for pos in probe.get("selected_positions", [])]
+    if not positions:
+        raise RuntimeError("BW-local advantage update requires non-empty selected_positions.")
+    transition_indices = np.asarray(probe.get("transition_indices", []), dtype=np.int64).reshape(-1)
+    if int(transition_indices.size) != len(positions):
+        transition_indices = _index_optional_sample_array(
+            getattr(source_stage_batch, "transition_indices", None),
+            positions,
+            default=-1,
+        )
+    return _ActorOnlyStageBatch(
+        local_batch=probe["local_batch"],
+        actions=probe["actions"].detach().clone(),
+        old_logprobs=probe["old_logprobs"].detach().clone(),
+        transition_indices=transition_indices,
+        env_indices=_index_optional_sample_array(getattr(source_stage_batch, "env_indices", None), positions),
+        bw_ref_actions=_index_optional_sample_tensor(getattr(source_stage_batch, "bw_ref_actions", None), positions),
+        old_logprobs_per_agent=_index_optional_sample_tensor(
+            getattr(source_stage_batch, "old_logprobs_per_agent", None),
+            positions,
+        ),
+        bw_tau=_index_optional_sample_tensor(getattr(source_stage_batch, "bw_tau", None), positions),
+        bw_kappa=_index_optional_sample_tensor(getattr(source_stage_batch, "bw_kappa", None), positions),
+        bw_valid_count=_index_optional_sample_tensor(getattr(source_stage_batch, "bw_valid_count", None), positions),
+        bw_latent_count=_index_optional_sample_tensor(getattr(source_stage_batch, "bw_latent_count", None), positions),
+        bw_logprob_raw_per_agent=_index_optional_sample_tensor(
+            getattr(source_stage_batch, "bw_logprob_raw_per_agent", None),
+            positions,
+        ),
+    )
+
+
+def _bw_local_advantage_tensors(
+    probe: dict[str, Any],
+    *,
+    mode: str,
+    alpha: float,
+    normalization: str,
+    device: torch.device,
+) -> tuple[torch.Tensor, torch.Tensor, dict[str, float]]:
+    mode_s = str(mode).strip().lower()
+    if mode_s not in BW_LOCAL_ADVANTAGE_MODE_CODE:
+        raise ValueError(f"Unsupported BW-local advantage mode: {mode!r}")
+    alpha_f = float(alpha)
+    normalization_s = str(normalization).strip().lower()
+    if normalization_s not in {"standardize", "scale", "none"}:
+        raise ValueError(f"Unsupported BW-local advantage normalization: {normalization!r}")
+    branch_raw = probe["branch_delta"].detach().to(device=device, dtype=torch.float32).reshape(-1)
+    global_adv = probe["advantages"].detach().to(device=device, dtype=torch.float32).reshape(-1)
+    if int(branch_raw.numel()) != int(global_adv.numel()):
+        raise RuntimeError(
+            "BW-local branch_delta/global advantage shape mismatch: "
+            f"branch={int(branch_raw.numel())}, global={int(global_adv.numel())}."
+        )
+    if normalization_s == "standardize":
+        branch_adv = _normalize_stage_advantage(branch_raw, enabled=True)
+    elif normalization_s == "scale":
+        # Sign-preserving scaling avoids the constant-nonzero branch_delta
+        # blow-up that a std-only scale would create.
+        branch_adv = branch_raw / branch_raw.abs().mean().clamp_min(1.0e-6)
+    else:
+        branch_adv = branch_raw
+    if mode_s == "branch":
+        target_adv = branch_adv
+    elif mode_s == "mix":
+        target_adv = (1.0 - alpha_f) * global_adv + alpha_f * branch_adv
+    else:
+        agree = (global_adv * branch_raw) > 0.0
+        target_adv = torch.where(agree, global_adv, torch.zeros_like(global_adv))
+    branch_pos = branch_raw > 0.0
+    branch_neg = branch_raw < 0.0
+    target_pos = target_adv > 0.0
+    target_neg = target_adv < 0.0
+    nonzero = (branch_raw.abs() > 1.0e-8) & (target_adv.abs() > 1.0e-8)
+    sign_agree = ((branch_pos & target_pos) | (branch_neg & target_neg)) & nonzero
+    denom = float(max(int(nonzero.sum().detach().cpu().item()), 1))
+    total = float(max(int(branch_raw.numel()), 1))
+    metrics = {
+        "local_adv_enabled": 1.0,
+        "local_adv_mode_code": float(BW_LOCAL_ADVANTAGE_MODE_CODE[mode_s]),
+        "local_adv_alpha": float(alpha_f),
+        "local_adv_normalized": 0.0 if normalization_s == "none" else 1.0,
+        "local_adv_normalization_code": float({"none": 0, "scale": 1, "standardize": 2}[normalization_s]),
+        "local_adv_sample_count": float(int(branch_raw.numel())),
+        "local_adv_branch_delta_mean": float(branch_raw.mean().detach().cpu().item()) if int(branch_raw.numel()) else 0.0,
+        "local_adv_branch_delta_std": (
+            float(branch_raw.std(unbiased=False).detach().cpu().item()) if int(branch_raw.numel()) > 1 else 0.0
+        ),
+        "local_adv_branch_delta_abs_mean": (
+            float(branch_raw.abs().mean().detach().cpu().item()) if int(branch_raw.numel()) else 0.0
+        ),
+        "local_adv_branch_delta_positive_frac": (
+            float(branch_pos.to(dtype=torch.float32).mean().detach().cpu().item()) if int(branch_raw.numel()) else 0.0
+        ),
+        "local_adv_target_mean": float(target_adv.mean().detach().cpu().item()) if int(target_adv.numel()) else 0.0,
+        "local_adv_target_std": (
+            float(target_adv.std(unbiased=False).detach().cpu().item()) if int(target_adv.numel()) > 1 else 0.0
+        ),
+        "local_adv_target_positive_frac": (
+            float(target_pos.to(dtype=torch.float32).mean().detach().cpu().item()) if int(target_adv.numel()) else 0.0
+        ),
+        "local_adv_target_nonzero_frac": float(nonzero.to(dtype=torch.float32).sum().detach().cpu().item() / total),
+        "local_adv_target_branch_sign_agree_frac": float(
+            sign_agree.to(dtype=torch.float32).sum().detach().cpu().item() / denom
+        ),
+    }
+    return target_adv.detach(), branch_raw.detach(), metrics
+
+
+def _bw_local_advantage_actor_update(
+    learner: StructuredMAPPO,
+    *,
+    source_stage_batch: Any,
+    branch_probe: dict[str, Any],
+    mode: str,
+    alpha: float,
+    normalization: str,
+    optimizer: torch.optim.Optimizer,
+    epochs: int,
+    minibatches: int,
+    parity_dump_dir: Path | None,
+    parity_dump_tag: str | None,
+    parity_topk: int,
+    kl_stop_threshold: float | None,
+) -> dict[str, float]:
+    selected_batch = _bw_local_selected_stage_batch(source_stage_batch, branch_probe)
+    target_adv, branch_raw, local_metrics = _bw_local_advantage_tensors(
+        branch_probe,
+        mode=mode,
+        alpha=float(alpha),
+        normalization=str(normalization),
+        device=learner.device,
+    )
+    stats = _stage_actor_update_full_stage(
+        learner,
+        stage_id=2,
+        stage_batch=selected_batch,
+        stage_advantages=target_adv,
+        stage_raw_advantages=branch_raw,
+        optimizer=optimizer,
+        epochs=int(epochs),
+        minibatches=int(minibatches),
+        parity_dump_dir=parity_dump_dir,
+        parity_dump_tag=parity_dump_tag,
+        parity_topk=int(parity_topk),
+        kl_stop_threshold=kl_stop_threshold,
+    )
+    stats.update(local_metrics)
+    stats["local_adv_horizon"] = float(branch_probe.get("horizon", 0))
+    stats["local_adv_branch_product"] = float(stats.get("raw_credit_mean", 0.0))
+    stats["local_adv_branch_positive_logprob_up_frac"] = float(
+        stats.get("raw_adv_positive_delta_positive_frac", 0.0)
+    )
+    stats["local_adv_branch_negative_logprob_down_frac"] = float(
+        stats.get("raw_adv_negative_delta_negative_frac", 0.0)
+    )
+    return stats
 
 
 def _set_seed(seed: int) -> None:
@@ -2311,6 +2497,57 @@ def main() -> None:
         ),
     )
     parser.add_argument(
+        "--bw_local_advantage_update",
+        action="store_true",
+        help=(
+            "Update the BW actor on native branch-replay selected samples only, using local branch_delta-derived "
+            "advantages instead of the full global-value BW advantage. This is a Phase 2 H2 mechanism probe."
+        ),
+    )
+    parser.add_argument(
+        "--bw_local_advantage_mode",
+        choices=["branch", "mix", "sign_gate"],
+        default="branch",
+        help=(
+            "Advantage target used by --bw_local_advantage_update: 'branch' uses scaled branch_delta, "
+            "'mix' blends global A_norm with branch advantage, and 'sign_gate' keeps global A_norm only when "
+            "its sign agrees with raw branch_delta."
+        ),
+    )
+    parser.add_argument(
+        "--bw_local_advantage_alpha",
+        type=float,
+        default=1.0,
+        help="Branch-advantage blend weight for --bw_local_advantage_mode mix; must be in [0, 1].",
+    )
+    parser.add_argument(
+        "--bw_local_advantage_horizon",
+        type=int,
+        default=20,
+        help="Native branch replay horizon used to build local branch_delta targets for BW-local actor updates.",
+    )
+    parser.add_argument(
+        "--bw_local_advantage_sample_limit",
+        type=int,
+        default=128,
+        help="Maximum selected BW samples per update for --bw_local_advantage_update.",
+    )
+    parser.add_argument(
+        "--bw_local_advantage_normalization",
+        choices=["standardize", "scale", "none"],
+        default="scale",
+        help=(
+            "How branch_delta is scaled before the BW-local actor update. 'scale' preserves branch_delta sign "
+            "while dividing by mean absolute branch_delta; 'standardize' is ordinary advantage normalization; "
+            "'none' uses raw values."
+        ),
+    )
+    parser.add_argument(
+        "--bw_local_advantage_disable_normalize",
+        action="store_true",
+        help="Backward-compatible alias for --bw_local_advantage_normalization none.",
+    )
+    parser.add_argument(
         "--diagnose_critic_timing",
         action="store_true",
         help="Record per-stage critic timing rows without changing the update math.",
@@ -2384,6 +2621,19 @@ def main() -> None:
         raise ValueError("--guarded_bw_branch_accept_mode best_score requires --guarded_bw_branch_alignment.")
     if math.isnan(float(args.guarded_bw_branch_fallback_min_product)):
         raise ValueError("--guarded_bw_branch_fallback_min_product must not be NaN.")
+    if bool(args.bw_local_advantage_update) and bool(args.guarded_bw_update):
+        raise ValueError("--bw_local_advantage_update is not supported together with --guarded_bw_update.")
+    if not math.isfinite(float(args.bw_local_advantage_alpha)):
+        raise ValueError("--bw_local_advantage_alpha must be finite.")
+    if not (0.0 <= float(args.bw_local_advantage_alpha) <= 1.0):
+        raise ValueError("--bw_local_advantage_alpha must be in [0, 1].")
+    if int(args.bw_local_advantage_horizon) <= 0:
+        raise ValueError("--bw_local_advantage_horizon must be > 0.")
+    if int(args.bw_local_advantage_sample_limit) <= 0:
+        raise ValueError("--bw_local_advantage_sample_limit must be > 0.")
+    bw_local_advantage_normalization = str(args.bw_local_advantage_normalization)
+    if bool(args.bw_local_advantage_disable_normalize):
+        bw_local_advantage_normalization = "none"
     if int(args.bw_advantage_alignment_sample_limit) <= 0:
         raise ValueError("--bw_advantage_alignment_sample_limit must be > 0.")
     if int(args.bw_advantage_alignment_k_steps) <= 0:
@@ -2445,7 +2695,7 @@ def main() -> None:
         if int(args.sat_decision_interval) < 1:
             raise ValueError("--sat_decision_interval must be >= 1.")
         cfg.sat_decision_interval = int(args.sat_decision_interval)
-    if (
+    if bool(args.bw_local_advantage_update) or (
         (bool(args.bw_advantage_alignment_probe) or bool(args.guarded_bw_branch_alignment))
         and int(args.bw_advantage_alignment_branch_samples) > 0
     ):
@@ -2934,6 +3184,63 @@ def main() -> None:
                         stage_advantages=stage_adv_norm,
                         hparams=hparams,
                         actor_optimizers=actor_optimizers,
+                    )
+                elif int(stage_id) == 2 and bool(args.bw_local_advantage_update):
+                    _append_phase_trace(run_dir, update=update + 1, phase="bw_local_advantage_probe", event="start")
+                    bw_local_advantage_probe = _native_bw_branch_probe_before_update(
+                        learner,
+                        stage_batch=stage_batch,
+                        advantages=stage_adv_norm,
+                        raw_advantages=stage_adv_raw,
+                        sample_limit=int(args.bw_local_advantage_sample_limit),
+                        sample_seed=(
+                            int(args.seed)
+                            + 11_000_000
+                            + int(update) * 10_000
+                            + int(args.bw_local_advantage_horizon) * 101
+                        ),
+                        horizon=int(args.bw_local_advantage_horizon),
+                        device=device,
+                    )
+                    if bw_local_advantage_probe is None:
+                        raise RuntimeError(
+                            "--bw_local_advantage_update requires native branch replay samples; "
+                            "ensure native backend/history snapshots and enough rollout steps for the requested horizon."
+                        )
+                    _append_phase_trace(
+                        run_dir,
+                        update=update + 1,
+                        phase="bw_local_advantage_probe",
+                        event="end",
+                        horizon=float(bw_local_advantage_probe.get("horizon", 0)),
+                        samples=float(len(bw_local_advantage_probe.get("selected_positions", []))),
+                    )
+                    stats = _bw_local_advantage_actor_update(
+                        learner,
+                        source_stage_batch=stage_batch,
+                        branch_probe=bw_local_advantage_probe,
+                        mode=str(args.bw_local_advantage_mode),
+                        alpha=float(args.bw_local_advantage_alpha),
+                        normalization=bw_local_advantage_normalization,
+                        optimizer=actor_optimizers[int(stage_id)],
+                        epochs=int(hparams["actor_epochs"]),
+                        minibatches=int(hparams["actor_minibatches"]),
+                        parity_dump_dir=run_dir / "diagnostics" / "bw_parity",
+                        parity_dump_tag=f"u{update + 1:04d}_{stage_name}_bwlocal",
+                        parity_topk=int(args.bw_parity_topk),
+                        kl_stop_threshold=(
+                            float(hparams[f"actor_kl_stop_threshold_{stage_name}"])
+                            if bool(int(hparams.get("stage_actor_kl_early_stop_enabled", 0)))
+                            else None
+                        ),
+                    )
+                    stats.update(
+                        _maybe_adjust_stage_actor_lr(
+                            actor_optimizers[int(stage_id)],
+                            stage_id=int(stage_id),
+                            stage_metrics=stats,
+                            hparams=hparams,
+                        )
                     )
                 elif int(stage_id) == 2 and bool(args.guarded_bw_update):
                     stats = _guarded_bw_actor_update(

@@ -29,6 +29,8 @@ ACTOR_MINIBATCHES="${ACTOR_MINIBATCHES:-100}"
 BW_SAMPLE_LIMIT="${BW_SAMPLE_LIMIT:-64}"
 BW_K_STEPS="${BW_K_STEPS:-5}"
 BW_BRANCH_HORIZONS="${BW_BRANCH_HORIZONS:-2,5,10}"
+BW_LOCAL_HORIZON="${BW_LOCAL_HORIZON:-20}"
+BW_LOCAL_SAMPLE_LIMIT="${BW_LOCAL_SAMPLE_LIMIT:-${BW_SAMPLE_LIMIT}}"
 BACKTRACK_FACTORS="${BACKTRACK_FACTORS:-1,0.7,0.5,0.3,0.1,0.03,0.01,0.003}"
 GUARD_MAX_CLIP="${GUARD_MAX_CLIP:-0.25}"
 BRANCH_FALLBACK_MIN_PRODUCT="${BRANCH_FALLBACK_MIN_PRODUCT:--1e-4}"
@@ -112,6 +114,9 @@ if [[ "${METHOD_PRESET}" == "auto" ]]; then
       branchscore_bw1e5_kl0015
       branchscore_bw1e5_kl00075
       branchhard_bw1e5_kl0015
+      bwlocal_branch_h20
+      bwlocal_mix05_h20
+      bwlocal_signgate_h20
       freeze_bw
     )
   elif [[ "${MATCHED_PHASE}" == "continuation" ]]; then
@@ -120,6 +125,8 @@ if [[ "${METHOD_PRESET}" == "auto" ]]; then
       klguard_bw1e5_kl0015
       branchbest_bw1e5_kl0015
       branchscore_bw1e5_kl0015
+      bwlocal_branch_h20
+      bwlocal_mix05_h20
       freeze_bw
     )
   else
@@ -240,6 +247,37 @@ function method_args() {
       while IFS= read -r line; do out_ref+=("${line}"); done < <(guarded_common_args 1e-5 0.0075)
       while IFS= read -r line; do out_ref+=("${line}"); done < <(branch_common_args)
       out_ref+=(--guarded_bw_branch_accept_mode best_score)
+      ;;
+    bwlocal_branch_h20)
+      out_ref+=(
+        --bw_actor_lr 1e-5
+        --bw_local_advantage_update
+        --bw_local_advantage_mode branch
+        --bw_local_advantage_horizon "${BW_LOCAL_HORIZON}"
+        --bw_local_advantage_sample_limit "${BW_LOCAL_SAMPLE_LIMIT}"
+        --bw_local_advantage_normalization scale
+      )
+      ;;
+    bwlocal_mix05_h20)
+      out_ref+=(
+        --bw_actor_lr 1e-5
+        --bw_local_advantage_update
+        --bw_local_advantage_mode mix
+        --bw_local_advantage_alpha 0.5
+        --bw_local_advantage_horizon "${BW_LOCAL_HORIZON}"
+        --bw_local_advantage_sample_limit "${BW_LOCAL_SAMPLE_LIMIT}"
+        --bw_local_advantage_normalization scale
+      )
+      ;;
+    bwlocal_signgate_h20)
+      out_ref+=(
+        --bw_actor_lr 1e-5
+        --bw_local_advantage_update
+        --bw_local_advantage_mode sign_gate
+        --bw_local_advantage_horizon "${BW_LOCAL_HORIZON}"
+        --bw_local_advantage_sample_limit "${BW_LOCAL_SAMPLE_LIMIT}"
+        --bw_local_advantage_normalization scale
+      )
       ;;
     freeze_bw) out_ref+=(--bw_actor_lr 0) ;;
     *)
