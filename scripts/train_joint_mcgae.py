@@ -204,6 +204,55 @@ def _parse_positive_int_csv(text: str) -> list[int]:
     return values
 
 
+def _parse_stage_selector(text: str, *, option_name: str) -> set[int]:
+    aliases = {
+        "0": 0,
+        "accel": 0,
+        "acceleration": 0,
+        "1": 1,
+        "sat": 1,
+        "satellite": 1,
+        "2": 2,
+        "bw": 2,
+        "bandwidth": 2,
+    }
+    out: set[int] = set()
+    for token in str(text or "").split(","):
+        item = token.strip().lower()
+        if not item:
+            continue
+        if item == "all":
+            return set(STAGES)
+        if item == "none":
+            continue
+        if item not in aliases:
+            raise ValueError(f"{option_name} contains unsupported stage {token!r}.")
+        out.add(int(aliases[item]))
+    if not out:
+        raise ValueError(f"{option_name} must select at least one stage.")
+    return out
+
+
+def _critic_params_for_scope(critic: torch.nn.Module, scope: str) -> list[torch.nn.Parameter]:
+    scope_l = str(scope or "all").strip().lower()
+    if scope_l == "all":
+        for param in critic.parameters():
+            param.requires_grad_(True)
+        return [param for param in critic.parameters() if param.requires_grad]
+    if scope_l == "bw_head":
+        for name, param in critic.named_parameters():
+            param.requires_grad_(name.startswith("value_bw_head."))
+        params = [
+            param
+            for name, param in critic.named_parameters()
+            if name.startswith("value_bw_head.") and param.requires_grad
+        ]
+        if not params:
+            raise RuntimeError("--critic_param_scope bw_head found no value_bw_head parameters.")
+        return params
+    raise ValueError("--critic_param_scope must be one of {'all', 'bw_head'}.")
+
+
 def _dataclass_batch_leading_dim(batch: Any) -> int | None:
     if not is_dataclass(batch):
         return None
@@ -2350,6 +2399,23 @@ def main() -> None:
     parser.add_argument("--tracking_critic_epochs", type=int, default=None)
     parser.add_argument("--critic_minibatches", type=int, default=None)
     parser.add_argument("--critic_update_microbatch_size", type=int, default=None)
+    parser.add_argument(
+        "--critic_train_stages",
+        default="accel,sat,bw",
+        help=(
+            "Comma-separated critic stages to train: accel,sat,bw. "
+            "Use 'bw' for strict BW-only critic diagnostics; omitted stages are evaluated but not optimized."
+        ),
+    )
+    parser.add_argument(
+        "--critic_param_scope",
+        choices=("all", "bw_head"),
+        default="all",
+        help=(
+            "Critic optimizer parameter scope. 'bw_head' updates only value_bw_head parameters and "
+            "skips loading incompatible full-critic optimizer state on resume."
+        ),
+    )
     parser.add_argument("--actor_lr", type=float, default=None)
     parser.add_argument("--accel_actor_lr", type=float, default=None)
     parser.add_argument("--sat_actor_lr", type=float, default=None)
@@ -2717,6 +2783,11 @@ def main() -> None:
         raise ValueError("--return_nstep_horizon must be > 0.")
     if float(args.mc_aux_critic_coef) < 0.0:
         raise ValueError("--mc_aux_critic_coef must be >= 0.")
+    critic_train_stages = _parse_stage_selector(
+        str(args.critic_train_stages),
+        option_name="--critic_train_stages",
+    )
+    critic_param_scope = str(args.critic_param_scope).strip().lower()
     target_metric_by_stage = {
         int(stage_id): f"{STAGE_NAME[int(stage_id)]}_target_return_mean"
         for stage_id in STAGES
@@ -2731,7 +2802,7 @@ def main() -> None:
         )
 
     learner = _make_joint_learner(cfg, device=device)
-    critic_params = [param for param in learner.critic.parameters() if param.requires_grad]
+    critic_params = _critic_params_for_scope(learner.critic, critic_param_scope)
     if not critic_params:
         raise RuntimeError("joint MC-GAE training requires trainable critic parameters.")
     critic_optimizer = torch.optim.Adam(critic_params, lr=float(hparams["cold_critic_lr"]))
@@ -2761,7 +2832,13 @@ def main() -> None:
         learner.actor.load_state_dict(resume_state["actor"])
         learner.critic.load_state_dict(resume_state["critic"])
         if "critic_optimizer" in resume_state:
-            critic_optimizer.load_state_dict(resume_state["critic_optimizer"])
+            if critic_param_scope == "all":
+                critic_optimizer.load_state_dict(resume_state["critic_optimizer"])
+            else:
+                print(
+                    f"Skipping resumed critic optimizer state because critic_param_scope={critic_param_scope!r}.",
+                    flush=True,
+                )
         if "actor_optimizers" in resume_state:
             opt_state = resume_state["actor_optimizers"]
             for stage_id, optimizer in actor_optimizers.items():
@@ -2826,6 +2903,8 @@ def main() -> None:
             "JOINT MC-GAE train | "
             f"envs={int(args.num_envs)} rollout={int(args.rollout_env_steps)} updates={int(args.updates)} "
             f"reward={cfg.reward_mode} critic={int(hparams['cold_critic_epochs'])}/{int(hparams['tracking_critic_epochs'])} "
+            f"critic_train_stages={','.join(STAGE_NAME[int(stage_id)] for stage_id in sorted(critic_train_stages))} "
+            f"critic_param_scope={critic_param_scope} "
             f"actor_epochs={int(hparams['actor_epochs'])} actor_minibatches={int(hparams['actor_minibatches'])} "
             f"actor_lr=({float(hparams['actor_lr_accel']):.2g},{float(hparams['actor_lr_sat']):.2g},{float(hparams['actor_lr_bw']):.2g}) "
             f"actor_opt=({actor_optimizer_names[0]},{actor_optimizer_names[1]},{actor_optimizer_names[2]}) "
@@ -2904,12 +2983,15 @@ def main() -> None:
             for stage_id in STAGES:
                 stage_batch = views.training_view.stage_batches[int(stage_id)]
                 stage_name = STAGE_NAME[int(stage_id)]
+                train_critic_stage = int(stage_id) in critic_train_stages
+                stage_critic_epochs = int(critic_epochs if train_critic_stage else 0)
                 _append_phase_trace(
                     run_dir,
                     update=update + 1,
                     phase=f"critic_{stage_name}",
                     event="start",
                     samples=int(stage_batch.num_samples),
+                    train_enabled=bool(train_critic_stage),
                 )
                 stats, after_values, trace_rows = _train_stage_critic_on_stage(
                     learner,
@@ -2920,7 +3002,7 @@ def main() -> None:
                     aux_coef=float(args.mc_aux_critic_coef) if active_return_target == "bootstrap_mc_aux" else 0.0,
                     optimizer=critic_optimizer,
                     lr=critic_lr,
-                    epochs=critic_epochs,
+                    epochs=stage_critic_epochs,
                     minibatches=int(hparams["critic_minibatches"]),
                     update_microbatch_size=int(hparams["critic_update_microbatch_size"]),
                     diagnose_timing=bool(args.diagnose_critic_timing),
@@ -2940,7 +3022,7 @@ def main() -> None:
                 }
                 retry_count = 0
                 extra_epochs_total = 0
-                gate_enabled = bool(int(hparams.get("critic_ev_gate_enabled", 0)))
+                gate_enabled = bool(train_critic_stage) and bool(int(hparams.get("critic_ev_gate_enabled", 0)))
                 soft_target = float(hparams.get("critic_ev_soft_target", 0.0))
                 hard_floor = float(hparams.get("critic_ev_hard_floor", float("-inf")))
                 extra_epochs = max(int(hparams.get("critic_ev_extra_epochs", 0) or 0), 0)
@@ -3013,7 +3095,8 @@ def main() -> None:
                 stats["critic_ev_final_after"] = float(final_ev_after)
                 stats["critic_ev_retry_count"] = float(retry_count)
                 stats["critic_ev_extra_epochs_total"] = float(extra_epochs_total)
-                stats["critic_epochs"] = float(int(critic_epochs) + int(extra_epochs_total))
+                stats["critic_train_stage_enabled"] = float(1.0 if train_critic_stage else 0.0)
+                stats["critic_epochs"] = float(int(stage_critic_epochs) + int(extra_epochs_total))
                 for key, value in cumulative_stats.items():
                     stats[key] = float(value)
                 stats["critic_low_confidence_actor_update"] = float(
@@ -3417,6 +3500,10 @@ def main() -> None:
                 "critic_ev_hard_floor": float(hparams["critic_ev_hard_floor"]),
                 "critic_ev_extra_epochs": float(hparams["critic_ev_extra_epochs"]),
                 "critic_ev_max_retries": float(hparams["critic_ev_max_retries"]),
+                "critic_train_accel_enabled": float(1.0 if 0 in critic_train_stages else 0.0),
+                "critic_train_sat_enabled": float(1.0 if 1 in critic_train_stages else 0.0),
+                "critic_train_bw_enabled": float(1.0 if 2 in critic_train_stages else 0.0),
+                "critic_param_scope_code": float(0.0 if critic_param_scope == "all" else 1.0),
                 "base_return_target_code": _return_target_code(return_target),
                 "active_return_target_code": _return_target_code(active_return_target),
                 "return_target_schedule_code": 0.0 if return_target_schedule == "fixed" else 1.0,
