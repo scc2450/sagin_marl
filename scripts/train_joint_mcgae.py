@@ -6,6 +6,7 @@ import csv
 import gc
 import json
 import math
+import os
 import random
 import sys
 import time
@@ -3196,7 +3197,11 @@ def main() -> None:
             del views
             del stage_targets
             del stage_advantages
-            gc.collect()
+            if os.environ.get("SAGIN_MARL_SKIP_PRUNE_GC", "").lower() in {"1", "true", "yes", "on"}:
+                adv_metrics["pre_actor_gc_skipped"] = 1.0
+            else:
+                gc.collect()
+                adv_metrics["pre_actor_gc_skipped"] = 0.0
             if device.type == "cuda":
                 torch.cuda.empty_cache()
                 torch.cuda.synchronize(device)
