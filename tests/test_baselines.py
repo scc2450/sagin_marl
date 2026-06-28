@@ -29,6 +29,8 @@ def test_fixed_policy_exec_sources_include_current_dpp_aliases():
     assert _fixed_policy_exec_sources("dpp_equal_bw") == ("lyapunov", "lyapunov", "uniform")
     assert _fixed_policy_exec_sources("dpp_greedy_sat") == ("lyapunov", "queue_aware", "lyapunov")
     assert _fixed_policy_exec_sources("topology_dpp") is None
+    assert _fixed_policy_exec_sources("dpp_resource_hybrid") is None
+    assert _fixed_policy_exec_sources("topology_dpp_resource") is None
 
 
 def _pack_obs_many(obs_many):

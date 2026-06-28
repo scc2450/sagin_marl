@@ -307,6 +307,7 @@ def update_structured_checkpoint_eval_state(
 
 
 def _baseline_actions(baseline: str, obs_list, cfg, env):
+    baseline = str(baseline).strip().lower()
     num_agents = len(env.agents)
     rng = getattr(env, "rng", None)
     if baseline == "zero":
@@ -337,6 +338,12 @@ def _baseline_actions(baseline: str, obs_list, cfg, env):
         return cluster_center_queue_aware_policy(obs_list, cfg, centers, counts)
     if baseline == "topology_dpp":
         return topology_dpp_policy(obs_list, cfg)
+    if baseline in {"dpp_resource_hybrid", "topology_dpp_resource"}:
+        centers = getattr(env, "gu_cluster_centers", None)
+        counts = getattr(env, "gu_cluster_counts", None)
+        accel_actions, _queue_bw, _queue_sat = cluster_center_queue_aware_policy(obs_list, cfg, centers, counts)
+        _dpp_accel, bw_logits, sat_logits = topology_dpp_policy(obs_list, cfg)
+        return accel_actions, bw_logits, sat_logits
     raise ValueError(f"Unsupported structured baseline policy: {baseline}")
 
 
@@ -1770,6 +1777,20 @@ def _run_structured_baseline_step_with_actions(
             update_pressure=True,
             update_service=False,
         )
+    elif baseline_key in {"dpp_resource_hybrid", "topology_dpp_resource"}:
+        centers = getattr(driver.env, "gu_cluster_centers", None)
+        counts = getattr(driver.env, "gu_cluster_counts", None)
+        accel_actions, _queue_bw, _queue_sat = cluster_center_queue_aware_policy(obs_list, cfg, centers, counts)
+        _dpp_accel, bw_logits, sat_logits, baseline_state = topology_dpp_policy_step(
+            obs_list,
+            cfg,
+            state=baseline_state,
+            compute_accel=False,
+            compute_bw=False,
+            compute_sat=False,
+            update_pressure=True,
+            update_service=False,
+        )
     else:
         accel_actions, bw_logits, sat_logits = _baseline_actions(baseline, obs_list, cfg, driver.env)
     if accel_actions is None:
@@ -1874,6 +1895,19 @@ def _run_structured_baseline_step_with_actions(
             update_service=True,
         )
     elif baseline_key == "topology_dpp":
+        _refresh_stage_obs_cache(driver)
+        stage_obs_list = current_obs_many([driver], indices=[0])[0]
+        _stage_accel, policy_bw_logits, policy_sat_logits, baseline_state = topology_dpp_policy_step(
+            stage_obs_list,
+            cfg,
+            state=baseline_state,
+            compute_accel=False,
+            compute_bw=True,
+            compute_sat=True,
+            update_pressure=False,
+            update_service=True,
+        )
+    elif baseline_key in {"dpp_resource_hybrid", "topology_dpp_resource"}:
         _refresh_stage_obs_cache(driver)
         stage_obs_list = current_obs_many([driver], indices=[0])[0]
         _stage_accel, policy_bw_logits, policy_sat_logits, baseline_state = topology_dpp_policy_step(

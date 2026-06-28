@@ -10,6 +10,7 @@
 - `dpp_equal_bw`：轻量消融。Accel/SAT 使用 Lyapunov/MaxWeight，BW 改为 uniform。
 - `dpp_greedy_sat`：轻量消融。Accel/BW 使用 Lyapunov/MaxWeight，SAT 改为 queue-aware heuristic。
 - `topology_dpp`：拓扑感知 one-step DPP baseline。枚举候选 UAV 加速度，预测移动后的接入拓扑，再联合打分 access/backhaul/BW/SAT 决策；当前是 structured Python fallback，不是 native CUDA 快路径。
+- `dpp_resource_hybrid`：资源分配优先 hybrid。Accel 沿用稳定的 cluster-center/queue-aware 移动，BW/SAT 由 topology DPP 在移动后的 stage observation 上决策。
 
 ## 当前 `maxweight_lyapunov` 的算法含义
 
@@ -58,9 +59,10 @@ dpp_no_mobility
 dpp_equal_bw
 dpp_greedy_sat
 topology_dpp
+dpp_resource_hybrid
 ```
 
-`topology_dpp` 可以使用同一个入口，但内部会自动走 structured Python baseline fallback，而不是 `_FIXED_POLICY_EXEC_SOURCE_MAP` 的 native source triple。
+`topology_dpp` 和 `dpp_resource_hybrid` 可以使用同一个入口，但内部会自动走 structured Python baseline fallback，而不是 `_FIXED_POLICY_EXEC_SOURCE_MAP` 的 native source triple。
 
 ## 当前生效的 Lyapunov/MaxWeight 参数
 

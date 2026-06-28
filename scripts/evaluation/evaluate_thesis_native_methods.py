@@ -44,6 +44,7 @@ DPP_ABLATION_BASELINES = [
     ("dpp_equal_bw", "MaxWeight/Lyapunov 等带宽消融"),
     ("dpp_greedy_sat", "MaxWeight/Lyapunov heuristic SAT 消融"),
     ("topology_dpp", "拓扑感知 one-step DPP"),
+    ("dpp_resource_hybrid", "Cluster 移动 + topology DPP 资源分配"),
 ]
 
 

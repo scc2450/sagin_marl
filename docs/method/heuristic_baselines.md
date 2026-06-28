@@ -85,9 +85,10 @@ Supported current rule/MaxWeight baseline IDs include:
 | `dpp_equal_bw` | `lyapunov`, `lyapunov`, `uniform` |
 | `dpp_greedy_sat` | `lyapunov`, `queue_aware`, `lyapunov` |
 | `topology_dpp` | structured Python fallback; no native source triple yet |
+| `dpp_resource_hybrid` | structured Python fallback; cluster-center accel with topology-DPP BW/SAT |
 
 `lyapunov` is still accepted as a compatibility alias for `maxweight_lyapunov`.
-`topology_dpp` is intentionally not added to `_FIXED_POLICY_EXEC_SOURCE_MAP`: it enumerates candidate acceleration actions and predicts topology in Python before choosing BW/SAT decisions, so the current implementation should be treated as a strong non-learning benchmark rather than a native-kernel smoke baseline.
+`topology_dpp` and `dpp_resource_hybrid` are intentionally not added to `_FIXED_POLICY_EXEC_SOURCE_MAP`: they require Python-side topology/resource reasoning before choosing BW/SAT decisions, so the current implementations should be treated as strong non-learning benchmark candidates rather than native-kernel smoke baselines.
 
 ## Integrating A New Native Baseline
 
