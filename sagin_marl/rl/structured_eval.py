@@ -3372,10 +3372,8 @@ def _evaluate_structured_baseline_policy_with_traces(
                 if initial_stage_tape is None:
                     raise RuntimeError("native random tape group must publish an initial main-kernel accel stage fields.")
                 _apply_reference_accel_cache_from_native_stage_batch(driver, initial_stage_tape, cfg)
-            elif seed is None:
-                driver.env.reset()
             else:
-                driver.env.reset(seed=int(seed))
+                reset_many(drivers, [None if seed is None else int(seed)])
             clear_step = getattr(driver, "_clear_step", None)
             if callable(clear_step):
                 clear_step()
