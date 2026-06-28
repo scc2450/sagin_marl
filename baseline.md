@@ -1,72 +1,82 @@
-### Baseline 算法说明
+# Baseline 算法说明
 
-#### lyapunov算法：非学习式基线
+本文档说明当前分支中可运行的非学习式 baseline。历史上的拓扑感知 DPP 原型已经归档到 `docs/archive/legacy/`；当前主线已经保留 native structured evaluator 中的规则/MaxWeight 类 baseline，并补入一个 structured Python 版 `topology_dpp` 作为更强的非学习对照。
 
-**Topology-aware One-Step Drift-Plus-Penalty Controller**
-中文可以写：**拓扑感知的一步式 DPP 控制器**
+## 当前推荐命名
 
-假设有$i$个排队系统，队列积压用$Q_i$表示。变化方程：
+- `cluster_center_queue_aware`：当前工程规则基线。运动头跟踪 GU cluster center，SAT/BW 头使用 queue-aware heuristic。
+- `maxweight_lyapunov`：当前推荐的 Lyapunov/MaxWeight 名称。它是 stage-wise queue-pressure controller，兼容旧别名 `lyapunov`。
+- `dpp_no_mobility`：轻量消融。关闭移动，SAT/BW 仍使用 Lyapunov/MaxWeight source。
+- `dpp_equal_bw`：轻量消融。Accel/SAT 使用 Lyapunov/MaxWeight，BW 改为 uniform。
+- `dpp_greedy_sat`：轻量消融。Accel/BW 使用 Lyapunov/MaxWeight，SAT 改为 queue-aware heuristic。
+- `topology_dpp`：拓扑感知 one-step DPP baseline。枚举候选 UAV 加速度，预测移动后的接入拓扑，再联合打分 access/backhaul/BW/SAT 决策；当前是 structured Python fallback，不是 native CUDA 快路径。
 
-$$Q_i(t+1)=\max\{Q_i(t)+a_i(t)-b_i(t),0\}$$
+## 当前 `maxweight_lyapunov` 的算法含义
 
-描述的是当前队列积压量收到新增数据速率和处理数据速率的影响。
+当前实现不是完整枚举 joint acceleration 后重算拓扑的 one-step DPP optimizer，而是一个可在 native CUDA 路径中高效执行的 MaxWeight/Lyapunov 风格在线控制器。
 
-$D_{\text{sys\_report}}=\frac{Q_{\text{gu,sum}} + Q_{\text{uav,sum}} + Q_{\text{sat,sum}}}
-{\max(\text{sat\_processed\_bits}, \epsilon)}$
+直觉上，它根据当前队列压力和链路质量做三类动作：
 
-定义函数
-$$L(t)=\frac12\left(
-\sum_g Q_g^2(t)+
-\sum_u Q_u^2(t)+
-\sum_s Q_s^2(t)
-\right)$$
+- Accel：向高压力 GU 的加权方向移动，同时考虑邻居责任划分、避碰和能量项。
+- BW：按 GU queue pressure 与 access service gain 分配带宽。
+- SAT：按 UAV queue 与 SAT queue 的差压，以及 relay support 选择卫星子集。
 
-定义lyapunov drift（李雅普诺夫漂移）
-$$\Delta L(t)\doteq L(t+1)-L(t)
-$$
-化简：
-$$\Delta L(t)\leq \underbrace{\frac12\sum^N_{i=1}(a_i(t)-b_i(t))^2}_{\doteq B(t)\leq B}+\sum^N_{i=1}Q_i(t)(a_i(t)-b_i(t))
-$$
-对于前项，假设存在常数B作为上界；后项为主要优化目标
+保留旧名 `lyapunov` 是为了兼容已有脚本和历史结果；新实验和论文表格建议使用 `maxweight_lyapunov`。
 
-对于额外的用于维护队列的成本函数，可以定义：
+## 与完整 DPP 的区别
 
-$$\min(\Delta L(t)+V⋅E[Cost(t)∣Q(t)])$$
+完整的 topology-aware one-step DPP 应该在每步枚举候选 UAV 动作，预测移动后的 GU/UAV/SAT 拓扑，再对 access、backhaul、BW、SAT coupling 做一步式优化。当前分支已经迁入一个可运行的 Python/structured 版本，用作论文 strong non-learning benchmark；它还没有 native CUDA kernel 实现，所以评估速度会慢于 `maxweight_lyapunov`。
 
-为综合漂移+惩罚上界，通过最小化这个上界可以得到队列稳定且成本最小化的综合最优。其中V表示超参数
+因此现阶段比较建议分两层：
 
+- 当前强规则基线：`cluster_center_queue_aware` 与 `maxweight_lyapunov`。
+- 主 non-learning benchmark 候选：`topology_dpp`，用于检验 learning policy 是否超过更强的拓扑感知 DPP 控制器。
 
-当前 step 拿到：
-
-* 所有 ($Q_g, Q_u, Q_s$)
-* 所有 UAV 当前位置
-* GU 到各 UAV 的当前信道条件 / 路损
-* 各 UAV 当前可见 SAT 集合
-* 各 UAV 到可见 SAT 的当前回传率、是否多普勒超限
-* 安全模块参数
-* 每个 UAV 的最大服务 GU 数 ($K_u^{\max}$)
-* 每个 UAV 的最大连接 SAT 数 ($M_u^{\max}$)
-
-对每个候选 GU ($g \in \mathcal C_u$)，计算一个接入优先级：
-
-
-$$\text{Urgency}(t)=P(t)+WQ_v(t)$$
-其中：
-
-压力函数为：
-$$P(t+1)=\beta P(t)+(1-\beta)P_i(t)$$
-虚拟队列函数：
-$$Q_v(t+1)=Q_v(t)+P(t)-S(t)$$
-
-根据紧急度函数对加速度和带宽策略进行分配。
-
-
-评估
+## Native 评估命令
 
 ```bash
-python scripts/evaluate.py --config configs/phase1_actions_curriculum_joint_3heads_fading_interference_lyapunov.yaml --run_dir runs/lyapunov --episodes 20 --baseline lyapunov
+python scripts/evaluate_structured_mixed_heads_native.py \
+  --config configs/current/structured_joint_mcgae_3uav_20gu_t250_positive_relcritic.yaml \
+  --baseline_policy maxweight_lyapunov \
+  --episodes 64 \
+  --num_envs 64 \
+  --episode_seed_base 900000 \
+  --device cuda \
+  --access_bw_decision_interval 5 \
+  --sat_decision_interval 1 \
+  --out_dir runs/diagnostics/<run_name>/native_eval_maxweight_lyapunov \
+  --label maxweight_lyapunov
 ```
-渲染
-```bash
-python scripts/render_episode.py --config configs/phase1_actions_curriculum_joint_3heads_fading_interference_lyapunov.yaml --run_dir runs/lyapunov --baseline lyapunov --episode_seed 82003 --out runs/lyapunov/episode_lyapunov_seed82003.gif --fps 10
+
+轻量消融只需替换 `--baseline_policy`：
+
+```text
+cluster_center_queue_aware
+queue_aware
+maxweight_lyapunov
+dpp_no_mobility
+dpp_equal_bw
+dpp_greedy_sat
+topology_dpp
 ```
+
+`topology_dpp` 可以使用同一个入口，但内部会自动走 structured Python baseline fallback，而不是 `_FIXED_POLICY_EXEC_SOURCE_MAP` 的 native source triple。
+
+## 当前生效的 Lyapunov/MaxWeight 参数
+
+当前 native kernel 明确使用的参数包括：
+
+- `baseline_accel_gain`
+- `baseline_repulse_gain`
+- `baseline_repulse_radius_factor`
+- `baseline_cluster_cruise_speed`
+- `baseline_cluster_slow_radius`
+- `baseline_cluster_stop_radius`
+- `baseline_cluster_speed_tol`
+- `baseline_cluster_vel_gain`
+- `baseline_lyapunov_v`
+- `baseline_lyapunov_urgency_alpha`
+- `baseline_lyapunov_bw_service_scale`
+- `baseline_lyapunov_sat_drift_weight`
+
+配置中仍保留了一些历史参数，例如 `baseline_lyapunov_drift_weight`、`baseline_lyapunov_action_cost`、`baseline_lyapunov_ema_beta`、`baseline_lyapunov_bw_temp`、`baseline_lyapunov_bw_floor`、`baseline_lyapunov_sat_switch_bias`、`baseline_lyapunov_sat_abs_se_weight`、`baseline_lyapunov_sat_doppler_penalty`。这些参数目前会进入 native ABI 参数表，但当前 kernel 主路径没有实际使用它们；写论文或调参表时不要把它们解释为当前机制贡献。

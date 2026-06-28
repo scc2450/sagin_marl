@@ -52,7 +52,46 @@ def greedy_baseline(obs_by_agent, cfg, agents):
     return assemble_actions(cfg, agents, accel, bw_logits=bw_logits, sat_logits=sat_logits)
 ```
 
-## Integrating Into Evaluation
-1. Add a new `--baseline` choice in `scripts/evaluate.py`.
-2. Call your heuristic function to generate actions when the baseline is selected.
-3. Keep the output format unchanged so you can compare CSV results.
+## Current Structured/Native Evaluation
+
+For the current joint MC-GAE mainline, prefer the structured native evaluator:
+
+```bash
+python scripts/evaluate_structured_mixed_heads_native.py \
+  --config configs/current/structured_joint_mcgae_3uav_20gu_t250_positive_relcritic.yaml \
+  --baseline_policy cluster_center_queue_aware \
+  --episodes 64 \
+  --num_envs 64 \
+  --episode_seed_base 900000 \
+  --device cuda \
+  --access_bw_decision_interval 5 \
+  --sat_decision_interval 1 \
+  --out_dir runs/diagnostics/<run_name>/native_eval_rule \
+  --label rule
+```
+
+Supported current rule/MaxWeight baseline IDs include:
+
+| ID | Exec sources |
+|---|---|
+| `static_uniform` | `zero`, `uniform`, `uniform` |
+| `random_feasible` | `random`, `random`, `random` |
+| `link_priority` | `zero`, `link_priority`, `link_priority` |
+| `demand_priority` | `zero`, `demand_priority`, `demand_priority` |
+| `queue_aware` | `queue_aware`, `queue_aware`, `queue_aware` |
+| `cluster_center_queue_aware` | `cluster_center_queue_aware`, `queue_aware`, `queue_aware` |
+| `maxweight_lyapunov` | `lyapunov`, `lyapunov`, `lyapunov` |
+| `dpp_no_mobility` | `zero`, `lyapunov`, `lyapunov` |
+| `dpp_equal_bw` | `lyapunov`, `lyapunov`, `uniform` |
+| `dpp_greedy_sat` | `lyapunov`, `queue_aware`, `lyapunov` |
+| `topology_dpp` | structured Python fallback; no native source triple yet |
+
+`lyapunov` is still accepted as a compatibility alias for `maxweight_lyapunov`.
+`topology_dpp` is intentionally not added to `_FIXED_POLICY_EXEC_SOURCE_MAP`: it enumerates candidate acceleration actions and predicts topology in Python before choosing BW/SAT decisions, so the current implementation should be treated as a strong non-learning benchmark rather than a native-kernel smoke baseline.
+
+## Integrating A New Native Baseline
+
+1. Add or reuse a source mode in `sagin_marl/rl/structured_eval.py`.
+2. If the baseline can be composed from existing native sources, only add an entry to `_FIXED_POLICY_EXEC_SOURCE_MAP`.
+3. If it needs new behavior at runtime, add a Python prototype first, then add/validate the native kernel path.
+4. Keep output fields unchanged so `scripts/evaluation/evaluate_thesis_native_methods.py` can compare CSV/JSON summaries.

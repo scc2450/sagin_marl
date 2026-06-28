@@ -3,6 +3,27 @@
 **主 learning baseline：IPPO**
 **主 non-learning baseline：Topology-aware One-Step DPP（拓扑感知的一步式 Lyapunov / drift-plus-penalty 控制器）**
 
+## 当前实现状态（2026-06）
+
+当前分支已经有可运行的规则/MaxWeight 类 baseline，并迁入了一个 structured Python 版 `topology_dpp`。它复用历史 `lyapunov-dpp` 分支的思想，但按当前 structured observation/action 接口重新接入；目前还不是 native CUDA 快路径。
+
+当前可直接跑的非学习式 baseline 分成三层：
+
+| 方法 ID | 含义 | 当前定位 |
+|---|---|---|
+| `static_uniform` / `random_feasible` | 静止/随机可行动作 | sanity lower bound |
+| `link_priority` / `demand_priority` | 单因子规则 | 辅助 lower bound |
+| `queue_aware` / `cluster_center_queue_aware` | 队列与拓扑启发式 | 当前强 heuristic baseline |
+| `maxweight_lyapunov` | 当前 native 可运行的 stage-wise MaxWeight/Lyapunov 控制器 | 当前强 non-learning baseline |
+| `dpp_no_mobility` | `maxweight_lyapunov` 去掉移动控制 | 轻量消融 |
+| `dpp_equal_bw` | `maxweight_lyapunov` 改用 uniform BW | 轻量消融 |
+| `dpp_greedy_sat` | `maxweight_lyapunov` 改用 queue-aware SAT | 轻量消融 |
+| `topology_dpp` | 枚举候选 UAV 动作、预测拓扑并联合打分 access/backhaul/BW/SAT 的 one-step DPP | 主 non-learning benchmark 候选，structured Python fallback |
+
+兼容说明：旧名 `lyapunov` 仍然可用，但新实验和论文表格建议写成 `maxweight_lyapunov`，避免和完整拓扑枚举 DPP 混淆。
+
+真正要作为论文主 non-learning benchmark 的，是 `topology_dpp`：枚举候选 UAV 动作，预测移动后拓扑，再做 access/backhaul/BW/SAT coupling 的一步式 DPP 优化。当前 `maxweight_lyapunov` 仍然是强规则基线和快速 native 参照。
+
 这两个一起用，论文说服力会比较强，因为它们分别回答两件不同的事：
 
 * **MAPPO vs IPPO**：你这个任务里，集中式 critic / CTDE 到底有没有带来真实收益。

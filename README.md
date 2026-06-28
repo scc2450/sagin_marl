@@ -164,6 +164,18 @@ sat   = queue_aware
 bw    = queue_aware
 ```
 
+当前可直接比较的非学习式 baseline 还包括：
+
+```text
+maxweight_lyapunov  = lyapunov, lyapunov, lyapunov
+dpp_no_mobility     = zero, lyapunov, lyapunov
+dpp_equal_bw        = lyapunov, lyapunov, uniform
+dpp_greedy_sat      = lyapunov, queue_aware, lyapunov
+topology_dpp        = structured Python topology-aware one-step DPP fallback
+```
+
+旧名 `lyapunov` 仍兼容，但新实验建议使用 `maxweight_lyapunov`，避免和完整 topology-aware DPP 混淆。`topology_dpp` 不是 native CUDA source triple，评估入口会自动回退到 structured Python baseline；它更适合作为强 non-learning benchmark，而不是性能 smoke 的快速基线。
+
 评估 stage-best 全组合：
 
 ```powershell

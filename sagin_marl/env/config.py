@@ -446,6 +446,22 @@ class SaginConfig:
     baseline_lyapunov_sat_switch_bias: float = 0.0
     baseline_lyapunov_sat_abs_se_weight: float = 0.0
     baseline_lyapunov_sat_doppler_penalty: float = 0.0
+    topology_dpp_accel_num_candidates: int = 9
+    topology_dpp_accel_step_scale: float = 0.6
+    topology_dpp_gu_max_select: int = 6
+    topology_dpp_access_weight: float = 1.0
+    topology_dpp_backhaul_weight: float = 1.0
+    topology_dpp_mobility_weight: float = 0.75
+    topology_dpp_accel_cost: float = 0.08
+    topology_dpp_smoothness: float = 0.05
+    topology_dpp_dist_penalty: float = 0.10
+    topology_dpp_bw_temp: float = 0.55
+    topology_dpp_bw_floor: float = 0.01
+    topology_dpp_sat_queue_gap_weight: float = 1.0
+    topology_dpp_sat_candidate_topm: int = 4
+    topology_dpp_sat_enum_max_subsets: int = 64
+    topology_dpp_sat_subset_penalty: float = 0.02
+    topology_dpp_sat_contention_weight: float = 0.15
 
     # Reward shaping
     reward_mode: str = "dense"  # "controllable_flow" | "dense" | "throughput_only" | "weighted_workload_delta" | "relative_weighted_workload_delta" | "weighted_workload_level" | "positive_weighted_workload_level" | "sat_relay_processed" | "sat_backhaul_drop" | "gu_queue_level" | "system_queue_level" | "gu_service_queue"

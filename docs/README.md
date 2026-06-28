@@ -41,8 +41,8 @@
 
 这些文件适合用来解释算法、模型结构、baseline 和 reward/credit 设计：
 
-- `method/baseline_choose.md`：为什么选择当前 learning baseline。
-- `method/heuristic_baselines.md`：rule-based / greedy baseline 说明。
+- `method/baseline_choose.md`：当前 baseline 分层、MaxWeight/Lyapunov 命名和 `topology_dpp` strong non-learning benchmark 定位。
+- `method/heuristic_baselines.md`：rule-based / greedy baseline 说明，以及当前 structured/native baseline ID 映射。
 - `method/model_architecture.md`：较早的模型结构说明；引用前要和当前代码核对。
 - `guides/metrics_guide.md`：较早的指标说明；指标词汇仍有用，但部分配置路径已是历史。
 - `method/problem_analysis_20260402.md`：早期问题拆解。
@@ -111,5 +111,5 @@
 
 ## 仍在根目录的文档
 
-仓库根目录仍保留 `README.md`、`PROJECT_STRUCTURE.md`、`agent.md` 作为入口。DPP 拓扑感知资料已归档到 `archive/legacy/`，对应 smoke 脚本在 `../scripts/experiments/dpp/smoke_topology_aware_dpp.py`；它们来自 `lyapunov-dpp` 分支，不是当前 joint MC-GAE 主线入口。
-`archive/legacy/topology_aware_dpp_summary_20260415.md` 和 `archive/legacy/topology_aware_dpp_quick_start_20260415.md`：`lyapunov-dpp` 分支的拓扑感知 DPP baseline 历史资料；当前分支未默认启用。
+仓库根目录仍保留 `README.md`、`PROJECT_STRUCTURE.md`、`agent.md` 作为入口。DPP 拓扑感知资料已归档到 `archive/legacy/`，对应 smoke 脚本在 `../scripts/experiments/dpp/smoke_topology_aware_dpp.py`；它们来自 `lyapunov-dpp` 分支，可作为当前 `topology_dpp` Python baseline 的历史参考，而不是新的评估入口。
+`archive/legacy/topology_aware_dpp_summary_20260415.md` 和 `archive/legacy/topology_aware_dpp_quick_start_20260415.md`：`lyapunov-dpp` 分支的拓扑感知 DPP baseline 历史资料；当前可运行入口优先使用 `scripts/evaluate_structured_mixed_heads_native.py --baseline_policy topology_dpp`。

@@ -210,7 +210,7 @@ evaluate_structured_hybrid_heads.py
 evaluate_thesis_native_methods.py
 ```
 
-`evaluate_thesis_native_methods.py` is the thesis/baseline comparison helper. For current formal deterministic native evaluation, still prefer the top-level `evaluate_structured_mixed_heads_native.py`.
+`evaluate_thesis_native_methods.py` is the thesis/baseline comparison helper. It evaluates the proposed checkpoint, simple rule baselines, `maxweight_lyapunov`, the lightweight DPP/MaxWeight ablations, and `topology_dpp`. For current one-off deterministic evaluation, still prefer the top-level `evaluate_structured_mixed_heads_native.py`; `topology_dpp` uses its structured Python fallback path rather than a native source triple.
 
 ### `evaluation/sat/`
 

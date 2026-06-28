@@ -17,6 +17,7 @@ import torch
 
 from sagin_marl.env.config import load_config
 from sagin_marl.rl.structured_eval import (
+    _evaluate_structured_baseline_policy_with_traces,
     _fixed_policy_exec_sources,
     evaluate_structured_actor_exec_sources,
 )
@@ -33,6 +34,16 @@ THESIS_BASELINES = [
     ("demand_priority", "需求优先规则"),
     ("cluster_center_queue_aware", "簇中心运动规则"),
     ("queue_aware", "队列感知规则"),
+]
+
+MAXWEIGHT_BASELINE_ID = "maxweight_lyapunov"
+
+
+DPP_ABLATION_BASELINES = [
+    ("dpp_no_mobility", "MaxWeight/Lyapunov 无移动消融"),
+    ("dpp_equal_bw", "MaxWeight/Lyapunov 等带宽消融"),
+    ("dpp_greedy_sat", "MaxWeight/Lyapunov heuristic SAT 消融"),
+    ("topology_dpp", "拓扑感知 one-step DPP"),
 ]
 
 
@@ -277,7 +288,7 @@ def _tune_lyapunov(
         _apply_overrides(candidate_cfg, params)
         summary, _ = _evaluate_baseline(
             candidate_cfg,
-            baseline_policy="lyapunov",
+            baseline_policy=MAXWEIGHT_BASELINE_ID,
             episodes=max(int(episodes), 1),
             num_envs=int(num_envs),
             device=device,
@@ -354,7 +365,13 @@ def _evaluate_baseline(
 ) -> tuple[dict[str, float], list[dict[str, float]]]:
     exec_sources = _fixed_policy_exec_sources(str(baseline_policy))
     if exec_sources is None:
-        raise ValueError(f"baseline {baseline_policy!r} has no native live source mapping")
+        summary, rows, _traces, _actions, _reset_rollouts = _evaluate_structured_baseline_policy_with_traces(
+            cfg,
+            baseline_policy=str(baseline_policy),
+            episodes=int(episodes),
+            episode_seed_base=int(episode_seed_base),
+        )
+        return summary, rows
     dummy_actor = torch.nn.Linear(1, 1).to(device)
     summary, rows = evaluate_structured_actor_exec_sources(
         cfg,
@@ -450,7 +467,7 @@ def main() -> None:
 
     method_summaries: list[dict[str, Any]] = []
     all_episode_rows: list[dict[str, Any]] = []
-    total_methods = 1 + len(THESIS_BASELINES) + 1
+    total_methods = 1 + len(THESIS_BASELINES) + 1 + len(DPP_ABLATION_BASELINES)
     preset_lyapunov_params = _load_lyapunov_params(
         params_json=args.lyapunov_params_json,
         params_file=args.lyapunov_params_file,
@@ -508,10 +525,11 @@ def main() -> None:
         _write_rows(out_dir / "lyapunov_tune.csv", tune_rows)
     elif best_params:
         _apply_overrides(lyapunov_cfg, best_params)
-    print(f"[{total_methods}/{total_methods}] lyapunov")
+    maxweight_index = 2 + len(THESIS_BASELINES)
+    print(f"[{maxweight_index}/{total_methods}] {MAXWEIGHT_BASELINE_ID}")
     lyapunov_summary, lyapunov_rows = _evaluate_baseline(
         lyapunov_cfg,
-        baseline_policy="lyapunov",
+        baseline_policy=MAXWEIGHT_BASELINE_ID,
         episodes=int(args.episodes),
         num_envs=int(args.num_envs),
         device=device,
@@ -519,16 +537,37 @@ def main() -> None:
     )
     method_summaries.append(
         {
-            "method_id": "lyapunov",
-            "method_name": "李雅普诺夫队列方法",
+            "method_id": MAXWEIGHT_BASELINE_ID,
+            "method_name": "MaxWeight/Lyapunov 队列方法",
             "lyapunov_params": json.dumps(best_params, ensure_ascii=False, sort_keys=True),
             **lyapunov_summary,
         }
     )
     all_episode_rows.extend(
-        {"method_id": "lyapunov", "method_name": "李雅普诺夫队列方法", **row}
+        {"method_id": MAXWEIGHT_BASELINE_ID, "method_name": "MaxWeight/Lyapunov 队列方法", **row}
         for row in lyapunov_rows
     )
+
+    for offset, (method_id, method_name) in enumerate(DPP_ABLATION_BASELINES, start=1):
+        index = maxweight_index + offset
+        print(f"[{index}/{total_methods}] {method_id}")
+        summary, rows = _evaluate_baseline(
+            lyapunov_cfg,
+            baseline_policy=method_id,
+            episodes=int(args.episodes),
+            num_envs=int(args.num_envs),
+            device=device,
+            episode_seed_base=int(args.episode_seed_base),
+        )
+        method_summaries.append(
+            {
+                "method_id": method_id,
+                "method_name": method_name,
+                "lyapunov_params": json.dumps(best_params, ensure_ascii=False, sort_keys=True),
+                **summary,
+            }
+        )
+        all_episode_rows.extend({"method_id": method_id, "method_name": method_name, **row} for row in rows)
 
     _write_rows(out_dir / "method_summaries.csv", method_summaries)
     _write_rows(out_dir / "all_episodes.csv", all_episode_rows)

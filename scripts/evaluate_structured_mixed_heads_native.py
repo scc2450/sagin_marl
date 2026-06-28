@@ -16,6 +16,7 @@ import torch
 
 from sagin_marl.env.config import load_config
 from sagin_marl.rl.structured_eval import (
+    _evaluate_structured_baseline_policy_with_traces,
     _fixed_policy_exec_sources,
     evaluate_structured_actor_exec_sources,
 )
@@ -147,22 +148,30 @@ def main() -> None:
     if args.baseline_policy:
         exec_sources = _fixed_policy_exec_sources(str(args.baseline_policy))
         if exec_sources is None:
-            raise ValueError(f"--baseline_policy {args.baseline_policy!r} has no native live source mapping")
-        effective_exec_sources = tuple(str(item) for item in exec_sources)
-        dummy_actor = torch.nn.Linear(1, 1).to(device)
-        summary, rows = evaluate_structured_actor_exec_sources(
-            cfg,
-            dummy_actor,
-            device=device,
-            episodes=int(args.episodes),
-            episode_seed_base=int(args.episode_seed_base),
-            deterministic=True,
-            num_envs=int(args.num_envs),
-            vec_backend="sync",
-            exec_accel_source=exec_sources[0],
-            exec_sat_source=exec_sources[1],
-            exec_bw_source=exec_sources[2],
-        )
+            effective_exec_sources = (str(args.baseline_policy),) * 3
+            info["fixed_policy_backend"] = "structured_python"
+            summary, rows, _traces, _actions, _reset_rollouts = _evaluate_structured_baseline_policy_with_traces(
+                cfg,
+                baseline_policy=str(args.baseline_policy),
+                episodes=int(args.episodes),
+                episode_seed_base=int(args.episode_seed_base),
+            )
+        else:
+            effective_exec_sources = tuple(str(item) for item in exec_sources)
+            dummy_actor = torch.nn.Linear(1, 1).to(device)
+            summary, rows = evaluate_structured_actor_exec_sources(
+                cfg,
+                dummy_actor,
+                device=device,
+                episodes=int(args.episodes),
+                episode_seed_base=int(args.episode_seed_base),
+                deterministic=True,
+                num_envs=int(args.num_envs),
+                vec_backend="sync",
+                exec_accel_source=exec_sources[0],
+                exec_sat_source=exec_sources[1],
+                exec_bw_source=exec_sources[2],
+            )
     else:
         if not args.base_checkpoint:
             raise ValueError("--base_checkpoint is required unless --baseline_policy is set")

@@ -26,6 +26,8 @@ from sagin_marl.rl.baselines import (
     queue_aware_policy,
     random_feasible_policy,
     static_uniform_policy,
+    topology_dpp_policy,
+    topology_dpp_policy_step,
     uniform_bw_policy,
     zero_accel_policy,
 )
@@ -333,6 +335,8 @@ def _baseline_actions(baseline: str, obs_list, cfg, env):
         centers = getattr(env, "gu_cluster_centers", None)
         counts = getattr(env, "gu_cluster_counts", None)
         return cluster_center_queue_aware_policy(obs_list, cfg, centers, counts)
+    if baseline == "topology_dpp":
+        return topology_dpp_policy(obs_list, cfg)
     raise ValueError(f"Unsupported structured baseline policy: {baseline}")
 
 
@@ -1743,8 +1747,20 @@ def _run_structured_baseline_step_with_actions(
     exec_sources: Sequence[str] | None = None,
 ):
     source_modes = _acceptance_source_modes(exec_sources)
-    if baseline == "lyapunov":
+    baseline_key = str(baseline).strip().lower()
+    if baseline_key == "lyapunov":
         accel_actions, bw_logits, sat_logits, baseline_state = lyapunov_queue_aware_policy_step(
+            obs_list,
+            cfg,
+            state=baseline_state,
+            compute_accel=True,
+            compute_bw=False,
+            compute_sat=False,
+            update_pressure=True,
+            update_service=False,
+        )
+    elif baseline_key == "topology_dpp":
+        accel_actions, bw_logits, sat_logits, baseline_state = topology_dpp_policy_step(
             obs_list,
             cfg,
             state=baseline_state,
@@ -1844,11 +1860,23 @@ def _run_structured_baseline_step_with_actions(
 
     driver.begin_step()
     driver.run_accel_stage(accel_actions, access_gain_override=access_gain_tape)
-    baseline_key = str(baseline).strip().lower()
     if baseline_key == "lyapunov":
         _refresh_stage_obs_cache(driver)
         stage_obs_list = current_obs_many([driver], indices=[0])[0]
         _stage_accel, policy_bw_logits, policy_sat_logits, baseline_state = lyapunov_queue_aware_policy_step(
+            stage_obs_list,
+            cfg,
+            state=baseline_state,
+            compute_accel=False,
+            compute_bw=True,
+            compute_sat=True,
+            update_pressure=False,
+            update_service=True,
+        )
+    elif baseline_key == "topology_dpp":
+        _refresh_stage_obs_cache(driver)
+        stage_obs_list = current_obs_many([driver], indices=[0])[0]
+        _stage_accel, policy_bw_logits, policy_sat_logits, baseline_state = topology_dpp_policy_step(
             stage_obs_list,
             cfg,
             state=baseline_state,
@@ -2437,31 +2465,41 @@ def _compare_expected_step_payloads_from_history(
                 )
 
 
+_FIXED_POLICY_EXEC_SOURCE_MAP: dict[str, tuple[str, str, str]] = {
+    "zero": ("zero", "zero", "zero"),
+    "static_uniform": ("zero", "uniform", "uniform"),
+    "static": ("zero", "uniform", "uniform"),
+    "uniform": ("zero", "uniform", "uniform"),
+    "random": ("random", "random", "random"),
+    "random_feasible": ("random", "random", "random"),
+    "link_priority": ("zero", "link_priority", "link_priority"),
+    "demand_priority": ("zero", "demand_priority", "demand_priority"),
+    # `lyapunov` is kept as a compatibility alias. The clearer current name is
+    # `maxweight_lyapunov`, because the implementation is a stage-wise
+    # MaxWeight/Lyapunov queue-pressure controller rather than the archived
+    # topology-enumerating DPP prototype.
+    "lyapunov": ("lyapunov", "lyapunov", "lyapunov"),
+    "maxweight_lyapunov": ("lyapunov", "lyapunov", "lyapunov"),
+    "lyapunov_maxweight": ("lyapunov", "lyapunov", "lyapunov"),
+    "queue_aware_bw": ("zero", "zero", "queue_aware"),
+    "queue_aware": ("queue_aware", "queue_aware", "queue_aware"),
+    "cluster_center_queue_aware": (
+        "cluster_center_queue_aware",
+        "queue_aware",
+        "queue_aware",
+    ),
+    # Lightweight DPP/MaxWeight ablations built from existing native source
+    # modes. These isolate which decision layer carries the non-learning
+    # controller's gains before adding a heavier topology-enumerating DPP.
+    "dpp_no_mobility": ("zero", "lyapunov", "lyapunov"),
+    "dpp_equal_bw": ("lyapunov", "lyapunov", "uniform"),
+    "dpp_greedy_sat": ("lyapunov", "queue_aware", "lyapunov"),
+}
+
+
 def _fixed_policy_exec_sources(baseline_policy: str) -> tuple[str, str, str] | None:
     baseline = str(baseline_policy).strip().lower()
-    if baseline == "zero":
-        return "zero", "zero", "zero"
-    if baseline in {"static_uniform", "static", "uniform"}:
-        return "zero", "uniform", "uniform"
-    if baseline in {"random", "random_feasible"}:
-        return "random", "random", "random"
-    if baseline == "link_priority":
-        return "zero", "link_priority", "link_priority"
-    if baseline == "demand_priority":
-        return "zero", "demand_priority", "demand_priority"
-    if baseline == "lyapunov":
-        return "lyapunov", "lyapunov", "lyapunov"
-    if baseline == "queue_aware_bw":
-        return "zero", "zero", "queue_aware"
-    if baseline == "queue_aware":
-        return "queue_aware", "queue_aware", "queue_aware"
-    if baseline == "cluster_center_queue_aware":
-        return (
-            "cluster_center_queue_aware",
-            "queue_aware",
-            "queue_aware",
-        )
-    return None
+    return _FIXED_POLICY_EXEC_SOURCE_MAP.get(baseline)
 
 
 def _acceptance_source_modes(exec_sources: Sequence[str] | None) -> tuple[str, str, str]:
