@@ -584,6 +584,7 @@ enum FloatParamIndex : int {
   kFpTopologyDppMobilityWeight = 211,
   kFpTopologyDppAccelCost = 212,
   kFpTopologyDppSmoothness = 213,
+  kFpTopologyDppAccelSafetyWeight = 214,
 };
 
 enum FloatTensorIndex : int {
@@ -7248,6 +7249,7 @@ __global__ void baseline_accel_live_kernel(int64_t active_idx, int64_t source_mo
     const float mobility_w = fmaxf(fp(a, kFpTopologyDppMobilityWeight, 0.75f), 0.0f);
     const float accel_cost = fmaxf(fp(a, kFpTopologyDppAccelCost, 0.08f), 0.0f);
     const float smooth_w = fmaxf(fp(a, kFpTopologyDppSmoothness, 0.05f), 0.0f);
+    const float safety_w = fmaxf(fp(a, kFpTopologyDppAccelSafetyWeight, 4.0f), 0.0f);
     const float dist_penalty = fmaxf(fp(a, kFpTopologyDppDistPenalty, 0.1f), 0.0f);
     const float assoc_bonus = fmaxf(fp(a, kFpBaselineAssocBonus, 0.3f), 0.0f);
     const float map_size = positive_config_scale(fp(a, kFpMapSize, 1.0f));
@@ -7297,6 +7299,26 @@ __global__ void baseline_accel_live_kernel(int64_t active_idx, int64_t source_mo
         project_unit_action(&desired_x, &desired_y);
         mobility_term = ax * desired_x + ay * desired_y;
       }
+      float safety_penalty = 0.0f;
+      const int nbr_width = max(ucount - 1, 0);
+      const float d_safe_norm = fp(a, kFpDSafe, 0.0f) / map_size;
+      const float d_alert_norm = fmaxf(fp(a, kFpAvoidanceAlertFactor, 1.5f) * d_safe_norm, d_safe_norm);
+      if (d_alert_norm > kDynamicsDenomEps && nbr_width > 0) {
+        for (int n = 0; n < nbr_width; ++n) {
+          const int nidx = row * nbr_width + n;
+          if (!a.b[live_b + 1][nidx]) continue;
+          const float* peer = a.f[live_f + 3] + static_cast<int64_t>(nidx) * kAccelPeerTokenDim;
+          const float pred_x = peer[kAccelPeerRelX] + delta_x;
+          const float pred_y = peer[kAccelPeerRelY] + delta_y;
+          const float pred_dist = sqrtf(pred_x * pred_x + pred_y * pred_y);
+          const float alert_risk = fmaxf(d_alert_norm - pred_dist, 0.0f) / d_alert_norm;
+          const float unsafe_risk = d_safe_norm > kDynamicsDenomEps
+              ? fmaxf(d_safe_norm - pred_dist, 0.0f) / d_safe_norm
+              : 0.0f;
+          const float closing = fmaxf(peer[kAccelPeerClosingSpeed], 0.0f);
+          safety_penalty += alert_risk * alert_risk * (1.0f + closing) + 4.0f * unsafe_risk * unsafe_risk;
+        }
+      }
       float backhaul_term = 0.0f;
       const int sat_width = max(static_cast<int>(ip(a, kParamAccelSatWidth, ip(a, kParamSatsObsMax, 0))), 0);
       const float own_q = lyapunov_steps_from_log1p(ego[kAccelEgoUavQueueSteps]);
@@ -7323,7 +7345,12 @@ __global__ void baseline_accel_live_kernel(int64_t active_idx, int64_t source_mo
       const float reg =
           accel_cost * (raw_x * raw_x + raw_y * raw_y)
           + smooth_w * ((ax - last_x) * (ax - last_x) + (ay - last_y) * (ay - last_y));
-      local_score = access_w * access_term + backhaul_w * backhaul_term + mobility_w * mobility_term - reg;
+      local_score =
+          access_w * access_term
+          + backhaul_w * backhaul_term
+          + mobility_w * mobility_term
+          - reg
+          - safety_w * safety_penalty * (1.0f + pressure_sum);
       local_candidate = cand;
     }
     float best_score = -3.402823466e38f;
