@@ -1019,7 +1019,7 @@ void check_launch_contract(
     throw std::runtime_error("native CUDA actor source mode scalars do not match the frozen ABI.");
   }
   for (int64_t mode : {accel_source_mode, sat_source_mode, bw_source_mode}) {
-    if (mode < kSourcePolicy || mode > kSourceTopologyDppAccel) {
+    if (mode < kSourcePolicy || mode > kSourceObservableClusterQueueAware) {
       throw std::runtime_error("native CUDA actor source mode is not supported.");
     }
   }
