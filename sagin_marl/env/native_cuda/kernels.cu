@@ -7788,9 +7788,21 @@ __device__ float normalize_masked_value(float value, float min_v, float max_v) {
   return (span > kNormDenomEps) ? (value - min_v) / span : 0.0f;
 }
 
-__device__ float queue_aware_sat_score(const PackedAbi& a, int stage_slot, int e, int u, int row, int slot, int width, float se_min, float se_max, float q_min, float q_max, float load_min, float load_max, float bw_min, float bw_max) {
-  float se = 0.0f, q = 0.0f, load = 0.0f, bw = 0.0f, stay = 0.0f;
-  queue_aware_sat_values(a, stage_slot, e, u, row, slot, width, &se, &q, &load, &bw, &stay);
+__device__ float queue_aware_sat_score_from_values(
+    const PackedAbi& a,
+    float se,
+    float q,
+    float load,
+    float bw,
+    float stay,
+    float se_min,
+    float se_max,
+    float q_min,
+    float q_max,
+    float load_min,
+    float load_max,
+    float bw_min,
+    float bw_max) {
   const float logit_scale = fmaxf(fp(a, kFpSatLogitScale, 1.0e9f), 0.0f);
   const float score =
       fp(a, kFpBaselineSatSeWeight, 1.0f) * normalize_masked_value(se, se_min, se_max)
@@ -7799,6 +7811,26 @@ __device__ float queue_aware_sat_score(const PackedAbi& a, int stage_slot, int e
       + fp(a, kFpBaselineSatBwReward, 0.75f) * normalize_masked_value(bw, bw_min, bw_max)
       + fp(a, kFpBaselineSatStayBonus, 0.25f) * stay;
   return clampf_device(score, -logit_scale, logit_scale);
+}
+
+__device__ float queue_aware_sat_score(const PackedAbi& a, int stage_slot, int e, int u, int row, int slot, int width, float se_min, float se_max, float q_min, float q_max, float load_min, float load_max, float bw_min, float bw_max) {
+  float se = 0.0f, q = 0.0f, load = 0.0f, bw = 0.0f, stay = 0.0f;
+  queue_aware_sat_values(a, stage_slot, e, u, row, slot, width, &se, &q, &load, &bw, &stay);
+  return queue_aware_sat_score_from_values(
+      a,
+      se,
+      q,
+      load,
+      bw,
+      stay,
+      se_min,
+      se_max,
+      q_min,
+      q_max,
+      load_min,
+      load_max,
+      bw_min,
+      bw_max);
 }
 
 __device__ float baseline_sat_slot_score(
@@ -7845,14 +7877,13 @@ __device__ float baseline_sat_slot_score(
         0.5f * normalize_masked_value(se, se_min, se_max)
         + 0.5f * normalize_masked_value(bw, bw_min, bw_max);
     const float gap_w = fmaxf(fp(a, kFpTopologyDppSatQueueGapWeight, 1.0f), 0.0f);
-    return queue_aware_sat_score(
+    return queue_aware_sat_score_from_values(
         a,
-        stage_slot,
-        e,
-        u,
-        row,
-        slot,
-        width,
+        se,
+        q,
+        load,
+        bw,
+        stay,
         se_min,
         se_max,
         q_min,
