@@ -1202,7 +1202,7 @@ class _NativeActionTraceReplayBridge:
                 bw_source_mode=bw_mode,
             )
             return
-        if source in {"uniform", "random", "link_priority", "demand_priority", "lyapunov"}:
+        if source in {"uniform", "random", "link_priority", "demand_priority", "lyapunov", "topology_dpp_accel"}:
             native_cuda.baseline_accel_live(
                 self._runtime_native_abi(runtime),
                 active_idx=int(runtime.main.accel_active_idx),
@@ -2544,6 +2544,16 @@ _FIXED_POLICY_EXEC_SOURCE_MAP: dict[str, tuple[str, str, str]] = {
         "topology_dpp_sat",
         "dpp_resource_bw",
     ),
+    "full_topology_dpp_joint": (
+        "topology_dpp_accel",
+        "topology_dpp_sat",
+        "dpp_resource_bw",
+    ),
+    "topology_dpp_joint_native": (
+        "topology_dpp_accel",
+        "topology_dpp_sat",
+        "dpp_resource_bw",
+    ),
 }
 
 
@@ -2569,6 +2579,7 @@ def _acceptance_source_modes(exec_sources: Sequence[str] | None) -> tuple[str, s
         "demand_priority",
         "lyapunov",
         "dpp_resource_bw",
+        "topology_dpp_accel",
         "topology_dpp_sat",
     }
     modes: list[str] = []
@@ -2596,6 +2607,7 @@ def _native_acceptance_source_mode_code(source: str) -> int:
         "cluster_center_queue_aware": native_cuda.SOURCE_CLUSTER_CENTER_QUEUE_AWARE,
         "lyapunov": native_cuda.SOURCE_LYAPUNOV,
         "dpp_resource_bw": native_cuda.SOURCE_DPP_RESOURCE_BW,
+        "topology_dpp_accel": native_cuda.SOURCE_TOPOLOGY_DPP_ACCEL,
         "topology_dpp_sat": native_cuda.SOURCE_TOPOLOGY_DPP_SAT,
     }
     if source_s not in table:

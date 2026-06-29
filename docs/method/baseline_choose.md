@@ -22,10 +22,11 @@
 | `dpp_resource_hybrid` | cluster-center/queue-aware 移动 + topology DPP BW/SAT 资源分配 | DPP resource-allocation hybrid，structured Python fallback |
 | `dpp_resource_hybrid_native` | cluster-center 移动 + queue-aware SAT + native `dpp_resource_bw` | 快速 staged-source DPP-BW 对照 |
 | `topology_dpp_native_bw_sat_cached` | cluster-center 移动 + native `topology_dpp_sat` + native `dpp_resource_bw` | 第一版 native SAT/BW coupling，对齐后续 full topology-DPP |
+| `full_topology_dpp_joint` | native `topology_dpp_accel` + native `topology_dpp_sat` + native `dpp_resource_bw` | native full joint 候选，加入 accel candidate 枚举 |
 
 兼容说明：旧名 `lyapunov` 仍然可用，但新实验和论文表格建议写成 `maxweight_lyapunov`，避免和完整拓扑枚举 DPP 混淆。
 
-真正要作为论文主 non-learning benchmark 的，是 `topology_dpp` 或后续 `full topology_dpp_joint`：枚举候选 UAV 动作，预测移动后拓扑，再做 access/backhaul/BW/SAT coupling 的一步式 DPP 优化。当前 `maxweight_lyapunov` 仍然是强规则基线和快速 native 参照；`topology_dpp_native_bw_sat_cached` 是通往 full joint 之前的 native cached/staged 版本，它不枚举移动候选。
+真正要作为论文主 non-learning benchmark 的，是 `topology_dpp` 或 `full_topology_dpp_joint`：枚举候选 UAV 动作，预测移动后拓扑，再做 access/backhaul/BW/SAT coupling 的一步式 DPP 优化。当前 `maxweight_lyapunov` 仍然是强规则基线和快速 native 参照；`topology_dpp_native_bw_sat_cached` 是通往 full joint 之前的 native cached/staged 版本，它不枚举移动候选。
 
 这两个一起用，论文说服力会比较强，因为它们分别回答两件不同的事：
 

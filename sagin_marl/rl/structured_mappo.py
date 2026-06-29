@@ -407,6 +407,7 @@ def _normalize_exec_source(raw: str | None) -> str:
         "demand_priority",
         "lyapunov",
         "dpp_resource_bw",
+        "topology_dpp_accel",
         "topology_dpp_sat",
     }
     if source not in allowed:
@@ -425,6 +426,7 @@ _NATIVE_BASELINE_ACTION_SOURCES = {
     "cluster_center_queue_aware",
     "lyapunov",
     "dpp_resource_bw",
+    "topology_dpp_accel",
     "topology_dpp_sat",
 }
 _NATIVE_LIVE_ACTION_SOURCES = _NATIVE_POLICY_ACTION_SOURCES | _NATIVE_BASELINE_ACTION_SOURCES | {"teacher"}
@@ -450,6 +452,7 @@ def _native_exec_source_mode_code(source: object) -> int:
         "cluster_center_queue_aware": native_cuda.SOURCE_CLUSTER_CENTER_QUEUE_AWARE,
         "lyapunov": native_cuda.SOURCE_LYAPUNOV,
         "dpp_resource_bw": native_cuda.SOURCE_DPP_RESOURCE_BW,
+        "topology_dpp_accel": native_cuda.SOURCE_TOPOLOGY_DPP_ACCEL,
         "topology_dpp_sat": native_cuda.SOURCE_TOPOLOGY_DPP_SAT,
     }
     if source_s not in table:
@@ -759,7 +762,7 @@ class _StructuredMAPPOGpuActorBridge:
             self.write_accel_action = self._write_accel_action_queue_aware  # type: ignore[method-assign]
         elif accel_source == "cluster_center_queue_aware":
             self.write_accel_action = self._write_accel_action_cluster_center_queue_aware  # type: ignore[method-assign]
-        elif accel_source in {"uniform", "random", "link_priority", "demand_priority", "lyapunov"}:
+        elif accel_source in {"uniform", "random", "link_priority", "demand_priority", "lyapunov", "topology_dpp_accel"}:
             self.write_accel_action = self._write_accel_action_baseline  # type: ignore[method-assign]
         elif accel_source == "teacher":
             self.write_accel_action = self._write_accel_action_teacher  # type: ignore[method-assign]

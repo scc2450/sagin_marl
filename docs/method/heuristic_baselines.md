@@ -87,11 +87,12 @@ Supported current rule/MaxWeight baseline IDs include:
 | `dpp_resource_bw` | `zero`, `zero`, `dpp_resource_bw` |
 | `dpp_resource_hybrid_native` | `cluster_center_queue_aware`, `queue_aware`, `dpp_resource_bw` |
 | `topology_dpp_native_bw_sat_cached` | `cluster_center_queue_aware`, `topology_dpp_sat`, `dpp_resource_bw` |
+| `full_topology_dpp_joint` | `topology_dpp_accel`, `topology_dpp_sat`, `dpp_resource_bw` |
 | `topology_dpp` | structured Python fallback; no native source triple yet |
 | `dpp_resource_hybrid` | structured Python fallback; cluster-center accel with topology-DPP BW/SAT |
 
 `lyapunov` is still accepted as a compatibility alias for `maxweight_lyapunov`.
-`topology_dpp` and the legacy `dpp_resource_hybrid` are intentionally not added to `_FIXED_POLICY_EXEC_SOURCE_MAP`: they require Python-side topology/resource reasoning before choosing BW/SAT decisions. `dpp_resource_hybrid_native` is the fast staged-source variant: it keeps cluster-center accel and queue-aware SAT in native kernels, then uses the native `dpp_resource_bw` source for BW allocation. `topology_dpp_native_bw_sat_cached` is the first native SAT/BW-coupled step: accel remains cluster-center, SAT uses a topology-DPP queue-gap/backhaul proxy source, and BW uses native `dpp_resource_bw`.
+`topology_dpp` and the legacy `dpp_resource_hybrid` are intentionally not added to `_FIXED_POLICY_EXEC_SOURCE_MAP`: they require Python-side topology/resource reasoning before choosing BW/SAT decisions. `dpp_resource_hybrid_native` is the fast staged-source variant: it keeps cluster-center accel and queue-aware SAT in native kernels, then uses the native `dpp_resource_bw` source for BW allocation. `topology_dpp_native_bw_sat_cached` is the first native SAT/BW-coupled step: accel remains cluster-center, SAT uses a topology-DPP queue-gap/backhaul proxy source, and BW uses native `dpp_resource_bw`. `full_topology_dpp_joint` adds native accel candidate enumeration before the same SAT/BW resource sources.
 
 ## Integrating A New Native Baseline
 
