@@ -20,9 +20,9 @@
 | `dpp_greedy_sat` | `maxweight_lyapunov` 改用 queue-aware SAT | 轻量消融 |
 | `topology_dpp` | 枚举候选 UAV 动作、预测拓扑并联合打分 access/backhaul/BW/SAT 的 one-step DPP | 主 non-learning benchmark 候选，structured Python fallback |
 | `dpp_resource_hybrid` | cluster-center/queue-aware 移动 + topology DPP BW/SAT 资源分配 | DPP resource-allocation hybrid，structured Python fallback |
-| `dpp_resource_hybrid_native` | cluster-center 移动 + queue-aware SAT + native `dpp_resource_bw` | 快速 staged-source DPP-BW 对照 |
-| `topology_dpp_native_bw_sat_cached` | cluster-center 移动 + native `topology_dpp_sat` + native `dpp_resource_bw` | 第一版 native SAT/BW coupling，对齐后续 full topology-DPP |
-| `full_topology_dpp_joint` | native `topology_dpp_accel` + native `topology_dpp_sat` + native `dpp_resource_bw` | native full joint 候选，加入 accel candidate 枚举 |
+| `dpp_resource_hybrid_native` | cluster-center 移动 + queue-aware SAT + native `topology_dpp_bw` | 快速 staged-source DPP-BW 对照，保留历史方法名 |
+| `topology_dpp_native_bw_sat_cached` | cluster-center 移动 + native `topology_dpp_sat` + native `topology_dpp_bw` | 第一版 native SAT/BW coupling，对齐后续 full topology-DPP |
+| `full_topology_dpp_joint` | native `topology_dpp_accel` + native `topology_dpp_sat` + native `topology_dpp_bw` | native full joint 候选，加入 accel candidate 枚举 |
 
 兼容说明：旧名 `lyapunov` 仍然可用，但新实验和论文表格建议写成 `maxweight_lyapunov`，避免和完整拓扑枚举 DPP 混淆。
 

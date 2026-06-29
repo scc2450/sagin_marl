@@ -32,7 +32,8 @@ constexpr int kSourceDemandPriority = 5;
 constexpr int kSourceQueueAware = 6;
 constexpr int kSourceClusterCenterQueueAware = 7;
 constexpr int kSourceLyapunov = 8;
-constexpr int kSourceDppResourceBw = 9;
+constexpr int kSourceTopologyDppBw = 9;
+constexpr int kSourceDppResourceBw = kSourceTopologyDppBw;  // Legacy alias.
 constexpr int kSourceTopologyDppSat = 10;
 constexpr int kSourceTopologyDppAccel = 11;
 

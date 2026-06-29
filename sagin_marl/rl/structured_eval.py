@@ -1303,7 +1303,15 @@ class _NativeActionTraceReplayBridge:
             )
             self._write_bw_link_transition_override(runtime)
             return
-        if source in {"uniform", "random", "link_priority", "demand_priority", "lyapunov", "dpp_resource_bw"}:
+        if source in {
+            "uniform",
+            "random",
+            "link_priority",
+            "demand_priority",
+            "lyapunov",
+            "dpp_resource_bw",
+            "topology_dpp_bw",
+        }:
             accel_mode, sat_mode, bw_mode = self._source_mode_codes(runtime)
             native_cuda.baseline_bw_live(
                 self._runtime_native_abi(runtime),
@@ -2528,31 +2536,32 @@ _FIXED_POLICY_EXEC_SOURCE_MAP: dict[str, tuple[str, str, str]] = {
     "dpp_no_mobility": ("zero", "lyapunov", "lyapunov"),
     "dpp_equal_bw": ("lyapunov", "lyapunov", "uniform"),
     "dpp_greedy_sat": ("lyapunov", "queue_aware", "lyapunov"),
-    "dpp_resource_bw": ("zero", "zero", "dpp_resource_bw"),
+    "dpp_resource_bw": ("zero", "zero", "topology_dpp_bw"),
+    "topology_dpp_bw": ("zero", "zero", "topology_dpp_bw"),
     "dpp_resource_hybrid_native": (
         "cluster_center_queue_aware",
         "queue_aware",
-        "dpp_resource_bw",
+        "topology_dpp_bw",
     ),
     "topology_dpp_resource_native": (
         "cluster_center_queue_aware",
         "queue_aware",
-        "dpp_resource_bw",
+        "topology_dpp_bw",
     ),
     "topology_dpp_native_bw_sat_cached": (
         "cluster_center_queue_aware",
         "topology_dpp_sat",
-        "dpp_resource_bw",
+        "topology_dpp_bw",
     ),
     "full_topology_dpp_joint": (
         "topology_dpp_accel",
         "topology_dpp_sat",
-        "dpp_resource_bw",
+        "topology_dpp_bw",
     ),
     "topology_dpp_joint_native": (
         "topology_dpp_accel",
         "topology_dpp_sat",
-        "dpp_resource_bw",
+        "topology_dpp_bw",
     ),
 }
 
@@ -2580,6 +2589,7 @@ def _acceptance_source_modes(exec_sources: Sequence[str] | None) -> tuple[str, s
         "lyapunov",
         "dpp_resource_bw",
         "topology_dpp_accel",
+        "topology_dpp_bw",
         "topology_dpp_sat",
     }
     modes: list[str] = []
@@ -2608,6 +2618,7 @@ def _native_acceptance_source_mode_code(source: str) -> int:
         "lyapunov": native_cuda.SOURCE_LYAPUNOV,
         "dpp_resource_bw": native_cuda.SOURCE_DPP_RESOURCE_BW,
         "topology_dpp_accel": native_cuda.SOURCE_TOPOLOGY_DPP_ACCEL,
+        "topology_dpp_bw": native_cuda.SOURCE_TOPOLOGY_DPP_BW,
         "topology_dpp_sat": native_cuda.SOURCE_TOPOLOGY_DPP_SAT,
     }
     if source_s not in table:
