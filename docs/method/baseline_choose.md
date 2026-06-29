@@ -13,7 +13,8 @@
 |---|---|---|
 | `static_uniform` / `random_feasible` | 静止/随机可行动作 | sanity lower bound |
 | `link_priority` / `demand_priority` | 单因子规则 | 辅助 lower bound |
-| `queue_aware` / `cluster_center_queue_aware` | 队列与拓扑启发式 | 当前强 heuristic baseline |
+| `queue_aware` / `cluster_center_queue_aware` | 队列与拓扑启发式；`cluster_center_queue_aware` 使用环境生成的 GU 簇元数据 | 当前强/privileged heuristic baseline |
+| `observable_cluster_queue_aware` | 从当前可观测 GU 位置、队列和链路 token 在线估计热点中心，再执行 queue-aware SAT/BW | 去除真实簇中心先验的 hotspot-aware 对照 |
 | `maxweight_lyapunov` | 当前 native 可运行的 stage-wise MaxWeight/Lyapunov 控制器 | 当前强 non-learning baseline |
 | `dpp_no_mobility` | `maxweight_lyapunov` 去掉移动控制 | 轻量消融 |
 | `dpp_equal_bw` | `maxweight_lyapunov` 改用 uniform BW | 轻量消融 |

@@ -20,7 +20,13 @@ from sagin_marl.env.structured_gpu_rollout_runtime import (
 )
 from sagin_marl.env.native_cuda import bindings as native_cuda
 
-from .baselines import cluster_center_accel_policy, queue_aware_bw_policy, queue_aware_policy, queue_aware_sat_policy
+from .baselines import (
+    cluster_center_accel_policy,
+    observable_cluster_accel_policy,
+    queue_aware_bw_policy,
+    queue_aware_policy,
+    queue_aware_sat_policy,
+)
 from .distributions import squash_action
 from .structured_buffer import (
     StructuredBootstrapBatchView,
@@ -399,6 +405,7 @@ def _normalize_exec_source(raw: str | None) -> str:
         "policy_single_uav_queue_aware",
         "queue_aware",
         "cluster_center_queue_aware",
+        "observable_cluster_queue_aware",
         "zero",
         "teacher",
         "uniform",
@@ -425,6 +432,7 @@ _NATIVE_BASELINE_ACTION_SOURCES = {
     "demand_priority",
     "queue_aware",
     "cluster_center_queue_aware",
+    "observable_cluster_queue_aware",
     "lyapunov",
     "dpp_resource_bw",
     "topology_dpp_accel",
@@ -452,6 +460,7 @@ def _native_exec_source_mode_code(source: object) -> int:
         "demand_priority": native_cuda.SOURCE_DEMAND_PRIORITY,
         "queue_aware": native_cuda.SOURCE_QUEUE_AWARE,
         "cluster_center_queue_aware": native_cuda.SOURCE_CLUSTER_CENTER_QUEUE_AWARE,
+        "observable_cluster_queue_aware": native_cuda.SOURCE_OBSERVABLE_CLUSTER_QUEUE_AWARE,
         "lyapunov": native_cuda.SOURCE_LYAPUNOV,
         "dpp_resource_bw": native_cuda.SOURCE_DPP_RESOURCE_BW,
         "topology_dpp_accel": native_cuda.SOURCE_TOPOLOGY_DPP_ACCEL,
@@ -544,6 +553,8 @@ def _heuristic_accel(
     policy = str(heuristic_policy or "queue_aware").strip().lower()
     if policy == "cluster_center_queue_aware":
         return np.asarray(cluster_center_accel_policy(list(obs_list), cfg, centers, counts), dtype=np.float32)
+    if policy == "observable_cluster_queue_aware":
+        return np.asarray(observable_cluster_accel_policy(list(obs_list), cfg), dtype=np.float32)
     if policy in {"queue_aware", "queue_aware_accel"}:
         accel, _, _ = queue_aware_policy(list(obs_list), cfg)
         return np.asarray(accel, dtype=np.float32)
@@ -553,14 +564,14 @@ def _heuristic_accel(
 def _heuristic_sat(obs_list: Sequence[dict[str, np.ndarray]], cfg: Any, heuristic_policy: str) -> np.ndarray:
     """Backward-compatible SAT heuristic helper used by legacy diagnostics."""
     policy = str(heuristic_policy or "queue_aware").strip().lower()
-    if policy in {"queue_aware", "queue_aware_sat", "cluster_center_queue_aware"}:
+    if policy in {"queue_aware", "queue_aware_sat", "cluster_center_queue_aware", "observable_cluster_queue_aware"}:
         return np.asarray(queue_aware_sat_policy(list(obs_list), cfg), dtype=np.float32)
     raise ValueError(f"Unsupported SAT heuristic policy: {heuristic_policy}")
 
 
 def _heuristic_bw(obs_list: Sequence[dict[str, np.ndarray]], cfg: Any, heuristic_policy: str) -> np.ndarray:
     policy = str(heuristic_policy or "queue_aware").strip().lower()
-    if policy in {"queue_aware", "queue_aware_bw", "cluster_center_queue_aware"}:
+    if policy in {"queue_aware", "queue_aware_bw", "cluster_center_queue_aware", "observable_cluster_queue_aware"}:
         return np.asarray(queue_aware_bw_policy(list(obs_list), cfg), dtype=np.float32)
     raise ValueError(f"Unsupported BW heuristic policy: {heuristic_policy}")
 
@@ -765,7 +776,15 @@ class _StructuredMAPPOGpuActorBridge:
             self.write_accel_action = self._write_accel_action_queue_aware  # type: ignore[method-assign]
         elif accel_source == "cluster_center_queue_aware":
             self.write_accel_action = self._write_accel_action_cluster_center_queue_aware  # type: ignore[method-assign]
-        elif accel_source in {"uniform", "random", "link_priority", "demand_priority", "lyapunov", "topology_dpp_accel"}:
+        elif accel_source in {
+            "uniform",
+            "random",
+            "link_priority",
+            "demand_priority",
+            "lyapunov",
+            "topology_dpp_accel",
+            "observable_cluster_queue_aware",
+        }:
             self.write_accel_action = self._write_accel_action_baseline  # type: ignore[method-assign]
         elif accel_source == "teacher":
             self.write_accel_action = self._write_accel_action_teacher  # type: ignore[method-assign]
@@ -776,7 +795,7 @@ class _StructuredMAPPOGpuActorBridge:
             self.write_sat_action = self._write_sat_action_policy  # type: ignore[method-assign]
         elif sat_source == "zero":
             self.write_sat_action = self._write_sat_action_zero  # type: ignore[method-assign]
-        elif sat_source in {"queue_aware", "cluster_center_queue_aware"}:
+        elif sat_source in {"queue_aware", "cluster_center_queue_aware", "observable_cluster_queue_aware"}:
             self.write_sat_action = self._write_sat_action_queue_aware  # type: ignore[method-assign]
         elif sat_source in {"uniform", "random", "link_priority", "demand_priority", "lyapunov", "topology_dpp_sat"}:
             self.write_sat_action = self._write_sat_action_baseline  # type: ignore[method-assign]
@@ -791,7 +810,7 @@ class _StructuredMAPPOGpuActorBridge:
             self.write_bw_action = self._write_bw_action_policy_single_uav_queue_aware  # type: ignore[method-assign]
         elif bw_source == "zero":
             self.write_bw_action = self._write_bw_action_zero  # type: ignore[method-assign]
-        elif bw_source in {"queue_aware", "cluster_center_queue_aware"}:
+        elif bw_source in {"queue_aware", "cluster_center_queue_aware", "observable_cluster_queue_aware"}:
             self.write_bw_action = self._write_bw_action_queue_aware  # type: ignore[method-assign]
         elif bw_source in {
             "uniform",

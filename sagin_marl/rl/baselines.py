@@ -518,6 +518,159 @@ def _select_cluster_targets(
     return _select_cluster_targets_from_positions(uav_pos, cluster_centers, cluster_counts)
 
 
+def _observable_user_points(
+    obs_list: List[Dict[str, np.ndarray]],
+    cfg,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Estimate absolute GU points from current observations only.
+
+    This deliberately avoids env-level ``gu_cluster_centers`` metadata. When
+    ``candidate_indices`` are available, repeated observations of the same GU
+    are merged by GU id; otherwise full-GU observations fall back to slot ids.
+    """
+
+    pos_accum: dict[int, np.ndarray] = {}
+    weight_accum: dict[int, float] = {}
+    anon_id = int(getattr(cfg, "num_gu", 0) or 0)
+    map_size = float(cfg.map_size)
+    assoc_bonus = float(getattr(cfg, "baseline_assoc_bonus", 0.3) or 0.0)
+
+    for obs in obs_list:
+        users = np.asarray(obs.get("users", np.zeros((0, 0), dtype=np.float32)), dtype=np.float32)
+        if users.ndim != 2 or users.shape[0] <= 0:
+            continue
+        users_mask = np.asarray(obs.get("users_mask", np.ones((users.shape[0],), dtype=np.float32)) > 0.0)
+        candidate_raw = obs.get("candidate_indices")
+        candidate_idx = None if candidate_raw is None else np.asarray(candidate_raw, dtype=np.int64).reshape(-1)
+        own = np.asarray(obs["own"], dtype=np.float32)
+        own_abs = own[0:2] * map_size
+        width = min(int(users.shape[0]), int(users_mask.shape[0]))
+        for slot in range(width):
+            if not bool(users_mask[slot]):
+                continue
+            if candidate_idx is not None and slot < int(candidate_idx.shape[0]) and int(candidate_idx[slot]) >= 0:
+                gu_id = int(candidate_idx[slot])
+            elif int(getattr(cfg, "users_obs_max", users.shape[0]) or users.shape[0]) == int(getattr(cfg, "num_gu", users.shape[0]) or users.shape[0]):
+                gu_id = int(slot)
+            else:
+                gu_id = anon_id
+                anon_id += 1
+
+            rel = users[slot, 0:2]
+            pos_abs = own_abs + rel * map_size
+            queue_pressure = float(np.clip(users[slot, 2], 0.0, None)) if users.shape[1] > 2 else 0.0
+            eta = float(np.clip(users[slot, 3], 0.0, None)) if users.shape[1] > 3 else 0.0
+            prev = float(np.clip(users[slot, 4], 0.0, 1.0)) if users.shape[1] > 4 else 0.0
+            expected = float(np.clip(users[slot, 5], 0.0, None)) if users.shape[1] > 5 else 0.0
+            pressure = max(queue_pressure + expected, 1.0e-3)
+            weight = pressure * (0.5 + eta)
+            if assoc_bonus > 0.0:
+                weight *= 1.0 + assoc_bonus * prev
+            if weight <= 0.0:
+                continue
+
+            if gu_id not in pos_accum:
+                pos_accum[gu_id] = np.zeros((2,), dtype=np.float64)
+                weight_accum[gu_id] = 0.0
+            pos_accum[gu_id] += pos_abs.astype(np.float64) * float(weight)
+            weight_accum[gu_id] += float(weight)
+
+    if not weight_accum:
+        return np.zeros((0, 2), dtype=np.float32), np.zeros((0,), dtype=np.float32)
+
+    keys = sorted(weight_accum)
+    positions = np.stack(
+        [pos_accum[key] / max(weight_accum[key], 1.0e-9) for key in keys],
+        axis=0,
+    ).astype(np.float32, copy=False)
+    weights = np.asarray([weight_accum[key] for key in keys], dtype=np.float32)
+    return positions, weights
+
+
+def estimate_observable_cluster_centers(
+    obs_list: List[Dict[str, np.ndarray]],
+    cfg,
+    *,
+    num_centers: int | None = None,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Infer hotspot centers from current visible GU positions and queues."""
+
+    positions, weights = _observable_user_points(obs_list, cfg)
+    point_count = int(positions.shape[0])
+    if point_count <= 0:
+        return np.zeros((0, 2), dtype=np.float32), np.zeros((0,), dtype=np.float32)
+
+    k_cfg = num_centers if num_centers is not None else int(getattr(cfg, "num_uav", len(obs_list)) or len(obs_list))
+    k = max(1, min(int(k_cfg), point_count))
+    safe_weights = np.clip(weights.astype(np.float32, copy=False), 1.0e-6, None)
+
+    selected: list[int] = []
+    for rank in range(k):
+        if rank == 0:
+            scores = safe_weights.copy()
+        else:
+            selected_pos = positions[np.asarray(selected, dtype=np.int64)]
+            dists = np.linalg.norm(positions[:, None, :] - selected_pos[None, :, :], axis=-1)
+            min_dist = np.min(dists, axis=1) / max(float(cfg.map_size), 1.0e-6)
+            scores = safe_weights * (0.25 + min_dist)
+        if selected:
+            scores[np.asarray(selected, dtype=np.int64)] = -np.inf
+        best = int(np.argmax(scores))
+        if not np.isfinite(scores[best]):
+            break
+        selected.append(best)
+
+    if not selected:
+        return np.zeros((0, 2), dtype=np.float32), np.zeros((0,), dtype=np.float32)
+
+    centers = positions[np.asarray(selected, dtype=np.int64)].astype(np.float32, copy=True)
+    masses = np.zeros((int(centers.shape[0]),), dtype=np.float32)
+    for _ in range(2):
+        dists = np.linalg.norm(positions[:, None, :] - centers[None, :, :], axis=-1)
+        assign = np.argmin(dists, axis=1)
+        for center_idx in range(int(centers.shape[0])):
+            mask = assign == center_idx
+            if not np.any(mask):
+                masses[center_idx] = 0.0
+                continue
+            mass = float(np.sum(safe_weights[mask]))
+            centers[center_idx] = (
+                positions[mask] * safe_weights[mask, None]
+            ).sum(axis=0) / max(mass, 1.0e-9)
+            masses[center_idx] = mass
+
+    order = np.argsort(-masses, kind="stable")
+    centers = centers[order]
+    masses = masses[order]
+    return centers.astype(np.float32, copy=False), masses.astype(np.float32, copy=False)
+
+
+def observable_cluster_accel_policy(
+    obs_list: List[Dict[str, np.ndarray]],
+    cfg,
+) -> np.ndarray:
+    """Cluster-center style accel using only current observable GU tokens."""
+
+    num_agents = len(obs_list)
+    accel = np.zeros((num_agents, 2), dtype=np.float32)
+    if num_agents <= 0:
+        return accel
+
+    centers, counts = estimate_observable_cluster_centers(obs_list, cfg, num_centers=num_agents)
+    if int(centers.shape[0]) <= 0:
+        return accel
+
+    targets = _select_cluster_targets(obs_list, cfg, centers, counts)
+    for i, obs in enumerate(obs_list):
+        accel_vec = np.zeros((2,), dtype=np.float32)
+        target_idx = int(targets[i])
+        if 0 <= target_idx < int(centers.shape[0]):
+            accel_vec = accel_vec + _cluster_tracking_term(obs, cfg, centers[target_idx])
+        accel_vec = accel_vec + _baseline_energy_term(obs, cfg)
+        accel[i] = _project_normalized_accel_np(accel_vec)
+    return accel
+
+
 def _cluster_tracking_term(obs: Dict[str, np.ndarray], cfg, target_abs: np.ndarray) -> np.ndarray:
     own = obs["own"]
     pos = own[0:2].astype(np.float32) * cfg.map_size
@@ -1711,6 +1864,15 @@ def cluster_center_queue_aware_policy(
     cluster_counts: np.ndarray | None,
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
     accel = cluster_center_accel_policy(obs_list, cfg, cluster_centers, cluster_counts)
+    _, bw_alloc, sat_select_mask = queue_aware_policy(obs_list, cfg)
+    return accel, bw_alloc, sat_select_mask
+
+
+def observable_cluster_queue_aware_policy(
+    obs_list: List[Dict[str, np.ndarray]],
+    cfg,
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    accel = observable_cluster_accel_policy(obs_list, cfg)
     _, bw_alloc, sat_select_mask = queue_aware_policy(obs_list, cfg)
     return accel, bw_alloc, sat_select_mask
 

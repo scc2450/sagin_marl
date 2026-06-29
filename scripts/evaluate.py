@@ -22,6 +22,7 @@ from sagin_marl.rl.baselines import (
     cluster_center_queue_aware_policy,
     centroid_accel_policy,
     lyapunov_queue_aware_policy_step,
+    observable_cluster_queue_aware_policy,
     queue_aware_policy,
     random_accel_policy,
     zero_accel_policy,
@@ -103,6 +104,8 @@ def _baseline_actions(
         centers = None if env is None else getattr(env, "gu_cluster_centers", None)
         counts = None if env is None else getattr(env, "gu_cluster_counts", None)
         return cluster_center_queue_aware_policy(obs_list, cfg, centers, counts)
+    if baseline == "observable_cluster_queue_aware":
+        return observable_cluster_queue_aware_policy(obs_list, cfg)
     if baseline == "centroid":
         gain = float(getattr(cfg, "baseline_centroid_gain", 2.0))
         queue_weighted = bool(getattr(cfg, "baseline_centroid_queue_weighted", True))
@@ -286,6 +289,7 @@ def main():
             "random_accel", 
             "cluster_center",
             "cluster_center_queue_aware",
+            "observable_cluster_queue_aware",
             "centroid", 
             "queue_aware", 
             "lyapunov",

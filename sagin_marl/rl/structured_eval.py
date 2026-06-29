@@ -22,6 +22,7 @@ from sagin_marl.rl.baselines import (
     feasible_uniform_sat_policy,
     link_priority_policy,
     lyapunov_queue_aware_policy_step,
+    observable_cluster_queue_aware_policy,
     queue_aware_bw_policy,
     queue_aware_policy,
     random_feasible_policy,
@@ -336,6 +337,8 @@ def _baseline_actions(baseline: str, obs_list, cfg, env):
         centers = getattr(env, "gu_cluster_centers", None)
         counts = getattr(env, "gu_cluster_counts", None)
         return cluster_center_queue_aware_policy(obs_list, cfg, centers, counts)
+    if baseline == "observable_cluster_queue_aware":
+        return observable_cluster_queue_aware_policy(obs_list, cfg)
     if baseline == "topology_dpp":
         return topology_dpp_policy(obs_list, cfg)
     if baseline in {"dpp_resource_hybrid", "topology_dpp_resource"}:
@@ -1202,7 +1205,15 @@ class _NativeActionTraceReplayBridge:
                 bw_source_mode=bw_mode,
             )
             return
-        if source in {"uniform", "random", "link_priority", "demand_priority", "lyapunov", "topology_dpp_accel"}:
+        if source in {
+            "uniform",
+            "random",
+            "link_priority",
+            "demand_priority",
+            "lyapunov",
+            "topology_dpp_accel",
+            "observable_cluster_queue_aware",
+        }:
             native_cuda.baseline_accel_live(
                 self._runtime_native_abi(runtime),
                 active_idx=int(runtime.main.accel_active_idx),
@@ -1235,7 +1246,7 @@ class _NativeActionTraceReplayBridge:
         source = self.exec_sources[1]
         if source == "zero":
             return
-        if source in {"queue_aware", "cluster_center_queue_aware"}:
+        if source in {"queue_aware", "cluster_center_queue_aware", "observable_cluster_queue_aware"}:
             accel_mode, sat_mode, bw_mode = self._source_mode_codes(runtime)
             native_cuda.queue_aware_sat_live(
                 self._runtime_native_abi(runtime),
@@ -1293,7 +1304,7 @@ class _NativeActionTraceReplayBridge:
         if source == "zero":
             self._write_bw_link_transition_override(runtime)
             return
-        if source in {"queue_aware", "cluster_center_queue_aware"}:
+        if source in {"queue_aware", "cluster_center_queue_aware", "observable_cluster_queue_aware"}:
             accel_mode, sat_mode, bw_mode = self._source_mode_codes(runtime)
             native_cuda.queue_aware_bw_live(
                 self._runtime_native_abi(runtime),
@@ -2530,6 +2541,11 @@ _FIXED_POLICY_EXEC_SOURCE_MAP: dict[str, tuple[str, str, str]] = {
         "queue_aware",
         "queue_aware",
     ),
+    "observable_cluster_queue_aware": (
+        "observable_cluster_queue_aware",
+        "queue_aware",
+        "queue_aware",
+    ),
     # Lightweight DPP/MaxWeight ablations built from existing native source
     # modes. These isolate which decision layer carries the non-learning
     # controller's gains before adding a heavier topology-enumerating DPP.
@@ -2581,6 +2597,7 @@ def _acceptance_source_modes(exec_sources: Sequence[str] | None) -> tuple[str, s
         "zero",
         "queue_aware",
         "cluster_center_queue_aware",
+        "observable_cluster_queue_aware",
         "teacher",
         "uniform",
         "random",
@@ -2615,6 +2632,7 @@ def _native_acceptance_source_mode_code(source: str) -> int:
         "demand_priority": native_cuda.SOURCE_DEMAND_PRIORITY,
         "queue_aware": native_cuda.SOURCE_QUEUE_AWARE,
         "cluster_center_queue_aware": native_cuda.SOURCE_CLUSTER_CENTER_QUEUE_AWARE,
+        "observable_cluster_queue_aware": native_cuda.SOURCE_OBSERVABLE_CLUSTER_QUEUE_AWARE,
         "lyapunov": native_cuda.SOURCE_LYAPUNOV,
         "dpp_resource_bw": native_cuda.SOURCE_DPP_RESOURCE_BW,
         "topology_dpp_accel": native_cuda.SOURCE_TOPOLOGY_DPP_ACCEL,

@@ -33,6 +33,7 @@ THESIS_BASELINES = [
     ("link_priority", "链路优先规则"),
     ("demand_priority", "需求优先规则"),
     ("cluster_center_queue_aware", "簇中心运动规则"),
+    ("observable_cluster_queue_aware", "可观测簇中心规则"),
     ("queue_aware", "队列感知规则"),
 ]
 

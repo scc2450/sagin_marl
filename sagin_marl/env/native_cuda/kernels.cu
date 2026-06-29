@@ -36,6 +36,7 @@ constexpr int kSourceTopologyDppBw = 9;
 constexpr int kSourceDppResourceBw = kSourceTopologyDppBw;  // Legacy alias.
 constexpr int kSourceTopologyDppSat = 10;
 constexpr int kSourceTopologyDppAccel = 11;
+constexpr int kSourceObservableClusterQueueAware = 12;
 
 enum FinishProfileSegment : int {
   kFinishProfArrivalAndFlowProxy = 0,
@@ -7238,6 +7239,7 @@ __global__ void baseline_accel_live_kernel(int64_t active_idx, int64_t source_mo
   __shared__ float scratch_b[kSourceBlockMaxThreads];
   __shared__ float scratch_c[kSourceBlockMaxThreads];
   __shared__ int scratch_i[kSourceBlockMaxThreads];
+  __shared__ int scratch_j[kSourceBlockMaxThreads];
   float local_sum_w = 0.0f;
   float local_vx = 0.0f;
   float local_vy = 0.0f;
@@ -7405,6 +7407,173 @@ __global__ void baseline_accel_live_kernel(int64_t active_idx, int64_t source_mo
         ax += repulse_gain * rx;
         ay += repulse_gain * ry;
       }
+      ax += baseline_energy_term_component(a, live_f, row, 0);
+      ay += baseline_energy_term_component(a, live_f, row, 1);
+      project_unit_action(&ax, &ay);
+      a.f[kFLiveAccelAction][(e * ucount + u) * 2 + 0] = ax;
+      a.f[kFLiveAccelAction][(e * ucount + u) * 2 + 1] = ay;
+    }
+  } else if (mode == kSourceObservableClusterQueueAware) {
+    const int center_limit = min(min(max(ucount, 1), max(gu, 0)), kSourceBlockMaxThreads);
+    const float assoc_bonus = fmaxf(fp(a, kFpBaselineAssocBonus, 0.3f), 0.0f);
+    const float gain = fmaxf(fp(a, kFpBaselineAccelGain, 2.0f), 0.0f);
+    if (threadIdx.x == 0) {
+      for (int r = 0; r < center_limit; ++r) scratch_j[r] = -1;
+    }
+    __syncthreads();
+
+    for (int rank = 0; rank < center_limit; ++rank) {
+      float local_best_score = -3.402823466e38f;
+      int local_best_g = -1;
+      for (int g = threadIdx.x; g < gu; g += blockDim.x) {
+        const int mask_idx = row * gu + g;
+        if (!a.b[live_b + 0][mask_idx]) continue;
+        bool used = false;
+        for (int r = 0; r < rank; ++r) used = used || scratch_j[r] == g;
+        if (used) continue;
+        const float* tok = a.f[live_f + 2] + static_cast<int64_t>(mask_idx) * kAccelGuTokenDim;
+        const float pressure = fmaxf(
+            tok[kAccelGuQueueSteps] + tok[kAccelGuExpectedArrivalSteps] - tok[kAccelGuLastOutflowSteps],
+            0.0f) + fmaxf(tok[kAccelGuLastDropSteps], 0.0f);
+        const float se = fmaxf(lyapunov_eta_for_accel_slot(a, e, u, g, tok, accel_stage), 0.0f);
+        float weight = fmaxf(pressure, 1.0e-3f) * (0.5f + se);
+        if (assoc_bonus > 0.0f) weight *= (1.0f + assoc_bonus * clampf_device(tok[kAccelGuPreOwnerIsEgo], 0.0f, 1.0f));
+        float diversity = 1.0f;
+        if (rank > 0) {
+          float best_d2 = 3.402823466e38f;
+          for (int r = 0; r < rank; ++r) {
+            const int sg = scratch_j[r];
+            if (sg < 0) continue;
+            const float* stok = a.f[live_f + 2] + static_cast<int64_t>(row * gu + sg) * kAccelGuTokenDim;
+            const float dx = tok[kAccelGuRelX] - stok[kAccelGuRelX];
+            const float dy = tok[kAccelGuRelY] - stok[kAccelGuRelY];
+            best_d2 = fminf(best_d2, dx * dx + dy * dy);
+          }
+          diversity = 0.25f + sqrtf(fmaxf(best_d2, 0.0f));
+        }
+        const float score = weight * diversity;
+        if (score > local_best_score || (score == local_best_score && (local_best_g < 0 || g < local_best_g))) {
+          local_best_score = score;
+          local_best_g = g;
+        }
+      }
+      float best_score = -3.402823466e38f;
+      int best_g = -1;
+      block_argmax_min_index(local_best_score, local_best_g, scratch_a, scratch_i, &best_score, &best_g);
+      if (threadIdx.x == 0) scratch_j[rank] = best_g;
+      __syncthreads();
+      if (scratch_j[rank] < 0) break;
+    }
+
+    int selected_count = 0;
+    for (int r = 0; r < center_limit; ++r) {
+      if (scratch_j[r] >= 0) ++selected_count;
+    }
+    const int target_rank = selected_count > 0 ? (u % selected_count) : -1;
+    float local_cluster_w = 0.0f;
+    float local_cluster_x = 0.0f;
+    float local_cluster_y = 0.0f;
+    if (target_rank >= 0) {
+      for (int g = threadIdx.x; g < gu; g += blockDim.x) {
+        const int mask_idx = row * gu + g;
+        if (!a.b[live_b + 0][mask_idx]) continue;
+        const float* tok = a.f[live_f + 2] + static_cast<int64_t>(mask_idx) * kAccelGuTokenDim;
+        int nearest_rank = 0;
+        float nearest_d2 = 3.402823466e38f;
+        for (int r = 0; r < selected_count; ++r) {
+          const int sg = scratch_j[r];
+          const float* stok = a.f[live_f + 2] + static_cast<int64_t>(row * gu + sg) * kAccelGuTokenDim;
+          const float dx = tok[kAccelGuRelX] - stok[kAccelGuRelX];
+          const float dy = tok[kAccelGuRelY] - stok[kAccelGuRelY];
+          const float d2 = dx * dx + dy * dy;
+          if (d2 < nearest_d2 || (d2 == nearest_d2 && r < nearest_rank)) {
+            nearest_d2 = d2;
+            nearest_rank = r;
+          }
+        }
+        if (nearest_rank != target_rank) continue;
+        const float pressure = fmaxf(
+            tok[kAccelGuQueueSteps] + tok[kAccelGuExpectedArrivalSteps] - tok[kAccelGuLastOutflowSteps],
+            0.0f) + fmaxf(tok[kAccelGuLastDropSteps], 0.0f);
+        const float se = fmaxf(lyapunov_eta_for_accel_slot(a, e, u, g, tok, accel_stage), 0.0f);
+        float weight = fmaxf(pressure, 1.0e-3f) * (0.5f + se);
+        if (assoc_bonus > 0.0f) weight *= (1.0f + assoc_bonus * clampf_device(tok[kAccelGuPreOwnerIsEgo], 0.0f, 1.0f));
+        local_cluster_w += weight;
+        local_cluster_x += tok[kAccelGuRelX] * weight;
+        local_cluster_y += tok[kAccelGuRelY] * weight;
+      }
+    }
+    const float cluster_w = block_sum_float(local_cluster_w, scratch_a);
+    const float cluster_x = block_sum_float(local_cluster_x, scratch_b);
+    const float cluster_y = block_sum_float(local_cluster_y, scratch_c);
+    float rel_target_x = 0.0f;
+    float rel_target_y = 0.0f;
+    if (cluster_w > kNormDenomEps) {
+      rel_target_x = cluster_x / cluster_w;
+      rel_target_y = cluster_y / cluster_w;
+    } else if (target_rank >= 0) {
+      const int target_g = scratch_j[target_rank];
+      const float* target_tok = a.f[live_f + 2] + static_cast<int64_t>(row * gu + target_g) * kAccelGuTokenDim;
+      rel_target_x = target_tok[kAccelGuRelX];
+      rel_target_y = target_tok[kAccelGuRelY];
+    }
+
+    float ax = 0.0f;
+    float ay = 0.0f;
+    if (target_rank >= 0) {
+      const float map_size = positive_config_scale(fp(a, kFpMapSize, 1.0f));
+      const float ex = rel_target_x * map_size;
+      const float ey = rel_target_y * map_size;
+      const float dist = sqrtf(ex * ex + ey * ey);
+      const float* ego = a.f[live_f + 0] + static_cast<int64_t>(row) * kAccelEgoDim;
+      const float velx = ego[kAccelEgoVx] * fp(a, kFpVMax, 1.0f);
+      const float vely = ego[kAccelEgoVy] * fp(a, kFpVMax, 1.0f);
+      const float speed = sqrtf(velx * velx + vely * vely);
+      const float stop_radius = fmaxf(fp(a, kFpBaselineClusterStopRadius, 20.0f), 0.0f);
+      const float speed_tol = fmaxf(fp(a, kFpBaselineClusterSpeedTol, 2.0f), 0.0f);
+      const float slow_radius = fmaxf(fp(a, kFpBaselineClusterSlowRadius, 120.0f), stop_radius + kDynamicsDenomEps);
+      const float cruise = fminf(fmaxf(fp(a, kFpBaselineClusterCruiseSpeed, fp(a, kFpUavOptSpeed, 0.0f)), 0.0f), fp(a, kFpVMax, 1.0f));
+      const float vel_gain = fmaxf(fp(a, kFpBaselineClusterVelGain, 1.0f), 0.0f) * gain;
+      float desired_x = 0.0f;
+      float desired_y = 0.0f;
+      if (dist > stop_radius) {
+        const float desired_speed = cruise * fminf(dist / dynamics_denominator(slow_radius), 1.0f);
+        desired_x = ex / dynamics_denominator(dist) * desired_speed;
+        desired_y = ey / dynamics_denominator(dist) * desired_speed;
+      }
+      ax = vel_gain * (desired_x - velx) / dynamics_denominator(fp(a, kFpTau0, 1.0f)) / positive_config_scale(fp(a, kFpAccelAMax, 1.0f));
+      ay = vel_gain * (desired_y - vely) / dynamics_denominator(fp(a, kFpTau0, 1.0f)) / positive_config_scale(fp(a, kFpAccelAMax, 1.0f));
+      if (dist <= stop_radius && speed <= speed_tol) { ax = 0.0f; ay = 0.0f; }
+    }
+
+    const int nbr_width = max(ucount - 1, 0);
+    const float repulse_gain = fp(a, kFpBaselineRepulseGain, 0.0f);
+    const float repulse_radius = fp(a, kFpDSafe, 0.0f) * fp(a, kFpBaselineRepulseRadiusFactor, 1.5f);
+    float local_rx = 0.0f;
+    float local_ry = 0.0f;
+    if (repulse_gain > 0.0f && repulse_radius > 0.0f && nbr_width > 0) {
+      const float map_size = positive_config_scale(fp(a, kFpMapSize, 1.0f));
+      for (int n = threadIdx.x; n < nbr_width; n += blockDim.x) {
+        const int nidx = row * nbr_width + n;
+        if (!a.b[live_b + 1][nidx]) continue;
+        const float* peer = a.f[live_f + 3] + static_cast<int64_t>(nidx) * kAccelPeerTokenDim;
+        const float relx = peer[kAccelPeerRelX];
+        const float rely = peer[kAccelPeerRelY];
+        const float dist_norm = sqrtf(relx * relx + rely * rely);
+        const float dist = dist_norm * map_size;
+        if (!(dist > kDynamicsDenomEps && dist < repulse_radius)) continue;
+        const float strength = (1.0f / dynamics_denominator(dist) - 1.0f / repulse_radius);
+        local_rx += (relx / geometry_denominator(dist_norm)) * strength;
+        local_ry += (rely / geometry_denominator(dist_norm)) * strength;
+      }
+    }
+    const float rx = block_sum_float(local_rx, scratch_a);
+    const float ry = block_sum_float(local_ry, scratch_b);
+    if (repulse_gain > 0.0f && repulse_radius > 0.0f && nbr_width > 0) {
+      ax += repulse_gain * rx;
+      ay += repulse_gain * ry;
+    }
+    if (threadIdx.x == 0) {
       ax += baseline_energy_term_component(a, live_f, row, 0);
       ay += baseline_energy_term_component(a, live_f, row, 1);
       project_unit_action(&ax, &ay);
