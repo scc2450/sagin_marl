@@ -350,9 +350,7 @@ def queue_aware_policy_batch(
             uniform = bw_valid_mask.to(dtype=dtype) / bw_valid_mask.to(dtype=dtype).sum(dim=-1, keepdim=True).clamp_min(1.0)
             fallback = (denom <= 1.0e-6) & bw_valid_mask.any(dim=-1, keepdim=True)
             slot_bw_alloc = torch.where(fallback, uniform, slot_bw_alloc)
-            width = min(int(cfg.num_gu), int(slot_bw_alloc.shape[-1]))
-            if width > 0:
-                bw_alloc[..., :width] = slot_bw_alloc[..., :width]
+            bw_alloc = _slot_bw_to_full_gu_torch(slot_bw_alloc, torch_batch, cfg)
 
     if not cfg.fixed_satellite_strategy:
         sats = torch_batch["sats"]
@@ -1809,9 +1807,7 @@ def queue_aware_policy(
                     slot_bw = slot_weights / denom
                 elif np.any(bw_valid_mask):
                     slot_bw[bw_valid_mask] = 1.0 / float(np.sum(bw_valid_mask))
-                width = min(int(cfg.num_gu), int(slot_bw.shape[0]))
-                if width > 0:
-                    bw_alloc[i, :width] = slot_bw[:width]
+                bw_alloc[i] = _slot_bw_to_full_gu_np(slot_bw, obs, cfg)
 
         if not cfg.fixed_satellite_strategy:
             sats = obs["sats"]
