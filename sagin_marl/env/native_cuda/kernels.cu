@@ -33,6 +33,7 @@ constexpr int kSourceQueueAware = 6;
 constexpr int kSourceClusterCenterQueueAware = 7;
 constexpr int kSourceLyapunov = 8;
 constexpr int kSourceDppResourceBw = 9;
+constexpr int kSourceTopologyDppSat = 10;
 
 enum FinishProfileSegment : int {
   kFinishProfArrivalAndFlowProxy = 0,
@@ -572,6 +573,9 @@ enum FloatParamIndex : int {
   kFpTopologyDppBwTemp = 202,
   kFpTopologyDppBwFloor = 203,
   kFpTopologyDppDistPenalty = 204,
+  kFpTopologyDppSatQueueGapWeight = 205,
+  kFpTopologyDppSatSubsetPenalty = 206,
+  kFpTopologyDppSatContentionWeight = 207,
 };
 
 enum FloatTensorIndex : int {
@@ -1003,7 +1007,7 @@ void check_launch_contract(
     throw std::runtime_error("native CUDA actor source mode scalars do not match the frozen ABI.");
   }
   for (int64_t mode : {accel_source_mode, sat_source_mode, bw_source_mode}) {
-    if (mode < kSourcePolicy || mode > kSourceDppResourceBw) {
+    if (mode < kSourcePolicy || mode > kSourceTopologyDppSat) {
       throw std::runtime_error("native CUDA actor source mode is not supported.");
     }
   }
@@ -7833,6 +7837,32 @@ __device__ float baseline_sat_slot_score(
     lyapunov_sat_profile_from_values(se, sat_queue_steps, observed_load, doppler_margin, &se_abs, &queue_unused, &relay_support);
     return drift_w * (uav_pressure_steps - sat_queue_steps) * relay_support;
   }
+  if (source_mode == kSourceTopologyDppSat) {
+    const int idx = (row * width + slot) * 26;
+    const float sat_queue_steps = lyapunov_steps_from_log1p(a.f[kFLiveSatObs + 3][idx + 0]);
+    const float gap = fmaxf(uav_pressure_steps - sat_queue_steps, 0.0f);
+    const float backhaul_proxy =
+        0.5f * normalize_masked_value(se, se_min, se_max)
+        + 0.5f * normalize_masked_value(bw, bw_min, bw_max);
+    const float gap_w = fmaxf(fp(a, kFpTopologyDppSatQueueGapWeight, 1.0f), 0.0f);
+    return queue_aware_sat_score(
+        a,
+        stage_slot,
+        e,
+        u,
+        row,
+        slot,
+        width,
+        se_min,
+        se_max,
+        q_min,
+        q_max,
+        load_min,
+        load_max,
+        bw_min,
+        bw_max)
+        + gap_w * gap * backhaul_proxy;
+  }
   return queue_aware_sat_score(
       a,
       stage_slot,
@@ -7901,13 +7931,16 @@ __global__ void baseline_sat_live_kernel(int64_t source_mode64) {
   const float bw_max = block_max_float(local_bw_max, float_scratch);
   constexpr int kLyapunovSatEgoDim = 13;
   const float* sat_ego = a.f[kFLiveSatObs + 0] + static_cast<int64_t>(row) * kLyapunovSatEgoDim;
-  const float uav_pressure_steps = mode == kSourceLyapunov ? lyapunov_steps_from_log1p(sat_ego[0]) : 0.0f;
+  const bool needs_uav_pressure = mode == kSourceLyapunov || mode == kSourceTopologyDppSat;
+  const float uav_pressure_steps = needs_uav_pressure ? lyapunov_steps_from_log1p(sat_ego[0]) : 0.0f;
   const int target_size = min(max(select_k, 0), valid_count);
   float local_best_sum = -3.402823466e38f;
   int local_best_subset = -1;
   for (int subset = threadIdx.x; subset < subset_count; subset += blockDim.x) {
     int size = 0;
     float score_sum = 0.0f;
+    float backhaul_term = 0.0f;
+    float contention_penalty = 0.0f;
     bool valid_subset = true;
     for (int k = 0; k < select_k; ++k) {
       const int slot = static_cast<int>(a.l[kLMainSatSubsetMembersBase][subset * select_k + k]);
@@ -7935,10 +7968,28 @@ __global__ void baseline_sat_live_kernel(int64_t source_mode64) {
           bw_min,
           bw_max,
           uav_pressure_steps);
+      if (mode == kSourceTopologyDppSat) {
+        float se = 0.0f, q = 0.0f, load = 0.0f, bw = 0.0f, stay = 0.0f;
+        queue_aware_sat_values(a, sat_stage, e, u, row, slot, width, &se, &q, &load, &bw, &stay);
+        const int idx = (row * width + slot) * 26;
+        const float sat_queue_steps = lyapunov_steps_from_log1p(a.f[kFLiveSatObs + 3][idx + 0]);
+        const float gap = fmaxf(uav_pressure_steps - sat_queue_steps, 0.0f);
+        const float proxy =
+            0.5f * normalize_masked_value(se, se_min, se_max)
+            + 0.5f * normalize_masked_value(bw, bw_min, bw_max);
+        backhaul_term += gap * proxy;
+        contention_penalty += fmaxf(1.0f - bw, 0.0f);
+      }
     }
     if (!valid_subset || size != target_size) continue;
     if (mode == kSourceUniform || mode == kSourceRandom) {
       score_sum = source_hash01(a, e, u, subset, mode == kSourceUniform ? 501 : 503);
+    } else if (mode == kSourceTopologyDppSat) {
+      const float subset_penalty = fmaxf(fp(a, kFpTopologyDppSatSubsetPenalty, 0.02f), 0.0f);
+      const float contention_w = fmaxf(fp(a, kFpTopologyDppSatContentionWeight, 0.15f), 0.0f);
+      score_sum += backhaul_term;
+      score_sum -= subset_penalty * static_cast<float>(size * size);
+      score_sum -= contention_w * contention_penalty;
     }
     if (score_sum > local_best_sum || (score_sum == local_best_sum && (local_best_subset < 0 || subset < local_best_subset))) {
       local_best_sum = score_sum;

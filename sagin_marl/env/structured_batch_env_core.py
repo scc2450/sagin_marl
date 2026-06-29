@@ -12669,6 +12669,9 @@ class StructuredBatchEnvCore:
             float(getattr(cfg, "topology_dpp_bw_temp", 0.55) or 0.55),
             float(getattr(cfg, "topology_dpp_bw_floor", 0.01) or 0.0),
             float(getattr(cfg, "topology_dpp_dist_penalty", 0.10) or 0.0),
+            float(getattr(cfg, "topology_dpp_sat_queue_gap_weight", 1.0) or 0.0),
+            float(getattr(cfg, "topology_dpp_sat_subset_penalty", 0.02) or 0.0),
+            float(getattr(cfg, "topology_dpp_sat_contention_weight", 0.15) or 0.0),
         )
         return native_cuda.NativeCudaRuntimeABI(
             float_tensors=tuple(float_tensors),

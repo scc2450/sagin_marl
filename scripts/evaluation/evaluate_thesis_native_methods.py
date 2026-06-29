@@ -46,6 +46,7 @@ DPP_ABLATION_BASELINES = [
     ("topology_dpp", "拓扑感知 one-step DPP"),
     ("dpp_resource_hybrid", "Cluster 移动 + topology DPP 资源分配"),
     ("dpp_resource_hybrid_native", "Cluster 移动 + native DPP BW 资源分配"),
+    ("topology_dpp_native_bw_sat_cached", "Cluster 移动 + native topology-DPP SAT/BW"),
 ]
 
 
