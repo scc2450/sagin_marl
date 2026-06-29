@@ -406,6 +406,7 @@ def _normalize_exec_source(raw: str | None) -> str:
         "link_priority",
         "demand_priority",
         "lyapunov",
+        "dpp_resource_bw",
     }
     if source not in allowed:
         raise ValueError(f"Unsupported structured exec source: {raw!r}")
@@ -422,6 +423,7 @@ _NATIVE_BASELINE_ACTION_SOURCES = {
     "queue_aware",
     "cluster_center_queue_aware",
     "lyapunov",
+    "dpp_resource_bw",
 }
 _NATIVE_LIVE_ACTION_SOURCES = _NATIVE_POLICY_ACTION_SOURCES | _NATIVE_BASELINE_ACTION_SOURCES | {"teacher"}
 _NATIVE_EXEC_SOURCES = _NATIVE_ZERO_ACTION_SOURCES | _NATIVE_LIVE_ACTION_SOURCES
@@ -445,6 +447,7 @@ def _native_exec_source_mode_code(source: object) -> int:
         "queue_aware": native_cuda.SOURCE_QUEUE_AWARE,
         "cluster_center_queue_aware": native_cuda.SOURCE_CLUSTER_CENTER_QUEUE_AWARE,
         "lyapunov": native_cuda.SOURCE_LYAPUNOV,
+        "dpp_resource_bw": native_cuda.SOURCE_DPP_RESOURCE_BW,
     }
     if source_s not in table:
         raise RuntimeError(f"native rollout source {source_s!r} is not supported.")
@@ -781,7 +784,7 @@ class _StructuredMAPPOGpuActorBridge:
             self.write_bw_action = self._write_bw_action_zero  # type: ignore[method-assign]
         elif bw_source in {"queue_aware", "cluster_center_queue_aware"}:
             self.write_bw_action = self._write_bw_action_queue_aware  # type: ignore[method-assign]
-        elif bw_source in {"uniform", "random", "link_priority", "demand_priority", "lyapunov"}:
+        elif bw_source in {"uniform", "random", "link_priority", "demand_priority", "lyapunov", "dpp_resource_bw"}:
             self.write_bw_action = self._write_bw_action_baseline  # type: ignore[method-assign]
         elif bw_source == "teacher":
             self.write_bw_action = self._write_bw_action_teacher  # type: ignore[method-assign]

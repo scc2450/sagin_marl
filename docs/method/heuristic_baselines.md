@@ -84,11 +84,13 @@ Supported current rule/MaxWeight baseline IDs include:
 | `dpp_no_mobility` | `zero`, `lyapunov`, `lyapunov` |
 | `dpp_equal_bw` | `lyapunov`, `lyapunov`, `uniform` |
 | `dpp_greedy_sat` | `lyapunov`, `queue_aware`, `lyapunov` |
+| `dpp_resource_bw` | `zero`, `zero`, `dpp_resource_bw` |
+| `dpp_resource_hybrid_native` | `cluster_center_queue_aware`, `queue_aware`, `dpp_resource_bw` |
 | `topology_dpp` | structured Python fallback; no native source triple yet |
 | `dpp_resource_hybrid` | structured Python fallback; cluster-center accel with topology-DPP BW/SAT |
 
 `lyapunov` is still accepted as a compatibility alias for `maxweight_lyapunov`.
-`topology_dpp` and `dpp_resource_hybrid` are intentionally not added to `_FIXED_POLICY_EXEC_SOURCE_MAP`: they require Python-side topology/resource reasoning before choosing BW/SAT decisions, so the current implementations should be treated as strong non-learning benchmark candidates rather than native-kernel smoke baselines.
+`topology_dpp` and the legacy `dpp_resource_hybrid` are intentionally not added to `_FIXED_POLICY_EXEC_SOURCE_MAP`: they require Python-side topology/resource reasoning before choosing BW/SAT decisions. `dpp_resource_hybrid_native` is the fast staged-source variant: it keeps cluster-center accel and queue-aware SAT in native kernels, then uses the native `dpp_resource_bw` source for BW allocation.
 
 ## Integrating A New Native Baseline
 

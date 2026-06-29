@@ -32,6 +32,7 @@ constexpr int kSourceDemandPriority = 5;
 constexpr int kSourceQueueAware = 6;
 constexpr int kSourceClusterCenterQueueAware = 7;
 constexpr int kSourceLyapunov = 8;
+constexpr int kSourceDppResourceBw = 9;
 
 enum FinishProfileSegment : int {
   kFinishProfArrivalAndFlowProxy = 0,
@@ -180,6 +181,7 @@ enum IntParamIndex : int {
   kParamHistorySnapshotsEnabled = 90,
   kParamAccessBwDecisionInterval = 91,
   kParamSatDecisionInterval = 92,
+  kParamTopologyDppGuMaxSelect = 93,
 };
 
 enum AccelEgoField : int {
@@ -567,6 +569,9 @@ enum FloatParamIndex : int {
   kFpBaselineLyapunovSatSwitchBias = 199,
   kFpBaselineLyapunovSatAbsSeWeight = 200,
   kFpBaselineLyapunovSatDopplerPenalty = 201,
+  kFpTopologyDppBwTemp = 202,
+  kFpTopologyDppBwFloor = 203,
+  kFpTopologyDppDistPenalty = 204,
 };
 
 enum FloatTensorIndex : int {
@@ -998,7 +1003,7 @@ void check_launch_contract(
     throw std::runtime_error("native CUDA actor source mode scalars do not match the frozen ABI.");
   }
   for (int64_t mode : {accel_source_mode, sat_source_mode, bw_source_mode}) {
-    if (mode < kSourcePolicy || mode > kSourceLyapunov) {
+    if (mode < kSourcePolicy || mode > kSourceDppResourceBw) {
       throw std::runtime_error("native CUDA actor source mode is not supported.");
     }
   }
@@ -7487,6 +7492,76 @@ __global__ void queue_aware_bw_live_kernel() {
   }
 }
 
+__device__ bool dpp_resource_bw_slot_valid(const PackedAbi& a, int row, int g) {
+  const int idx = row * static_cast<int>(ip(a, kParamNumGu)) + g;
+  return a.b[kBLiveBwObs + 1][idx] && a.b[kBLiveBwObs + 2][idx];
+}
+
+__device__ float dpp_resource_bw_slot_score(
+    const PackedAbi& a,
+    int e,
+    int u,
+    int g,
+    int row,
+    int bw_stage,
+    bool has_stage_gain,
+    bool has_prev_assoc,
+    float access_noise_ref) {
+  const int ucount = static_cast<int>(ip(a, kParamNumUav));
+  const int gu = static_cast<int>(ip(a, kParamNumGu));
+  const int idx = row * gu + g;
+  const float* tok = a.f[kFLiveBwObs + 2] + static_cast<int64_t>(idx) * kBwGuTokenDim;
+  const float q = fmaxf(tok[kBwGuQueueSteps], 0.0f);
+  const float expected = fmaxf(tok[kBwGuExpectedArrivalSteps], 0.0f);
+  float eta = fmaxf(tok[kBwGuAccessRateFullBwRefSteps], 0.0f);
+  if (has_stage_gain) {
+    const float gain = a.f[stage_f(bw_stage, kSfAccessGainMatrix)][(e * gu + g) * ucount + u];
+    eta = fmaxf(accel_access_se_from_gain(a, gain, access_noise_ref), 0.0f);
+  }
+  const float assoc_bonus = fp(a, kFpBaselineAssocBonus, 0.3f);
+  const float prev_assoc =
+      has_prev_assoc && a.l[stage_l(bw_stage, kSlPrevAssociation)][e * gu + g] == u ? 1.0f : 0.0f;
+  const float demand_pressure = q + expected;
+  const float rate_proxy = clampf_device(0.5f + eta, 0.0f, 2.0f);
+  float score = demand_pressure * rate_proxy * (1.0f + assoc_bonus * prev_assoc);
+  if (has_f(a, stage_f(bw_stage, kSfGuPos)) && has_f(a, stage_f(bw_stage, kSfUavPos))) {
+    const float gx = a.f[stage_f(bw_stage, kSfGuPos)][(e * gu + g) * 2 + 0];
+    const float gy = a.f[stage_f(bw_stage, kSfGuPos)][(e * gu + g) * 2 + 1];
+    const float ux = a.f[stage_f(bw_stage, kSfUavPos)][(e * ucount + u) * 2 + 0];
+    const float uy = a.f[stage_f(bw_stage, kSfUavPos)][(e * ucount + u) * 2 + 1];
+    const float dist = sqrtf((gx - ux) * (gx - ux) + (gy - uy) * (gy - uy));
+    score -= fmaxf(fp(a, kFpTopologyDppDistPenalty, 0.1f), 0.0f)
+        * dist
+        / positive_config_scale(fp(a, kFpMapSize, 1.0f));
+  }
+  return score;
+}
+
+__device__ bool dpp_resource_bw_slot_selected(
+    const PackedAbi& a,
+    int e,
+    int u,
+    int g,
+    int row,
+    int bw_stage,
+    bool has_stage_gain,
+    bool has_prev_assoc,
+    float access_noise_ref,
+    float my_score) {
+  const int gu = static_cast<int>(ip(a, kParamNumGu));
+  const int topk = max(1, min(static_cast<int>(ip(a, kParamTopologyDppGuMaxSelect, 6)), gu));
+  int better = 0;
+  for (int other = 0; other < gu; ++other) {
+    if (other == g || !dpp_resource_bw_slot_valid(a, row, other)) continue;
+    const float other_score =
+        dpp_resource_bw_slot_score(a, e, u, other, row, bw_stage, has_stage_gain, has_prev_assoc, access_noise_ref);
+    if (other_score > my_score || (other_score == my_score && other < g)) {
+      ++better;
+    }
+  }
+  return better < topk;
+}
+
 __global__ void baseline_bw_live_kernel(int64_t source_mode64) {
   const PackedAbi& a = cLiveAbi;
   const int e = blockIdx.x;
@@ -7500,6 +7575,7 @@ __global__ void baseline_bw_live_kernel(int64_t source_mode64) {
   constexpr int bw_stage = 3;
   constexpr int sat_stage = 2;
   const bool has_stage_gain = has_f(a, stage_f(bw_stage, kSfAccessGainMatrix));
+  const bool has_prev_assoc = has_l(a, stage_l(bw_stage, kSlPrevAssociation));
   const float access_noise_ref = accel_access_noise_ref(a);
   const float relay_gate = mode == kSourceLyapunov
       ? lyapunov_relay_gate(a, sat_stage, e, u, row, sat_visible_width(a))
@@ -7510,6 +7586,7 @@ __global__ void baseline_bw_live_kernel(int64_t source_mode64) {
   float local_sum = 0.0f;
   float local_max = -3.402823466e38f;
   int local_valid = 0;
+  int local_selected = 0;
   for (int g = threadIdx.x; g < gu; g += blockDim.x) {
     const int idx = row * gu + g;
     const bool valid = a.b[kBLiveBwObs + 1][idx] && a.b[kBLiveBwObs + 2][idx];
@@ -7535,13 +7612,47 @@ __global__ void baseline_bw_live_kernel(int64_t source_mode64) {
       const float urgency = fmaxf(q, 0.0f);
       const float service_gain = relay_gate * (0.5f + eta);
       score = source_clip_positive(fmaxf(fp(a, kFpBaselineLyapunovV, 2.0f), 0.0f) * urgency * service_gain);
+    } else if (mode == kSourceDppResourceBw) {
+      const float dpp_score =
+          dpp_resource_bw_slot_score(a, e, u, g, row, bw_stage, has_stage_gain, has_prev_assoc, access_noise_ref);
+      const bool selected = dpp_resource_bw_slot_selected(
+          a, e, u, g, row, bw_stage, has_stage_gain, has_prev_assoc, access_noise_ref, dpp_score);
+      if (selected) {
+        const float temp = fmaxf(fp(a, kFpTopologyDppBwTemp, 0.55f), 1.0e-3f);
+        score = fmaxf(fp(a, kFpBaselineLyapunovV, 2.0f), 0.0f) * dpp_score / temp;
+        local_max = fmaxf(local_max, score);
+        ++local_selected;
+      } else {
+        score = 0.0f;
+      }
     }
-    local_sum += fmaxf(score, 0.0f);
+    if (mode != kSourceDppResourceBw) {
+      local_sum += fmaxf(score, 0.0f);
+    }
   }
   const int valid_count = block_sum_int(local_valid, int_scratch);
+  const int selected_count = block_sum_int(local_selected, int_scratch);
   float denom = 0.0f;
   float max_score = -3.402823466e38f;
-  if (mode == kSourceLyapunov) {
+  if (mode == kSourceDppResourceBw) {
+    max_score = block_max_float(local_max, float_scratch);
+    float local_exp_sum = 0.0f;
+    if (max_score > -3.0e38f) {
+      for (int g = threadIdx.x; g < gu; g += blockDim.x) {
+        if (!dpp_resource_bw_slot_valid(a, row, g)) continue;
+        const float dpp_score =
+            dpp_resource_bw_slot_score(a, e, u, g, row, bw_stage, has_stage_gain, has_prev_assoc, access_noise_ref);
+        if (!dpp_resource_bw_slot_selected(
+                a, e, u, g, row, bw_stage, has_stage_gain, has_prev_assoc, access_noise_ref, dpp_score)) {
+          continue;
+        }
+        const float temp = fmaxf(fp(a, kFpTopologyDppBwTemp, 0.55f), 1.0e-3f);
+        const float logit = fmaxf(fp(a, kFpBaselineLyapunovV, 2.0f), 0.0f) * dpp_score / temp;
+        local_exp_sum += expf(logit - max_score);
+      }
+    }
+    denom = block_sum_float(local_exp_sum, float_scratch);
+  } else if (mode == kSourceLyapunov) {
     denom = block_sum_float(local_sum, float_scratch);
   } else {
     denom = block_sum_float(local_sum, float_scratch);
@@ -7560,7 +7671,22 @@ __global__ void baseline_bw_live_kernel(int64_t source_mode64) {
     }
     float value = 0.0f;
     if (valid && ip(a, kParamEnableBwAction)) {
-      if (mode == kSourceLyapunov) {
+      if (mode == kSourceDppResourceBw) {
+        const float dpp_score =
+            dpp_resource_bw_slot_score(a, e, u, g, row, bw_stage, has_stage_gain, has_prev_assoc, access_noise_ref);
+        const bool selected = dpp_resource_bw_slot_selected(
+            a, e, u, g, row, bw_stage, has_stage_gain, has_prev_assoc, access_noise_ref, dpp_score);
+        if (selected && selected_count > 0) {
+          const float temp = fmaxf(fp(a, kFpTopologyDppBwTemp, 0.55f), 1.0e-3f);
+          const float logit = fmaxf(fp(a, kFpBaselineLyapunovV, 2.0f), 0.0f) * dpp_score / temp;
+          value = denom > kNormDenomEps ? expf(logit - max_score) / denom : 1.0f / static_cast<float>(selected_count);
+          float floor = clampf_device(fp(a, kFpTopologyDppBwFloor, 0.01f), 0.0f, 0.2f);
+          floor = fminf(floor, 0.99f / fmaxf(static_cast<float>(selected_count), 1.0f));
+          if (floor > 0.0f) {
+            value = (1.0f - floor * static_cast<float>(selected_count)) * value + floor;
+          }
+        }
+      } else if (mode == kSourceLyapunov) {
         eta = lyapunov_eta_for_bw_slot(a, e, u, g, tok, bw_stage);
         const float urgency = fmaxf(q, 0.0f);
         const float service_gain = relay_gate * (0.5f + eta);

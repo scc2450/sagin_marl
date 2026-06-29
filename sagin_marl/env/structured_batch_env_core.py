@@ -12461,6 +12461,7 @@ class StructuredBatchEnvCore:
             int(bool(domains.history_output.runtime_snapshots_enabled)),
             max(int(getattr(cfg, "access_bw_decision_interval", 1) or 1), 1),
             max(int(getattr(cfg, "sat_decision_interval", 1) or 1), 1),
+            max(int(getattr(cfg, "topology_dpp_gu_max_select", 6) or 6), 1),
         )
         float_params = (
             float(domains.numeric.access_eta_quantum),
@@ -12665,6 +12666,9 @@ class StructuredBatchEnvCore:
             float(getattr(cfg, "baseline_lyapunov_sat_switch_bias", 0.1) or 0.0),
             float(getattr(cfg, "baseline_lyapunov_sat_abs_se_weight", 0.5) or 0.0),
             float(getattr(cfg, "baseline_lyapunov_sat_doppler_penalty", 0.35) or 0.0),
+            float(getattr(cfg, "topology_dpp_bw_temp", 0.55) or 0.55),
+            float(getattr(cfg, "topology_dpp_bw_floor", 0.01) or 0.0),
+            float(getattr(cfg, "topology_dpp_dist_penalty", 0.10) or 0.0),
         )
         return native_cuda.NativeCudaRuntimeABI(
             float_tensors=tuple(float_tensors),

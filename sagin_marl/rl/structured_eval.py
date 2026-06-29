@@ -1303,7 +1303,7 @@ class _NativeActionTraceReplayBridge:
             )
             self._write_bw_link_transition_override(runtime)
             return
-        if source in {"uniform", "random", "link_priority", "demand_priority", "lyapunov"}:
+        if source in {"uniform", "random", "link_priority", "demand_priority", "lyapunov", "dpp_resource_bw"}:
             accel_mode, sat_mode, bw_mode = self._source_mode_codes(runtime)
             native_cuda.baseline_bw_live(
                 self._runtime_native_abi(runtime),
@@ -2528,6 +2528,17 @@ _FIXED_POLICY_EXEC_SOURCE_MAP: dict[str, tuple[str, str, str]] = {
     "dpp_no_mobility": ("zero", "lyapunov", "lyapunov"),
     "dpp_equal_bw": ("lyapunov", "lyapunov", "uniform"),
     "dpp_greedy_sat": ("lyapunov", "queue_aware", "lyapunov"),
+    "dpp_resource_bw": ("zero", "zero", "dpp_resource_bw"),
+    "dpp_resource_hybrid_native": (
+        "cluster_center_queue_aware",
+        "queue_aware",
+        "dpp_resource_bw",
+    ),
+    "topology_dpp_resource_native": (
+        "cluster_center_queue_aware",
+        "queue_aware",
+        "dpp_resource_bw",
+    ),
 }
 
 
@@ -2552,6 +2563,7 @@ def _acceptance_source_modes(exec_sources: Sequence[str] | None) -> tuple[str, s
         "link_priority",
         "demand_priority",
         "lyapunov",
+        "dpp_resource_bw",
     }
     modes: list[str] = []
     for source in exec_sources:
@@ -2577,6 +2589,7 @@ def _native_acceptance_source_mode_code(source: str) -> int:
         "queue_aware": native_cuda.SOURCE_QUEUE_AWARE,
         "cluster_center_queue_aware": native_cuda.SOURCE_CLUSTER_CENTER_QUEUE_AWARE,
         "lyapunov": native_cuda.SOURCE_LYAPUNOV,
+        "dpp_resource_bw": native_cuda.SOURCE_DPP_RESOURCE_BW,
     }
     if source_s not in table:
         raise RuntimeError(f"native replay source {source_s!r} is not supported.")
