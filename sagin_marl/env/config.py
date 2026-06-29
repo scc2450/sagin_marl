@@ -455,6 +455,7 @@ class SaginConfig:
     topology_dpp_accel_cost: float = 0.08
     topology_dpp_smoothness: float = 0.05
     topology_dpp_accel_safety_weight: float = 4.0
+    topology_dpp_accel_role_weight: float = 0.35
     topology_dpp_dist_penalty: float = 0.10
     topology_dpp_bw_temp: float = 0.55
     topology_dpp_bw_floor: float = 0.01

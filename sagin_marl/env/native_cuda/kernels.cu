@@ -585,6 +585,7 @@ enum FloatParamIndex : int {
   kFpTopologyDppAccelCost = 212,
   kFpTopologyDppSmoothness = 213,
   kFpTopologyDppAccelSafetyWeight = 214,
+  kFpTopologyDppAccelRoleWeight = 215,
 };
 
 enum FloatTensorIndex : int {
@@ -7250,6 +7251,7 @@ __global__ void baseline_accel_live_kernel(int64_t active_idx, int64_t source_mo
     const float accel_cost = fmaxf(fp(a, kFpTopologyDppAccelCost, 0.08f), 0.0f);
     const float smooth_w = fmaxf(fp(a, kFpTopologyDppSmoothness, 0.05f), 0.0f);
     const float safety_w = fmaxf(fp(a, kFpTopologyDppAccelSafetyWeight, 4.0f), 0.0f);
+    const float role_w = fmaxf(fp(a, kFpTopologyDppAccelRoleWeight, 0.35f), 0.0f);
     const float dist_penalty = fmaxf(fp(a, kFpTopologyDppDistPenalty, 0.1f), 0.0f);
     const float assoc_bonus = fmaxf(fp(a, kFpBaselineAssocBonus, 0.3f), 0.0f);
     const float map_size = positive_config_scale(fp(a, kFpMapSize, 1.0f));
@@ -7257,6 +7259,19 @@ __global__ void baseline_accel_live_kernel(int64_t active_idx, int64_t source_mo
     const float amax = positive_config_scale(fp(a, kFpAccelAMax, 1.0f));
     const float vmax = positive_config_scale(fp(a, kFpVMax, 1.0f));
     const float* ego = a.f[live_f + 0] + static_cast<int64_t>(row) * kAccelEgoDim;
+    float role_x = ego[kAccelEgoX] - 0.5f;
+    float role_y = ego[kAccelEgoY] - 0.5f;
+    float role_norm = sqrtf(role_x * role_x + role_y * role_y);
+    if (role_norm <= 1.0e-3f && ucount > 0) {
+      const float theta = 6.28318530717958647692f * static_cast<float>(u) / fmaxf(static_cast<float>(ucount), 1.0f);
+      role_x = cosf(theta);
+      role_y = sinf(theta);
+      role_norm = 1.0f;
+    }
+    if (role_norm > kNormDenomEps) {
+      role_x /= role_norm;
+      role_y /= role_norm;
+    }
     const int cand = threadIdx.x;
     float local_score = -3.402823466e38f;
     int local_candidate = -1;
@@ -7345,10 +7360,12 @@ __global__ void baseline_accel_live_kernel(int64_t active_idx, int64_t source_mo
       const float reg =
           accel_cost * (raw_x * raw_x + raw_y * raw_y)
           + smooth_w * ((ax - last_x) * (ax - last_x) + (ay - last_y) * (ay - last_y));
+      const float role_term = pressure_sum * (ax * role_x + ay * role_y);
       local_score =
           access_w * access_term
           + backhaul_w * backhaul_term
           + mobility_w * mobility_term
+          + role_w * role_term
           - reg
           - safety_w * safety_penalty * (1.0f + pressure_sum);
       local_candidate = cand;
