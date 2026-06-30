@@ -31,7 +31,7 @@ uav_spawn_curriculum_enabled: false
 uav_safe_random_init_enabled: true
 uav_init_speed_frac: 0.0
 traffic_model: sticky_subset_hotspot
-task_arrival_rate: 3.0e6
+task_arrival_rate: 3000000.0
 task_arrival_poisson: true
 traffic_level: 2
 traffic_level_nav_ratio: 0.08
@@ -312,3 +312,5 @@ critic_warmup_before_actor_epochs: 0
 critic_loss_target_standardize: false
 critic_loss_running_standardize: false
 critic_replay_bank_enabled: false
+access_bw_decision_interval: 5
+sat_decision_interval: 1

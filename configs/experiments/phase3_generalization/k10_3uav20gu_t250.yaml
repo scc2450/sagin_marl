@@ -1,4 +1,4 @@
-# Phase 3 same-scale zero-shot: slower SAT/BW decision refresh K=10.
+# Phase 3 same-scale zero-shot: slower BW macro decision refresh K=10.
 # Derived from: configs/current/structured_joint_mcgae_3uav_20gu_t250_positive_relcritic.yaml
 # Keep num_uav=3, num_gu=20, T_steps=250 for first-batch same-scale generalization.
 # Intended use: zero-shot evaluation and 1-2 episode native smoke before formal runs.
@@ -313,4 +313,4 @@ critic_loss_target_standardize: false
 critic_loss_running_standardize: false
 critic_replay_bank_enabled: false
 access_bw_decision_interval: 10
-sat_decision_interval: 10
+sat_decision_interval: 1

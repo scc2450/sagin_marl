@@ -312,3 +312,5 @@ critic_warmup_before_actor_epochs: 0
 critic_loss_target_standardize: false
 critic_loss_running_standardize: false
 critic_replay_bank_enabled: false
+access_bw_decision_interval: 5
+sat_decision_interval: 1
