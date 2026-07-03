@@ -3012,7 +3012,13 @@ class StructuredMAPPO:
             end = min(start + micro_size, sample_count)
             rel_idx = torch.arange(start, end, dtype=torch.long, device=self.device)
             world_batch_mb = _index_dataclass(stage_batch.world_batch, rel_idx)
-            value_mb = self._stage_value_eval_from_batch(stage_id, world_batch_mb)
+            if (end - start) == micro_size:
+                value_mb = self._stage_value_eval_from_batch(stage_id, world_batch_mb)
+            else:
+                # Strict torch.compile rejects the final shorter remainder batch
+                # after seeing the fixed-size microbatches. Eager eval keeps the
+                # same value semantics without triggering a shape recompile.
+                value_mb = self._evaluate_world_batch_for_stage_eager(stage_id, world_batch_mb)
             values[start:end].copy_(value_mb.to(device=self.device, dtype=torch.float32).reshape(-1))
         return values
 
