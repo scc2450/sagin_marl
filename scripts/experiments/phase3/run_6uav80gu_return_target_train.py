@@ -93,7 +93,14 @@ def _checkpoint_path(method_dir: Path, update: int) -> Path:
     return method_dir / f"checkpoint_update{int(update):04d}.pt"
 
 
-def _run_command(cmd: list[str], *, cwd: Path, env: dict[str, str], log_path: Path) -> float:
+def _run_command(
+    cmd: list[str],
+    *,
+    cwd: Path,
+    env: dict[str, str],
+    log_path: Path,
+    allow_nonzero_if_exists: Path | None = None,
+) -> float:
     log_path.parent.mkdir(parents=True, exist_ok=True)
     start = time.time()
     with log_path.open("a", encoding="utf-8") as log_f:
@@ -102,6 +109,13 @@ def _run_command(cmd: list[str], *, cwd: Path, env: dict[str, str], log_path: Pa
         proc = subprocess.run(cmd, cwd=cwd, env=env, stdout=log_f, stderr=subprocess.STDOUT, text=True)
     elapsed = time.time() - start
     if proc.returncode != 0:
+        if allow_nonzero_if_exists is not None and allow_nonzero_if_exists.exists():
+            with log_path.open("a", encoding="utf-8") as log_f:
+                log_f.write(
+                    f"[runner] WARNING: command exited rc={proc.returncode}, "
+                    f"but {allow_nonzero_if_exists} exists; treating as successful.\n"
+                )
+            return elapsed
         raise RuntimeError(f"command failed rc={proc.returncode}; see {log_path}")
     return elapsed
 
@@ -222,6 +236,7 @@ def _eval_checkpoint(
         cwd=repo,
         env=env,
         log_path=method_dir / "eval.log",
+        allow_nonzero_if_exists=summary_path,
     )
     return elapsed, _load_summary(summary_path), out_dir
 
