@@ -1862,6 +1862,21 @@ class StructuredMAPPO:
             if cfg is None
             else max(int(getattr(cfg, "actor_update_microbatch_size", 1024) or 0), 0)
         )
+        self.rollout_value_eval_microbatch_size = (
+            0
+            if cfg is None
+            else max(
+                int(
+                    getattr(
+                        cfg,
+                        "rollout_value_eval_microbatch_size",
+                        getattr(cfg, "actor_update_microbatch_size", 1024),
+                    )
+                    or 0
+                ),
+                0,
+            )
+        )
         self.critic_loss_target_standardize = bool(
             False if cfg is None else getattr(cfg, "critic_loss_target_standardize", False)
         )
@@ -2976,9 +2991,30 @@ class StructuredMAPPO:
                     dtype=torch.long,
                     device=self.device,
                 )
-                stage_values = self._stage_value_eval_from_batch(stage_id, stage_batch.world_batch)
+                stage_values = self._stage_value_eval_microbatched_from_stage_batch(stage_id, stage_batch)
                 value_vector.index_copy_(0, stage_idx, stage_values.to(self.device, dtype=torch.float32))
         return value_vector
+
+    def _stage_value_eval_microbatched_from_stage_batch(
+        self,
+        stage_id: int,
+        stage_batch: Any,
+    ) -> torch.Tensor:
+        sample_count = int(getattr(stage_batch, "num_samples", 0) or 0)
+        if sample_count <= 0:
+            return torch.empty((0,), dtype=torch.float32, device=self.device)
+        micro_size = int(getattr(self, "rollout_value_eval_microbatch_size", 0) or 0)
+        if micro_size <= 0 or sample_count <= micro_size:
+            return self._stage_value_eval_from_batch(stage_id, stage_batch.world_batch)
+
+        values = torch.empty((sample_count,), dtype=torch.float32, device=self.device)
+        for start in range(0, sample_count, micro_size):
+            end = min(start + micro_size, sample_count)
+            rel_idx = torch.arange(start, end, dtype=torch.long, device=self.device)
+            world_batch_mb = _index_dataclass(stage_batch.world_batch, rel_idx)
+            value_mb = self._stage_value_eval_from_batch(stage_id, world_batch_mb)
+            values[start:end].copy_(value_mb.to(device=self.device, dtype=torch.float32).reshape(-1))
+        return values
 
     def _refresh_actor_old_logprobs_from_training_view(self, batch_view: Any) -> None:
         """Recompute PPO old log-probs with the PyTorch actor used for update.
