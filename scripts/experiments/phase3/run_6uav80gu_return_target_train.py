@@ -179,6 +179,7 @@ def _train_segment(
         cwd=repo,
         env=env,
         log_path=method_dir / "train_segments.log",
+        allow_nonzero_if_exists=ckpt,
     )
 
 
