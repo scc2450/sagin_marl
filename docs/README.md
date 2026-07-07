@@ -10,6 +10,13 @@
 - `../configs/README.md`：配置文件目录说明。
 - `guides/script_reorg_mapping.md`：脚本整理映射表和 legacy 路径说明。
 
+如果目标是论文写作与投稿准备，优先看：
+
+- `paper/README.md`：论文工作台、Overleaf 免费版同步方式和本地资产组织。
+- `paper/manuscript/`：可上传到 Overleaf 的 TMLCN LaTeX manuscript 源文件。
+- `paper/experiment_protocol.md`：论文侧实验协议与表格族。
+- `paper/evidence_index.md`：论文 claim 到实验证据的索引。
+
 ## 当前阅读顺序
 
 想理解当前主线训练方法时，建议按这个顺序读：
