@@ -13,6 +13,8 @@ docs/paper/
   experiment_protocol.md
                      Paper-facing evaluation and reporting protocol.
   evidence_index.md  Claim-to-evidence map for manuscript statements.
+  thesis_reuse_gap_plan_20260708.md
+                     Audit of thesis reuse, evidence gaps, and first writing steps.
   package_overleaf.sh
                      Builds the source zip for Overleaf upload.
   sync_workflow.md   Free-plan Overleaf synchronization procedure.
