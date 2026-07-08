@@ -5,7 +5,7 @@ This workflow assumes Overleaf Git integration is unavailable.
 ## Source of truth
 
 - Local canonical source: `docs/paper/manuscript/`
-- Online collaboration surface: the Overleaf project created from the TMLCN template
+- Online collaboration surface: the Overleaf project using the generic IEEE Transactions template
 - Reproducible figure and table sources: `docs/paper/figure_sources/` and `docs/paper/table_sources/`
 
 ## Local to Overleaf

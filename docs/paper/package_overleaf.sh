@@ -3,7 +3,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 MANUSCRIPT_DIR="${SCRIPT_DIR}/manuscript"
-OUT_ZIP="${SCRIPT_DIR}/sagin_marl_tmlcn_manuscript.zip"
+OUT_ZIP="${SCRIPT_DIR}/sagin_marl_ieee_transactions_manuscript.zip"
 
 cd "${MANUSCRIPT_DIR}"
 rm -f "${OUT_ZIP}"

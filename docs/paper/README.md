@@ -7,7 +7,7 @@ assets for the SAGIN-MARL journal submission.
 
 ```text
 docs/paper/
-  manuscript/        LaTeX source that can be uploaded to Overleaf as a zip.
+  manuscript/        IEEEtran LaTeX source that can be uploaded to Overleaf as a zip.
   figure_sources/    Scripts or data used to generate publication figures.
   table_sources/     Scripts or data used to generate publication tables.
   experiment_protocol.md
@@ -34,4 +34,8 @@ To prepare an upload package for Overleaf:
 ./docs/paper/package_overleaf.sh
 ```
 
-Then upload `docs/paper/sagin_marl_tmlcn_manuscript.zip` to Overleaf.
+Then upload `docs/paper/sagin_marl_ieee_transactions_manuscript.zip` to Overleaf.
+
+The current manuscript skeleton follows the Phase 4 structure: Introduction,
+Related Work, System Model, Method, Main Experiments, Generalization,
+Discussion, and Conclusion.

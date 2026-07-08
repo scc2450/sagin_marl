@@ -1,43 +1,37 @@
-\documentclass{ieeetmlcn}
+\documentclass[lettersize,journal]{IEEEtran}
 
 \usepackage{cite}
 \usepackage{amsmath,amssymb,amsfonts}
 \usepackage{algorithm}
 \usepackage{algorithmic}
+\usepackage{array}
 \usepackage{graphicx}
+\usepackage[caption=false,font=normalsize,labelfont=sf,textfont=sf]{subfig}
+\usepackage{stfloats}
 \usepackage{textcomp}
+\usepackage{url}
 \usepackage{xcolor}
 \usepackage{hyperref}
 \hypersetup{hidelinks=true}
+\hyphenation{op-tical net-works semi-conduc-tor IEEE-Xplore}
 
 \input{macros}
 
 \def\BibTeX{{\rm B\kern-.05em{\sc i\kern-.025em b}\kern-.08em
     T\kern-.1667em\lower.7ex\hbox{E}\kern-.125emX}}
-\AtBeginDocument{\definecolor{tmlcncolor}{cmyk}{0.93,0.59,0.15,0.02}\definecolor{NavyBlue}{RGB}{0,86,125}}
-
-\def\OJlogo{\vspace{-4pt}\includegraphics[height=18pt]{new_logo}}
-\def\seclogo{\vspace{10pt}\includegraphics[height=18pt]{new_logo}}
-\def\authorrefmark#1{\ensuremath{^{\textbf{#1}}}}
 
 \begin{document}
 
-\receiveddate{XX Month, XXXX}
-\reviseddate{XX Month, XXXX}
-\accepteddate{XX Month, XXXX}
-\publisheddate{XX Month, XXXX}
-\currentdate{XX Month, XXXX}
-\doiinfo{TMLCN.2026.XXXXXXX}
-
-\markboth{}{Author \textit{et al.}}
-
 \title{Topology-Aware Multi-Agent Scheduling for UAV-Satellite Integrated Networks}
 
-\author{First A. Author\authorrefmark{1}, Student Member, IEEE, and Second B. Author\authorrefmark{2}, Member, IEEE}
-\affil{Affiliation of First A. Author}
-\affil{Affiliation of Second B. Author}
-\corresp{Corresponding author: First A. Author (email: author@example.com).}
-\authornote{This work was supported in part by XXXX.}
+\author{First A. Author,~\IEEEmembership{Student Member,~IEEE,}
+        and Second B. Author,~\IEEEmembership{Member,~IEEE}
+\thanks{First A. Author is with XXXX, XXXX (email: author@example.com).}
+\thanks{Second B. Author is with XXXX, XXXX (email: author@example.com).}
+\thanks{This work was supported in part by XXXX.}}
+
+\markboth{IEEE Transactions Manuscript,~2026}%
+{Author \MakeLowercase{\textit{et al.}}: Topology-Aware Multi-Agent Scheduling for UAV-Satellite Integrated Networks}
 
 \begin{abstract}
 Space-air-ground integrated networks require dynamic scheduling policies that
@@ -65,7 +59,9 @@ space-air-ground integrated networks, unmanned aerial vehicles.
 \input{sections/03_system_model}
 \input{sections/04_method}
 \input{sections/05_experiments}
-\input{sections/06_conclusion}
+\input{sections/06_generalization}
+\input{sections/07_discussion}
+\input{sections/08_conclusion}
 
 \section*{Acknowledgment}
 The authors would like to thank XXXX.
