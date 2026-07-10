@@ -60,9 +60,9 @@ arrival_mean_preserve: true
 queue_max_gu_steps: 24.0
 queue_max_uav_steps: 60.0
 queue_max_sat_steps: 60.0
-queue_ref_gu_per_step: 4.00e7
-queue_ref_uav_per_step: 4.00e7
-queue_ref_sat_per_step: 4.00e7
+queue_ref_gu_per_step: null
+queue_ref_uav_per_step: null
+queue_ref_sat_per_step: null
 queue_ref_sat_active_count: 3.0
 queue_init_frac: 0.0
 queue_init_uav_frac: 0.0
