@@ -901,6 +901,7 @@ class SaginConfig:
     checkpoint_eval_episode_seed_base: int | None = None
     checkpoint_eval_fixed_policy: str = "zero"  # "zero" | "queue_aware" | "queue_aware_bw" | "cluster_center_queue_aware" | "teacher_accel_queue_aware" | "stage2_exec_fixed_sat"
     checkpoint_eval_policy_mode: str = "deterministic"  # "deterministic" | "stochastic"
+    checkpoint_eval_min_stop_update: int = 0
     checkpoint_eval_sat_drop_early_stop_enabled: bool = True
     checkpoint_eval_sat_drop_worsen_delta: float = 5e-4
     checkpoint_eval_front_queue_rel_improve_tol: float = 0.05

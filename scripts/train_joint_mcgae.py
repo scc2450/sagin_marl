@@ -31,6 +31,12 @@ from sagin_marl.rl.structured_bw_update_direction import (
 from sagin_marl.rl.structured_buffer import StructuredRolloutBuffer
 from sagin_marl.rl.structured_factory import build_structured_modules_from_config
 from sagin_marl.rl.structured_mappo import StructuredMAPPO
+from sagin_marl.rl.structured_eval import (
+    append_structured_checkpoint_eval_row,
+    evaluate_structured_actor_exec_sources,
+    evaluate_structured_fixed_policy,
+    update_structured_checkpoint_eval_state,
+)
 from sagin_marl.rl.stage_mcgae import (
     compute_returns_for_views,
     stage_optimizer_params as _stage_optimizer_params,
@@ -888,7 +894,6 @@ def _force_joint_config(cfg: Any, *, reward_mode: str) -> None:
     cfg.bw_update_mode = "ppo"
     cfg.actor_advantage_normalize_enabled = True
     cfg.stagewise_advantage_norm_enabled = True
-    cfg.checkpoint_eval_enabled = False
     cfg.train_trace_enabled = False
     _configure_accel_safety_for_training(cfg, stage_id=0)
 
@@ -1678,6 +1683,8 @@ def _save_joint_checkpoint(
     update: int,
     completed: bool,
     device: torch.device,
+    checkpoint_eval_state: dict[str, float] | None = None,
+    checkpoint_eval_summary: dict[str, float] | None = None,
 ) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     torch.save(
@@ -1691,10 +1698,120 @@ def _save_joint_checkpoint(
             "hparams": dict(hparams),
             "update": int(update),
             "completed": bool(completed),
+            "checkpoint_eval_state": {
+                str(key): float(value) for key, value in dict(checkpoint_eval_state or {}).items()
+            },
+            "checkpoint_eval_summary": (
+                None
+                if checkpoint_eval_summary is None
+                else {str(key): float(value) for key, value in dict(checkpoint_eval_summary).items()}
+            ),
             "rng_state": _rng_state_payload(device),
         },
         path,
     )
+
+
+def _nan_checkpoint_summary() -> dict[str, float]:
+    keys = (
+        "episodes",
+        "reward_sum",
+        "bw_weighted_workload_delta_sum",
+        "bw_weighted_workload_level_sum",
+        "processed_ratio_eval",
+        "drop_ratio_eval",
+        "pre_backlog_steps_eval",
+        "D_sys_report",
+        "x_acc_mean",
+        "x_rel_mean",
+        "g_pre_mean",
+        "d_pre_mean",
+        "sat_overlap_eval",
+        "collision_episode_fraction",
+    )
+    return {key: float("nan") for key in keys}
+
+
+def _checkpoint_eval_row_payload(
+    *,
+    update: int,
+    checkpoint_suffix: str,
+    summary: dict[str, float],
+    fixed_summary: dict[str, float] | None,
+    flags: dict[str, object],
+) -> dict[str, object]:
+    fixed = _nan_checkpoint_summary()
+    if fixed_summary is not None:
+        fixed.update({str(key): float(value) for key, value in dict(fixed_summary).items()})
+    row: dict[str, object] = {
+        "update": int(update),
+        "checkpoint_suffix": str(checkpoint_suffix),
+        "episodes": float(summary.get("episodes", float("nan"))),
+        "reward_sum": float(summary.get("reward_sum", float("nan"))),
+        "bw_weighted_workload_delta_sum": float(summary.get("bw_weighted_workload_delta_sum", float("nan"))),
+        "bw_weighted_workload_level_sum": float(summary.get("bw_weighted_workload_level_sum", float("nan"))),
+        "processed_ratio_eval": float(summary.get("processed_ratio_eval", float("nan"))),
+        "drop_ratio_eval": float(summary.get("drop_ratio_eval", float("nan"))),
+        "pre_backlog_steps_eval": float(summary.get("pre_backlog_steps_eval", float("nan"))),
+        "D_sys_report": float(summary.get("D_sys_report", float("nan"))),
+        "x_acc_mean": float(summary.get("x_acc_mean", float("nan"))),
+        "x_rel_mean": float(summary.get("x_rel_mean", float("nan"))),
+        "g_pre_mean": float(summary.get("g_pre_mean", float("nan"))),
+        "d_pre_mean": float(summary.get("d_pre_mean", float("nan"))),
+        "sat_overlap_eval": float(summary.get("sat_overlap_eval", float("nan"))),
+        "collision_episode_fraction": float(summary.get("collision_episode_fraction", float("nan"))),
+        "fixed_reward_sum": float(fixed.get("reward_sum", float("nan"))),
+        "fixed_bw_weighted_workload_delta_sum": float(fixed.get("bw_weighted_workload_delta_sum", float("nan"))),
+        "fixed_bw_weighted_workload_level_sum": float(fixed.get("bw_weighted_workload_level_sum", float("nan"))),
+        "fixed_processed_ratio_eval": float(fixed.get("processed_ratio_eval", float("nan"))),
+        "fixed_drop_ratio_eval": float(fixed.get("drop_ratio_eval", float("nan"))),
+        "fixed_pre_backlog_steps_eval": float(fixed.get("pre_backlog_steps_eval", float("nan"))),
+        "fixed_D_sys_report": float(fixed.get("D_sys_report", float("nan"))),
+        "fixed_x_acc_mean": float(fixed.get("x_acc_mean", float("nan"))),
+        "fixed_x_rel_mean": float(fixed.get("x_rel_mean", float("nan"))),
+        "fixed_g_pre_mean": float(fixed.get("g_pre_mean", float("nan"))),
+        "fixed_d_pre_mean": float(fixed.get("d_pre_mean", float("nan"))),
+        "fixed_sat_overlap_eval": float(fixed.get("sat_overlap_eval", float("nan"))),
+        "fixed_collision_episode_fraction": float(fixed.get("collision_episode_fraction", float("nan"))),
+    }
+    row.update(flags)
+    return row
+
+
+def _evaluate_joint_checkpoint(
+    cfg: Any,
+    learner: StructuredMAPPO,
+    *,
+    device: torch.device,
+    episodes: int,
+    episode_seed_base: int | None,
+    num_envs: int,
+    policy_mode: str,
+) -> dict[str, float]:
+    actor = learner.actor
+    was_training = bool(actor.training)
+    actor.eval()
+    try:
+        with torch.no_grad():
+            summary, _rows = evaluate_structured_actor_exec_sources(
+                cfg,
+                actor,
+                device=device,
+                episodes=max(int(episodes), 1),
+                episode_seed_base=episode_seed_base,
+                deterministic=str(policy_mode).strip().lower() != "stochastic",
+                num_envs=max(int(num_envs), 1),
+                vec_backend="sync",
+                exec_accel_source=str(cfg.exec_accel_source),
+                exec_sat_source=str(cfg.exec_sat_source),
+                exec_bw_source=str(cfg.exec_bw_source),
+            )
+    finally:
+        if was_training:
+            actor.train()
+    out = {str(key): float(value) for key, value in dict(summary).items()}
+    out["episodes"] = float(max(int(episodes), 1))
+    return out
 
 
 def _stage_actor_state_dict(actor: torch.nn.Module, stage_id: int) -> dict[str, torch.Tensor]:
@@ -2344,6 +2461,20 @@ def main() -> None:
     parser.add_argument("--config", required=True)
     parser.add_argument("--run_dir", required=True)
     parser.add_argument("--updates", type=int, default=10)
+    parser.add_argument(
+        "--max_updates",
+        type=int,
+        default=None,
+        help=(
+            "Optional budget cap for checkpoint-eval early stopping. "
+            "When set, this replaces --updates as the maximum update count."
+        ),
+    )
+    parser.add_argument(
+        "--disable_checkpoint_eval",
+        action="store_true",
+        help="Disable config-driven checkpoint evaluation, useful for short CPU smoke runs.",
+    )
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--num_envs", type=int, default=64)
     parser.add_argument("--rollout_env_steps", type=int, default=250)
@@ -2723,6 +2854,12 @@ def main() -> None:
     run_dir.mkdir(parents=True, exist_ok=True)
     cfg = load_config(args.config)
     _force_joint_config(cfg, reward_mode=str(args.reward_mode))
+    if bool(args.disable_checkpoint_eval):
+        cfg.checkpoint_eval_enabled = False
+    target_updates = int(args.max_updates) if args.max_updates is not None else int(args.updates)
+    if target_updates <= 0:
+        raise ValueError("--updates/--max_updates must be positive.")
+    args.updates = int(target_updates)
     if bool(args.disable_torch_compile):
         cfg.critic_compile_enabled = False
         cfg.stage_actor_compile_enabled = False
@@ -2883,6 +3020,31 @@ def main() -> None:
                 stage_best_values[int(stage_id)] = float(value)
                 stage_best_updates[int(stage_id)] = int(update_prev)
     completed_updates = int(start_update)
+    stop_reason = "max_updates"
+    checkpoint_eval_interval = max(int(getattr(cfg, "checkpoint_eval_interval_updates", 0) or 0), 0)
+    checkpoint_eval_enabled = (
+        bool(getattr(cfg, "checkpoint_eval_enabled", False))
+        and checkpoint_eval_interval > 0
+        and int(getattr(cfg, "checkpoint_eval_episodes", 0) or 0) > 0
+    )
+    checkpoint_eval_start_update = max(int(getattr(cfg, "checkpoint_eval_start_update", 0) or 0), 0)
+    if checkpoint_eval_enabled and checkpoint_eval_start_update <= 0:
+        checkpoint_eval_start_update = checkpoint_eval_interval
+    checkpoint_eval_episodes = max(int(getattr(cfg, "checkpoint_eval_episodes", 1) or 1), 1)
+    checkpoint_eval_episode_seed_base_raw = getattr(cfg, "checkpoint_eval_episode_seed_base", None)
+    checkpoint_eval_episode_seed_base = (
+        None if checkpoint_eval_episode_seed_base_raw is None else int(checkpoint_eval_episode_seed_base_raw)
+    )
+    checkpoint_eval_policy_mode = str(getattr(cfg, "checkpoint_eval_policy_mode", "deterministic") or "deterministic")
+    checkpoint_eval_num_envs = max(min(int(args.num_envs), int(checkpoint_eval_episodes)), 1)
+    checkpoint_eval_min_stop_update = max(int(getattr(cfg, "checkpoint_eval_min_stop_update", 0) or 0), 0)
+    checkpoint_eval_early_stop_enabled = bool(getattr(cfg, "checkpoint_eval_early_stop_enabled", True))
+    checkpoint_eval_save_best = bool(getattr(cfg, "checkpoint_eval_save_best_models", False))
+    checkpoint_eval_state: dict[str, float] = {}
+    checkpoint_eval_fixed_summary: dict[str, float] | None = None
+    checkpoint_eval_csv_path = run_dir / "checkpoint_eval.csv"
+    if checkpoint_eval_enabled and start_update <= 0 and checkpoint_eval_csv_path.exists():
+        checkpoint_eval_csv_path.unlink()
     try:
         group_is_native = all(
             hasattr(group, attr)
@@ -2893,6 +3055,29 @@ def main() -> None:
             sync_native = getattr(learner, "_sync_native_actor_cuda_bindings_after_update", None)
             if callable(sync_native):
                 sync_native()
+        if checkpoint_eval_enabled:
+            fixed_policy = str(getattr(cfg, "checkpoint_eval_fixed_policy", "") or "").strip()
+            if fixed_policy:
+                try:
+                    checkpoint_eval_fixed_summary = evaluate_structured_fixed_policy(
+                        cfg,
+                        baseline_policy=fixed_policy,
+                        episodes=checkpoint_eval_episodes,
+                        episode_seed_base=checkpoint_eval_episode_seed_base,
+                        num_envs=checkpoint_eval_num_envs,
+                    )
+                    print(
+                        "Checkpoint eval "
+                        f"{fixed_policy} reference: "
+                        f"reward={checkpoint_eval_fixed_summary['reward_sum']:.4f}, "
+                        f"processed={checkpoint_eval_fixed_summary['processed_ratio_eval']:.4f}, "
+                        f"drop={checkpoint_eval_fixed_summary['drop_ratio_eval']:.4f}, "
+                        f"pre_backlog={checkpoint_eval_fixed_summary['pre_backlog_steps_eval']:.4f}",
+                        flush=True,
+                    )
+                except Exception as exc:
+                    print(f"WARNING: checkpoint fixed-policy reference evaluation failed: {exc}", flush=True)
+                    checkpoint_eval_fixed_summary = None
         if resume_state is not None:
             _restore_rng_state_payload(resume_state.get("rng_state"), device)
             print(
@@ -2919,6 +3104,7 @@ def main() -> None:
             f"kl_stop={bool(int(hparams['stage_actor_kl_early_stop_enabled']))} "
             f"dyn_lr={bool(int(hparams['stage_actor_dynamic_lr_enabled']))} "
             f"critic_ev_gate={bool(int(hparams['critic_ev_gate_enabled']))} "
+            f"checkpoint_eval={checkpoint_eval_enabled} "
             f"exec=({cfg.exec_accel_source},{cfg.exec_sat_source},{cfg.exec_bw_source}) "
             f"safety=(avoidance={bool(getattr(cfg, 'avoidance_enabled', False))}, "
             f"native_shield={bool(getattr(cfg, 'safety_shield_enabled', False)) and str(getattr(cfg, 'safety_shield_solver', '') or '').strip().upper() == 'NATIVE_CUDA'}, "
@@ -3596,6 +3782,7 @@ def main() -> None:
                     update=update + 1,
                     completed=True,
                     device=device,
+                    checkpoint_eval_state=checkpoint_eval_state,
                 )
             completed_updates = update + 1
 
@@ -3608,6 +3795,107 @@ def main() -> None:
                 f"time[c={collect_sec:.1f},v={critic_sec:.1f},p={actor_sec:.1f},tot={row['iteration_sec']:.1f}]",
                 flush=True,
             )
+            checkpoint_eval_due = (
+                checkpoint_eval_enabled
+                and (update + 1) >= checkpoint_eval_start_update
+                and ((update + 1 - checkpoint_eval_start_update) % checkpoint_eval_interval == 0)
+            )
+            if checkpoint_eval_due:
+                checkpoint_suffix = f"u{update + 1:04d}"
+                _save_joint_checkpoint(
+                    run_dir / f"checkpoint_eval_{checkpoint_suffix}.pt",
+                    learner=learner,
+                    critic_optimizer=critic_optimizer,
+                    actor_optimizers=actor_optimizers,
+                    cfg=cfg,
+                    args=args,
+                    hparams=hparams,
+                    update=update + 1,
+                    completed=True,
+                    device=device,
+                    checkpoint_eval_state=checkpoint_eval_state,
+                )
+                eval_summary = _evaluate_joint_checkpoint(
+                    cfg,
+                    learner,
+                    device=device,
+                    episodes=checkpoint_eval_episodes,
+                    episode_seed_base=checkpoint_eval_episode_seed_base,
+                    num_envs=checkpoint_eval_num_envs,
+                    policy_mode=checkpoint_eval_policy_mode,
+                )
+                eval_flags = update_structured_checkpoint_eval_state(
+                    checkpoint_eval_state,
+                    eval_summary,
+                    cfg,
+                )
+                append_structured_checkpoint_eval_row(
+                    str(checkpoint_eval_csv_path),
+                    _checkpoint_eval_row_payload(
+                        update=update + 1,
+                        checkpoint_suffix=checkpoint_suffix,
+                        summary=eval_summary,
+                        fixed_summary=checkpoint_eval_fixed_summary,
+                        flags=eval_flags,
+                    ),
+                )
+                if checkpoint_eval_save_best and float(eval_flags.get("model_improved", 0.0)) > 0.5:
+                    _save_joint_checkpoint(
+                        run_dir / "best_checkpoint.pt",
+                        learner=learner,
+                        critic_optimizer=critic_optimizer,
+                        actor_optimizers=actor_optimizers,
+                        cfg=cfg,
+                        args=args,
+                        hparams=hparams,
+                        update=update + 1,
+                        completed=True,
+                        device=device,
+                        checkpoint_eval_state=checkpoint_eval_state,
+                        checkpoint_eval_summary=eval_summary,
+                    )
+                print(
+                    "Checkpoint eval "
+                    f"{checkpoint_suffix}: "
+                    f"reward={eval_summary['reward_sum']:.4f}, "
+                    f"processed={eval_summary['processed_ratio_eval']:.4f}, "
+                    f"drop={eval_summary['drop_ratio_eval']:.4f}, "
+                    f"pre_backlog={eval_summary['pre_backlog_steps_eval']:.4f}, "
+                    f"model_improved={int(float(eval_flags.get('model_improved', 0.0)))}, "
+                    f"reward_plateau_streak={int(float(eval_flags.get('reward_plateau_streak', 0.0)))}, "
+                    f"min_stop_ready={int((update + 1) >= checkpoint_eval_min_stop_update)}",
+                    flush=True,
+                )
+                if (
+                    checkpoint_eval_early_stop_enabled
+                    and (update + 1) >= checkpoint_eval_min_stop_update
+                    and float(eval_flags.get("early_stop_triggered", 0.0)) > 0.5
+                ):
+                    if float(eval_flags.get("reward_early_stop_triggered", 0.0)) > 0.5:
+                        stop_reason = "checkpoint_reward_plateau"
+                    else:
+                        stop_reason = "checkpoint_quality_worsened"
+                    print(
+                        f"Checkpoint-eval early stopping at update {update + 1}: {stop_reason}.",
+                        flush=True,
+                    )
+                    break
+        with (run_dir / "training_stop.json").open("w", encoding="utf-8") as f:
+            json.dump(
+                {
+                    "completed_updates": int(completed_updates),
+                    "max_updates": int(args.updates),
+                    "checkpoint_eval_min_stop_update": int(checkpoint_eval_min_stop_update),
+                    "stop_reason": str(stop_reason),
+                    "checkpoint_eval_enabled": bool(checkpoint_eval_enabled),
+                    "checkpoint_eval_state": {
+                        str(key): float(value) for key, value in checkpoint_eval_state.items()
+                    },
+                },
+                f,
+                ensure_ascii=False,
+                indent=2,
+            )
         _save_joint_checkpoint(
             run_dir / "final.pt",
             learner=learner,
@@ -3619,6 +3907,7 @@ def main() -> None:
             update=completed_updates,
             completed=True,
             device=device,
+            checkpoint_eval_state=checkpoint_eval_state,
         )
     except BaseException:
         _save_joint_checkpoint(
@@ -3632,6 +3921,7 @@ def main() -> None:
             update=completed_updates,
             completed=False,
             device=device,
+            checkpoint_eval_state=checkpoint_eval_state,
         )
         raise
     finally:

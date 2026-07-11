@@ -12,6 +12,12 @@ CRITIC_MINIBATCHES="${CRITIC_MINIBATCHES:-1}"
 ACTOR_EPOCHS="${ACTOR_EPOCHS:-1}"
 ACTOR_MINIBATCHES="${ACTOR_MINIBATCHES:-1}"
 TORCH_THREADS="${TORCH_THREADS:-1}"
+DISABLE_CHECKPOINT_EVAL="${DISABLE_CHECKPOINT_EVAL:-1}"
+
+CHECKPOINT_EVAL_ARGS=()
+if [[ "${DISABLE_CHECKPOINT_EVAL}" != "0" ]]; then
+  CHECKPOINT_EVAL_ARGS+=(--disable_checkpoint_eval)
+fi
 
 conda run -n rl python scripts/train_joint_mcgae.py \
   --config "${CONFIG}" \
@@ -28,4 +34,5 @@ conda run -n rl python scripts/train_joint_mcgae.py \
   --actor_epochs "${ACTOR_EPOCHS}" \
   --actor_minibatches "${ACTOR_MINIBATCHES}" \
   --torch_threads "${TORCH_THREADS}" \
-  --disable_stage_best_save
+  --disable_stage_best_save \
+  "${CHECKPOINT_EVAL_ARGS[@]}"

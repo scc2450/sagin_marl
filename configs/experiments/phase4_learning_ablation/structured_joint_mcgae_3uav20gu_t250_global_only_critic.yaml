@@ -193,19 +193,21 @@ num_mini_batch: 1
 train_trace_enabled: false
 train_trace_rollout_interval: 0
 
-checkpoint_eval_enabled: false
-checkpoint_eval_interval_updates: 0
-checkpoint_eval_start_update: 0
-checkpoint_eval_episodes: 0
+checkpoint_eval_enabled: true
+checkpoint_eval_interval_updates: 25
+checkpoint_eval_start_update: 25
+checkpoint_eval_episodes: 64
 checkpoint_eval_episode_seed_base: 42000
 checkpoint_eval_fixed_policy: queue_aware_bw
 checkpoint_eval_policy_mode: deterministic
+checkpoint_eval_min_stop_update: 300
 checkpoint_eval_sat_drop_early_stop_enabled: false
-checkpoint_eval_early_stop_enabled: false
-checkpoint_eval_reward_early_stop_enabled: false
-checkpoint_eval_reward_patience: 2
-checkpoint_eval_stop_on_early_stop: false
-checkpoint_eval_save_best_models: false
+checkpoint_eval_early_stop_enabled: true
+checkpoint_eval_reward_early_stop_enabled: true
+checkpoint_eval_reward_patience: 4
+checkpoint_eval_reward_min_delta_rel: 0.005
+checkpoint_eval_stop_on_early_stop: true
+checkpoint_eval_save_best_models: true
 checkpoint_eval_use_best_as_final: false
 
 update_direction_probe_enabled: false

@@ -151,8 +151,22 @@ runs/phase4_learning_ablation/smoke_global_only_critic
 
 ## Formal Run Shape
 
-Use the same command shape as the current relational source run, replacing only
-the config and run directory. Suggested run directory naming:
+Use checkpoint-eval early stopping, not a fixed training length. The training
+script still needs a budget cap, but `--max_updates` is only a hard upper bound.
+The phase4 ablation should follow the same early-stop shape as the current
+phase3 return-target runs: do not stop before 300 updates, validate every 25
+updates, and stop on validation plateau before the 700-update cap when possible.
+
+```text
+checkpoint_eval_interval_updates = 25
+checkpoint_eval_min_stop_update = 300
+checkpoint_eval_episodes = 64
+checkpoint_eval_reward_patience = 4
+checkpoint_eval_reward_min_delta_rel = 0.005
+hard_max_updates = 700
+```
+
+Suggested run directory naming:
 
 ```text
 runs/phase4_learning_ablation/3uav20gu_t250/global_only_critic/seed45211
@@ -165,6 +179,34 @@ Suggested first seed:
 ```
 
 If compute allows, use at least two aligned seeds for the paper table.
+
+Suggested remote launch shape:
+
+```bash
+CUDA_VISIBLE_DEVICES=1 PYTHONUNBUFFERED=1 \
+/home/sgy/workspace/sagin_marl/.venv/bin/python scripts/train_joint_mcgae.py \
+  --config configs/experiments/phase4_learning_ablation/structured_joint_mcgae_3uav20gu_t250_global_only_critic.yaml \
+  --run_dir runs/phase4_learning_ablation/3uav20gu_t250/global_only_critic/seed45211_<timestamp> \
+  --device cuda \
+  --num_envs 64 \
+  --rollout_env_steps 250 \
+  --max_updates 700 \
+  --seed 45211 \
+  --save_every 25
+```
+
+The selected checkpoint for downstream held-out evaluation should be
+`best_checkpoint.pt`, chosen by source-scenario checkpoint evaluation. `final.pt`
+is still useful for stability reporting, but it is not the selection rule.
+
+Aborted run note:
+
+```text
+runs/phase4_learning_ablation/3uav20gu_t250/global_only_critic/seed45211_20260711_143556
+```
+
+This run was launched with fixed `--updates 300` and stopped around update 14.
+Do not use it as a paper result.
 
 ## Metrics To Compare
 
