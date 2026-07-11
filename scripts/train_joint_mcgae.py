@@ -3829,6 +3829,16 @@ def main() -> None:
                     eval_summary,
                     cfg,
                 )
+                min_stop_ready = (update + 1) >= checkpoint_eval_min_stop_update
+                if not min_stop_ready:
+                    checkpoint_eval_state["quality_worse_streak"] = 0.0
+                    checkpoint_eval_state["reward_plateau_streak"] = 0.0
+                    eval_flags = dict(eval_flags)
+                    eval_flags["quality_worse_streak"] = 0.0
+                    eval_flags["reward_plateau_streak"] = 0.0
+                    eval_flags["quality_early_stop_triggered"] = 0.0
+                    eval_flags["reward_early_stop_triggered"] = 0.0
+                    eval_flags["early_stop_triggered"] = 0.0
                 append_structured_checkpoint_eval_row(
                     str(checkpoint_eval_csv_path),
                     _checkpoint_eval_row_payload(
@@ -3863,12 +3873,12 @@ def main() -> None:
                     f"pre_backlog={eval_summary['pre_backlog_steps_eval']:.4f}, "
                     f"model_improved={int(float(eval_flags.get('model_improved', 0.0)))}, "
                     f"reward_plateau_streak={int(float(eval_flags.get('reward_plateau_streak', 0.0)))}, "
-                    f"min_stop_ready={int((update + 1) >= checkpoint_eval_min_stop_update)}",
+                    f"min_stop_ready={int(min_stop_ready)}",
                     flush=True,
                 )
                 if (
                     checkpoint_eval_early_stop_enabled
-                    and (update + 1) >= checkpoint_eval_min_stop_update
+                    and min_stop_ready
                     and float(eval_flags.get("early_stop_triggered", 0.0)) > 0.5
                 ):
                     if float(eval_flags.get("reward_early_stop_triggered", 0.0)) > 0.5:

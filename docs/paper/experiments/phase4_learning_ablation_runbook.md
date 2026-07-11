@@ -156,6 +156,9 @@ script still needs a budget cap, but `--max_updates` is only a hard upper bound.
 The phase4 ablation should follow the same early-stop shape as the current
 phase3 return-target runs: do not stop before 300 updates, validate every 25
 updates, and stop on validation plateau before the 700-update cap when possible.
+Patience counters are reset before `checkpoint_eval_min_stop_update`, so the
+first validation at or after update 300 starts the stopping patience window
+rather than inheriting pre-300 plateau counts.
 
 ```text
 checkpoint_eval_interval_updates = 25
