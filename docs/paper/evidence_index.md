@@ -10,7 +10,7 @@ paste large raw logs here.
 | Learned policies outperform strongest non-learning baselines under same-scale perturbations. | `.local_guidance/phase3/phase3_generalization_plan_20260630.md` and phase3 run directories | Experiments: zero-shot robustness | Candidate |
 | Learned policies retain positive margins in nearby scale-transfer settings. | `.local_guidance/phase3/phase3_generalization_plan_20260630.md` and scale-transfer tables | Experiments: scale transfer | Candidate |
 | GU=30 and UAV=2 are boundary cases but remain positive with extra evaluation seeds. | Phase3 boundary robustness records | Experiments: boundary robustness | Candidate |
-| 6UAV/80GU is trainable with bootstrap-GAE under the current protocol. | Phase3 6UAV/80GU bootstrap run and aligned evaluation | Experiments: larger-scale setting | Needs more training seeds |
+| 6UAV/80GU is trainable with bootstrap-GAE under the current protocol. | `.local_guidance/phase3/phase3_6uav80gu_bootstrap_multiseed_review_20260711.md` and `docs/paper/table_sources/phase3_6uav80gu_bootstrap_auto_ref_multiseed_*.csv` | Experiments: larger-scale setting | Multi-seed complete; needs seed-aligned baseline evaluation |
 | MC target under 6UAV/80GU should not be described as universally failed. | Critic EV gate and actor skip-rate diagnostics | Limitations / ablation discussion | Needs gate ablation |
 
 ## Evidence hygiene
