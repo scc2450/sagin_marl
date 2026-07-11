@@ -27,6 +27,12 @@ Full method anchor:
 configs/current/structured_joint_mcgae_3uav_20gu_t250_positive_relcritic.yaml
 ```
 
+Matched relational critic full method:
+
+```text
+configs/experiments/phase4_learning_ablation/structured_joint_mcgae_3uav20gu_t250_relational_critic.yaml
+```
+
 Global-only critic ablation:
 
 ```text
