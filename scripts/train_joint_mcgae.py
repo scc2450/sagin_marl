@@ -3041,6 +3041,11 @@ def main() -> None:
     checkpoint_eval_early_stop_enabled = bool(getattr(cfg, "checkpoint_eval_early_stop_enabled", True))
     checkpoint_eval_save_best = bool(getattr(cfg, "checkpoint_eval_save_best_models", False))
     checkpoint_eval_state: dict[str, float] = {}
+    if resume_state is not None and isinstance(resume_state.get("checkpoint_eval_state"), dict):
+        checkpoint_eval_state = {
+            str(key): float(value)
+            for key, value in dict(resume_state.get("checkpoint_eval_state") or {}).items()
+        }
     checkpoint_eval_fixed_summary: dict[str, float] | None = None
     checkpoint_eval_csv_path = run_dir / "checkpoint_eval.csv"
     if checkpoint_eval_enabled and start_update <= 0 and checkpoint_eval_csv_path.exists():
