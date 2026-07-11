@@ -195,8 +195,8 @@ train_trace_rollout_interval: 0
 checkpoint_eval_enabled: true
 checkpoint_eval_interval_updates: 25
 checkpoint_eval_start_update: 25
-checkpoint_eval_episodes: 64
-checkpoint_eval_episode_seed_base: 42000
+checkpoint_eval_episodes: 32
+checkpoint_eval_episode_seed_base: 910000
 checkpoint_eval_fixed_policy: queue_aware_bw
 checkpoint_eval_policy_mode: deterministic
 checkpoint_eval_min_stop_update: 300

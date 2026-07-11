@@ -56,7 +56,10 @@ Keep fixed:
 - actor architecture and staged action factorization;
 - environment scenario: 3 UAV, 20 GU, T=250;
 - reward, queue, safety, and mask settings;
-- MC-GAE/return-target settings;
+- MC-GAE/return-target settings. Do not rely on the training script default:
+  `scripts/train_joint_mcgae.py` defaults to `--return_target mc`. If the paper
+  main line follows the stronger prior bootstrap-GAE result, the launch command
+  must explicitly include `--return_target bootstrap_gae`;
 - training seed list and evaluation seed bases;
 - checkpoint selection rule.
 
@@ -169,7 +172,8 @@ rather than inheriting pre-300 plateau counts.
 ```text
 checkpoint_eval_interval_updates = 25
 checkpoint_eval_min_stop_update = 300
-checkpoint_eval_episodes = 64
+checkpoint_eval_episodes = 32
+checkpoint_eval_episode_seed_base = 910000
 checkpoint_eval_reward_patience = 4
 checkpoint_eval_reward_min_delta_rel = 0.005
 hard_max_updates = 700
@@ -199,6 +203,8 @@ CUDA_VISIBLE_DEVICES=1 PYTHONUNBUFFERED=1 \
   --device cuda \
   --num_envs 64 \
   --rollout_env_steps 250 \
+  --return_target bootstrap_gae \
+  --return_target_schedule fixed \
   --max_updates 700 \
   --seed 45211 \
   --save_every 25
@@ -207,6 +213,20 @@ CUDA_VISIBLE_DEVICES=1 PYTHONUNBUFFERED=1 \
 The selected checkpoint for downstream held-out evaluation should be
 `best_checkpoint.pt`, chosen by source-scenario checkpoint evaluation. `final.pt`
 is still useful for stability reporting, but it is not the selection rule.
+
+Important protocol audit from 2026-07-11:
+
+```text
+runs/phase4_learning_ablation/3uav20gu_t250/global_only_critic/seed45211_20260711_153506_strictminstop
+runs/phase4_learning_ablation/3uav20gu_t250/relational_critic/seed45211_20260711_162232_strictminstop
+```
+
+These completed runs used the default `return_target=mc`, as confirmed by their
+`train.log` headers and `metrics.csv` return-target code. They are valid
+MC-target critic diagnostics, but they are not comparable to the earlier
+`bootstrap_seed45211` result that reached held-out reward about 71.48 with
+`--return_target bootstrap_gae`. Do not use these two runs as the paper's
+bootstrap-GAE critic-structure ablation.
 
 Aborted run note:
 
