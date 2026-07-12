@@ -2,14 +2,24 @@
 
 Date: 2026-07-11
 
-This runbook tracks the first learned ablation for Section 5:
+This runbook tracks two learned Section 5 comparison families:
 
-> same staged actor, same training protocol, relational critic vs global-only
-> critic.
+> critic-structure ablations under the same staged actor, and a MAPPO-like
+> flat actor/flat centralized critic learning baseline.
 
 The purpose is to test whether the relational centralized critic improves value
-estimation and training quality. It is not an external MARL baseline and should
-not be described as vanilla MAPPO.
+estimation and training quality. `global_only` is an internal critic ablation.
+`flat_mlp` is a stronger critic-side baseline than `global_only`: it keeps the
+same staged actor and legal-action adapter, but replaces the topology-aware
+critic with a flat centralized MLP value function. It is not a complete MAPPO
+baseline because the actor is still the structured staged actor.
+
+The MAPPO-like baseline is separate: it sets `structured_actor_backbone:
+flat_mlp` and `critic_value_mode: flat_mlp`. It keeps the same hybrid/masked
+environment action interface, reward, safety handling, and PPO/GAE loop, but
+removes the actor-side token attention, subset scoring, and BW competition
+modules. This should be described as a MAPPO-like adapter baseline, not as an
+exact reproduction of an external MAPPO implementation.
 
 ## Branch
 
@@ -39,9 +49,22 @@ Global-only critic ablation:
 configs/experiments/phase4_learning_ablation/structured_joint_mcgae_3uav20gu_t250_global_only_critic.yaml
 ```
 
-Only intended config difference:
+Flat full-state centralized critic baseline:
+
+```text
+configs/experiments/phase4_learning_ablation/structured_joint_mcgae_3uav20gu_t250_flat_full_state_critic.yaml
+```
+
+MAPPO-like flat actor/critic learning baseline:
+
+```text
+configs/experiments/phase4_learning_ablation/structured_joint_mcgae_3uav20gu_t250_mappo_like_flat_actor_critic.yaml
+```
+
+Only intended critic-ablation config difference:
 
 ```yaml
+structured_actor_backbone: topology_aware
 critic_value_mode: relational
 ```
 
@@ -49,6 +72,13 @@ vs.
 
 ```yaml
 critic_value_mode: global_only
+```
+
+or, for the flat full-state critic baseline:
+
+```yaml
+structured_actor_backbone: topology_aware
+critic_value_mode: flat_mlp
 ```
 
 Keep fixed:
@@ -62,6 +92,18 @@ Keep fixed:
   must explicitly include `--return_target bootstrap_gae`;
 - training seed list and evaluation seed bases;
 - checkpoint selection rule.
+
+MAPPO-like baseline intended learning-side difference:
+
+```yaml
+structured_actor_backbone: flat_mlp
+critic_value_mode: flat_mlp
+```
+
+Keep the environment, reward, legal masks, safety handling, return target,
+training seed list, validation cadence, and checkpoint selection rule aligned
+with the full method. The actor architecture is intentionally changed for this
+baseline.
 
 ## Algorithmic Delta
 
@@ -130,6 +172,27 @@ because the actor remains the same structured staged actor. This comparison
 tests whether relational centralized value estimation improves learning and
 evaluation quality under the same staged policy class.
 
+For the MAPPO-like learning baseline, the changed components are:
+
+- acceleration head: flat MLP over local accel observation and masks;
+- satellite head: flat MLP logits over legal subset candidates;
+- bandwidth head: flat MLP over local BW observation and masks, with the same
+  masked Dirichlet simplex distribution;
+- centralized critic: flat MLP over the fixed-size world state.
+
+Removed from the actor-side value/action parameterization:
+
+- token-level query attention in the acceleration actor;
+- SAT competition/self-attention and item/count subset scoring;
+- BW downlink attention and user competition self-attention.
+
+Still retained because they are environment/interface requirements rather than
+our topology-aware modeling contribution:
+
+- staged submission of accel/SAT/BW actions to the simulator;
+- legal action masks and safety-aware execution;
+- same hybrid action distributions and PPO log-prob contracts.
+
 ## Local Smoke
 
 Use the existing Mac/local smoke runner for wiring checks:
@@ -183,6 +246,7 @@ Suggested run directory naming:
 
 ```text
 runs/phase4_learning_ablation/3uav20gu_t250/global_only_critic/seed45211
+runs/phase4_learning_ablation/3uav20gu_t250/mappo_like_flat_actor_critic/seed45211
 ```
 
 Suggested first seed:
@@ -193,7 +257,7 @@ Suggested first seed:
 
 If compute allows, use at least two aligned seeds for the paper table.
 
-Suggested remote launch shape:
+Suggested remote launch shape for `global_only`:
 
 ```bash
 CUDA_VISIBLE_DEVICES=1 PYTHONUNBUFFERED=1 \
@@ -209,6 +273,60 @@ CUDA_VISIBLE_DEVICES=1 PYTHONUNBUFFERED=1 \
   --seed 45211 \
   --save_every 25
 ```
+
+Suggested remote launch shape for `flat_mlp`:
+
+```bash
+CUDA_VISIBLE_DEVICES=1 PYTHONUNBUFFERED=1 \
+/home/sgy/workspace/sagin_marl/.venv/bin/python scripts/train_joint_mcgae.py \
+  --config configs/experiments/phase4_learning_ablation/structured_joint_mcgae_3uav20gu_t250_flat_full_state_critic.yaml \
+  --run_dir runs/phase4_learning_ablation/3uav20gu_t250/flat_full_state_critic/seed45211_<timestamp> \
+  --device cuda \
+  --num_envs 64 \
+  --rollout_env_steps 250 \
+  --return_target bootstrap_gae \
+  --return_target_schedule fixed \
+  --max_updates 700 \
+  --seed 45211 \
+  --save_every 25
+```
+
+This `flat_mlp` config is the critic-side baseline, not the MAPPO-like learning
+baseline. It isolates the critic-side topology-aware inductive bias while
+keeping the staged actor. Because `flat_mlp` flattens a fixed-size world state,
+treat it as a source-scenario critic baseline unless a matching shape-specific
+config is trained.
+
+Suggested remote launch shape for MAPPO-like FlatActorCritic:
+
+```bash
+CUDA_VISIBLE_DEVICES=0 PYTHONUNBUFFERED=1 \
+/home/sgy/workspace/sagin_marl/.venv/bin/python scripts/train_joint_mcgae.py \
+  --config configs/experiments/phase4_learning_ablation/structured_joint_mcgae_3uav20gu_t250_mappo_like_flat_actor_critic.yaml \
+  --run_dir runs/phase4_learning_ablation/3uav20gu_t250/mappo_like_flat_actor_critic/seed45211_<timestamp> \
+  --device cuda \
+  --num_envs 64 \
+  --rollout_env_steps 250 \
+  --return_target bootstrap_gae \
+  --return_target_schedule fixed \
+  --max_updates 700 \
+  --seed 45211 \
+  --save_every 25 \
+  --structured_env_backend native \
+  --structured_env_tensor_backend cuda \
+  --disable_torch_compile
+```
+
+This is the paper-facing learning baseline to use when the reviewer question is
+"does the structured/topology-aware actor-critic design beat a flatter
+MAPPO-style policy class?" It is still an adapter baseline because the SAGIN
+environment has hybrid actions and legal masks.
+
+Implementation note: the MAPPO-like baseline uses a hybrid native path. The
+environment rollout, local observation construction, and history recording stay
+on the native CUDA backend, while the flat PyTorch actor writes accel/SAT/BW
+live action tensors directly on the GPU. Do not use the old sync/CPU adapter for
+formal timing or training evidence.
 
 The selected checkpoint for downstream held-out evaluation should be
 `best_checkpoint.pt`, chosen by source-scenario checkpoint evaluation. `final.pt`
@@ -228,6 +346,37 @@ MC-target critic diagnostics, but they are not comparable to the earlier
 `--return_target bootstrap_gae`. Do not use these two runs as the paper's
 bootstrap-GAE critic-structure ablation.
 
+Reproducibility audit from 2026-07-11:
+
+The corrected bootstrap-GAE RelCritic/GlobalCritic reruns are protocol-aligned
+with the old `seed45211` mainline at the config and return-target level, but a
+single `seed45211` retrain should not be treated as an exact reproduction of the
+old checkpoint. The RelCritic YAML differs from
+`configs/current/structured_joint_mcgae_3uav_20gu_t250_positive_relcritic.yaml`
+only in `checkpoint_eval*` fields. However, short same-code/same-seed tests with
+`--disable_checkpoint_eval` still diverged after the first update:
+
+```text
+runs/phase4_learning_ablation/debug_samecode_seed45211_u2_20260711_201529_a
+runs/phase4_learning_ablation/debug_samecode_seed45211_u2_20260711_201529_b
+```
+
+Both runs match the first-rollout bootstrap-GAE targets
+`a=0.786, s=0.815, b=0.866`, but their first-update critic EV and actor KL differ,
+and their second-update targets already diverge. This localizes the
+irreproducibility to the learning update path rather than to the scenario
+generator or the return-target setting. Checkpoint evaluation can perturb run
+state if not carefully isolated, but it is not the sole cause because divergence
+also appears with checkpoint evaluation disabled.
+
+Implication for paper-facing ablations: do not compare single retrains as if
+same seed implies the same training trajectory. Use the corrected
+RelCritic/GlobalCritic pair as preliminary evidence only, then run matched
+multi-seed critic ablations and report mean/std over held-out evaluation. The
+old `checkpoint_update0575.pt` remains a valid frozen historical mainline
+artifact, but it should not be described as reproducible from scratch by seed
+alone under the current training pipeline.
+
 Aborted run note:
 
 ```text
@@ -236,6 +385,206 @@ runs/phase4_learning_ablation/3uav20gu_t250/global_only_critic/seed45211_2026071
 
 This run was launched with fixed `--updates 300` and stopped around update 14.
 Do not use it as a paper result.
+
+## 2026-07-11 Active Friday Launches
+
+Remote worktree:
+
+```text
+friday:/home/sgy/workspace/sagin_marl_phase4_learning_ablation
+```
+
+MAPPO-like FlatActorCritic GPU0 trial:
+
+```text
+runs/phase4_learning_ablation/3uav20gu_t250/mappo_like_flat_actor_critic/seed45211_20260711_2258_bootstrapgae_native_nocompile
+```
+
+Launch notes:
+
+- GPU: 0.
+- Seed: `45211`.
+- Command uses `--return_target bootstrap_gae`, `--max_updates 700`, and
+  `--disable_torch_compile`.
+- It uses `--structured_env_backend native --structured_env_tensor_backend
+  cuda`. Native CUDA drives the environment; flat PyTorch actor heads write
+  live action/logprob tensors on GPU.
+- Native CUDA smoke runs completed with checkpoint evaluation both disabled and
+  enabled:
+
+```text
+runs/phase4_learning_ablation/smoke_mappo_like_flat_actor_critic_native_gpu0_20260711_2250
+runs/phase4_learning_ablation/smoke_mappo_like_flat_actor_critic_native_gpu0_ckpteval_20260711_2255
+```
+
+- The earlier sync/CPU trial was intentionally stopped because collection was
+  too slow for formal training:
+
+```text
+runs/phase4_learning_ablation/3uav20gu_t250/mappo_like_flat_actor_critic/seed45211_20260711_213452_bootstrapgae
+```
+
+FlatActorCritic native compatibility fixes made on 2026-07-11:
+
+- bypass native topology-aware actor ABI binding when
+  `structured_actor_backbone: flat_mlp`;
+- write flat accel/SAT/BW actor outputs directly into native runtime live
+  tensors;
+- ignore the uninitialized live `subset_mask` in the flat SAT policy and derive
+  legal SAT subsets from `sat_mask`, `sat_valid_mask`, and subset members, as
+  the topology-aware SAT policy does;
+- keep a guard that replaces any illegal flat SAT subset with the first legal
+  subset before writing live tensors, then recomputes its log-prob under the
+  same policy.
+
+MAPPO-like FlatActorCritic seed45211 first result:
+
+```text
+runs/phase4_learning_ablation/3uav20gu_t250/mappo_like_flat_actor_critic/seed45211_20260711_2258_bootstrapgae_native_nocompile
+```
+
+This run is not a paper-ready strong learning baseline. It stopped at update
+375 by checkpoint-reward plateau. The best reward row in `checkpoint_eval.csv`
+was only around `26.78` with processed ratio around `0.298` and drop ratio
+around `0.626`, which is below the `queue_aware_bw` checkpoint reference
+(`reward=32.28`, processed ratio `0.438`, drop ratio `0.482`). Treat it as an
+underfit/unstable flat-learner diagnostic, not as a fair tuned MAPPO-like
+baseline.
+
+Stabilized MAPPO-like follow-up:
+
+```text
+configs/experiments/phase4_learning_ablation/structured_joint_mcgae_3uav20gu_t250_mappo_like_flat_actor_critic_stabilized.yaml
+runs/phase4_learning_ablation/3uav20gu_t250/mappo_like_flat_actor_critic_stabilized/seed45211_20260712_0016_bootstrapgae_native_nocompile
+```
+
+Changes relative to the first FlatActorCritic config:
+
+- enable flat actor and flat critic input normalization;
+- increase flat actor/critic hidden size from 256 to 512;
+- reduce actor learning rates to `(5e-5, 1e-4, 1e-4)` for accel/SAT/BW;
+- reduce actor epochs from 5 to 3;
+- tighten target KL from 0.02 to 0.01;
+- add small entropy regularization.
+
+This is still a MAPPO-like flat actor/flat centralized critic baseline: it does
+not use heuristic teacher warm start and does not change the reward or legal
+action interface.
+
+Stabilized MAPPO-like result and follow-up tuning note, 2026-07-12:
+
+```text
+runs/phase4_learning_ablation/3uav20gu_t250/mappo_like_flat_actor_critic_stabilized/seed45211_20260712_0016_resume_u0100_bootstrapgae_native_nocompile
+```
+
+This run stopped normally at update 475 by checkpoint-reward plateau. The
+selected `best_checkpoint.pt` corresponds to update 375 under the 0.5% relative
+reward-improvement rule, even though update 450 has a slightly higher raw
+reward. The selected checkpoint is stronger than the internal `queue_aware_bw`
+checkpoint reference (`reward=33.67` vs `32.28`, `processed=0.462` vs `0.438`,
+`drop=0.477` vs `0.482`, `pre_backlog=13.81` vs `16.56`) but remains far below
+the RelCritic full method. Treat it as a credible single-seed learned baseline
+only after held-out evaluation and multi-seed confirmation.
+
+GPU0 lrmid follow-up launched on 2026-07-12:
+
+```text
+runs/phase4_learning_ablation/3uav20gu_t250/mappo_like_flat_actor_critic_stabilized_lrmid/seed45211_20260712_143753_bootstrapgae_native_nocompile
+```
+
+It reuses the stabilized config and changes only CLI optimization knobs:
+
+```text
+--accel_actor_lr 7.5e-5
+--sat_actor_lr 2.0e-4
+--bw_actor_lr 2.0e-4
+--actor_epochs 4
+```
+
+Rationale: the stabilized run learned, but stage KLs were often very small,
+suggesting under-aggressive actor updates. This lrmid run increases actor update
+strength while keeping the same flat actor/critic architecture, reward,
+environment, masks, return target, validation cadence, early-stop rule, and
+700-update hard cap. Early updates reached nonzero but bounded KL
+(`~0.004-0.014`) and checkpoint eval at update 25 was valid
+(`reward=31.50`, `processed=0.359`, `drop=0.530`); wait for plateau/best result
+before drawing conclusions.
+
+The lrmid run was manually stopped after update 80 because its early
+operational metrics were worse than the stabilized run: update 50 had
+`reward=31.46`, `processed=0.235`, `drop=0.539`, `pre_backlog=42.25`,
+`D_sys=312.60`, and update 75 had `reward=29.27`, `processed=0.270`,
+`pre_backlog=33.75`, with nonzero collision fraction. Do not use this run as a
+paper result. The next reasonable tuning direction, if needed, is gentler:
+keep accel LR and actor epochs at the stabilized setting, and only raise SAT/BW
+LR modestly (for example `1.5e-4`) or leave the stabilized setting unchanged.
+
+Gentler SAT/BW-only LR follow-up launched on GPU0:
+
+```text
+runs/phase4_learning_ablation/3uav20gu_t250/mappo_like_flat_actor_critic_stabilized_sbw15e4/seed45211_20260712_144404_bootstrapgae_native_nocompile
+```
+
+It reused the stabilized config and changed only:
+
+```text
+--accel_actor_lr 5.0e-5
+--sat_actor_lr 1.5e-4
+--bw_actor_lr 1.5e-4
+--actor_epochs 3
+```
+
+This run exited unexpectedly around update 41 without `training_stop.json` or a
+Python traceback in the launch log. Its update-25 checkpoint eval was already
+weaker than the stabilized run (`reward=27.88`, `processed=0.333`,
+`drop=0.566`, `pre_backlog=16.25`, collision fraction `0.344`), so it was not
+restarted. Current recommendation: keep the stabilized MAPPO-like baseline as
+the best tuned single-seed flat baseline unless a more deliberate search budget
+is explicitly allocated.
+
+MAPPO-like stabilized multi-seed follow-up launched on GPU0:
+
+```text
+runs/phase4_learning_ablation/3uav20gu_t250/mappo_like_flat_actor_critic_stabilized/seed73129_20260712_150723_bootstrapgae_native_nocompile
+```
+
+This run keeps the stabilized configuration unchanged and changes only the
+training seed from `45211` to `73129`. Its purpose is to test whether the
+stabilized MAPPO-like baseline is consistently learnable across seeds, not to
+tune the baseline further. Use the same validation/early-stop rule and later
+run held-out evaluation before using it in the paper table.
+
+Critic ablation GPU1 three-seed queue:
+
+```text
+runs/phase4_learning_ablation/3uav20gu_t250/_queues/critic_ablation_gpu1_3seeds_20260711_213639_nocompile.log
+```
+
+Queued runs:
+
+```text
+runs/phase4_learning_ablation/3uav20gu_t250/relational_critic/seed45211_20260711_213639_bootstrapgae_nocompile
+runs/phase4_learning_ablation/3uav20gu_t250/relational_critic/seed73129_20260711_213639_bootstrapgae_nocompile
+runs/phase4_learning_ablation/3uav20gu_t250/relational_critic/seed91457_20260711_213639_bootstrapgae_nocompile
+runs/phase4_learning_ablation/3uav20gu_t250/global_only_critic/seed45211_20260711_213639_bootstrapgae_nocompile
+runs/phase4_learning_ablation/3uav20gu_t250/global_only_critic/seed73129_20260711_213639_bootstrapgae_nocompile
+runs/phase4_learning_ablation/3uav20gu_t250/global_only_critic/seed91457_20260711_213639_bootstrapgae_nocompile
+```
+
+Launch notes:
+
+- GPU: 1.
+- Seeds: `45211`, `73129`, `91457`.
+- Runs are serial within the queue to avoid same-GPU contention.
+- All runs use `--return_target bootstrap_gae`, `--max_updates 700`, and
+  `--disable_torch_compile`.
+- The first attempt without `--disable_torch_compile` failed immediately due
+  to a torch-dynamo shape recompilation error in `_value_accel`. It was
+  archived as:
+
+```text
+runs/phase4_learning_ablation/3uav20gu_t250/_failed_compile/relational_critic_seed45211_20260711_213452_bootstrapgae
+```
 
 ## Metrics To Compare
 

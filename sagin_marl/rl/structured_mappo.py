@@ -758,7 +758,11 @@ class _StructuredMAPPOGpuActorBridge:
             raise RuntimeError("native BW source mode code does not match the bound action producer.")
 
         self._runtime_abi = self._runtime_native_abi(runtime)
-        needs_policy = any(source in _NATIVE_POLICY_ACTION_SOURCES for source in (accel_source, sat_source, bw_source))
+        flat_policy_actor = self.learner._flat_policy_actor_native_module_enabled()
+        needs_policy = any(
+            self.learner._native_policy_source_requires_cuda_binding(source)
+            for source in (accel_source, sat_source, bw_source)
+        )
         needs_teacher = any(source == "teacher" for source in (accel_source, sat_source, bw_source))
         self._policy_actor_binding = self.learner._require_native_actor_policy_binding() if needs_policy else None
         self._teacher_actor_binding = self.learner._require_native_actor_teacher_binding() if needs_teacher else None
@@ -769,7 +773,11 @@ class _StructuredMAPPOGpuActorBridge:
             self._teacher_deterministic_override = None
 
         if accel_source == "policy":
-            self.write_accel_action = self._write_accel_action_policy  # type: ignore[method-assign]
+            self.write_accel_action = (
+                self._write_accel_action_policy_module
+                if flat_policy_actor
+                else self._write_accel_action_policy
+            )  # type: ignore[method-assign]
         elif accel_source == "zero":
             self.write_accel_action = self._write_accel_action_zero  # type: ignore[method-assign]
         elif accel_source == "queue_aware":
@@ -792,7 +800,11 @@ class _StructuredMAPPOGpuActorBridge:
             raise RuntimeError(f"native main-kernel accel exec source {accel_source!r} is not tensor-native.")
 
         if sat_source == "policy":
-            self.write_sat_action = self._write_sat_action_policy  # type: ignore[method-assign]
+            self.write_sat_action = (
+                self._write_sat_action_policy_module
+                if flat_policy_actor
+                else self._write_sat_action_policy
+            )  # type: ignore[method-assign]
         elif sat_source == "zero":
             self.write_sat_action = self._write_sat_action_zero  # type: ignore[method-assign]
         elif sat_source in {"queue_aware", "cluster_center_queue_aware", "observable_cluster_queue_aware"}:
@@ -805,7 +817,11 @@ class _StructuredMAPPOGpuActorBridge:
             raise RuntimeError(f"native main-kernel SAT exec source {sat_source!r} is not tensor-native.")
 
         if bw_source == "policy":
-            self.write_bw_action = self._write_bw_action_policy  # type: ignore[method-assign]
+            self.write_bw_action = (
+                self._write_bw_action_policy_module
+                if flat_policy_actor
+                else self._write_bw_action_policy
+            )  # type: ignore[method-assign]
         elif bw_source == "policy_single_uav_queue_aware":
             self.write_bw_action = self._write_bw_action_policy_single_uav_queue_aware  # type: ignore[method-assign]
         elif bw_source == "zero":
@@ -870,6 +886,60 @@ class _StructuredMAPPOGpuActorBridge:
             deterministic=deterministic,
             rng_step=int(runtime.random.step),
         )
+        self.accel_action_batch = None
+        self.accel_logprob_batch = None
+
+    def _write_accel_action_policy_module(
+        self,
+        accel_obs: Any,
+        *,
+        runtime: Any,
+        num_envs: int,
+        deterministic: bool,
+    ) -> None:
+        self._write_accel_action_with_module(
+            self.learner.actor,
+            accel_obs,
+            runtime=runtime,
+            num_envs=num_envs,
+            deterministic=deterministic,
+        )
+
+    def _write_accel_action_with_module(
+        self,
+        actor_module: Any,
+        accel_obs: Any,
+        *,
+        runtime: Any,
+        num_envs: int,
+        deterministic: bool,
+    ) -> None:
+        self.num_agents = self._num_agents_from_accel_obs(accel_obs, num_envs)
+        self.accel_batch = accel_obs
+        main = runtime.main
+        with torch.no_grad():
+            out = actor_module.act_accel(accel_obs, deterministic=deterministic)
+            action = out.action.reshape(int(num_envs), int(self.num_agents), -1)
+            if not torch.is_tensor(getattr(main, "live_accel_action", None)):
+                raise RuntimeError("flat native accel policy requires live_accel_action buffer.")
+            main.live_accel_action.copy_(action.to(device=main.live_accel_action.device, dtype=main.live_accel_action.dtype))
+            latent_dst = getattr(main, "live_accel_latent_action", None)
+            if torch.is_tensor(latent_dst):
+                latent = out.latent_action if out.latent_action is not None else out.action
+                latent = latent.reshape(int(num_envs), int(self.num_agents), -1)
+                latent_dst.copy_(latent.to(device=latent_dst.device, dtype=latent_dst.dtype))
+            logprob_dst = getattr(main, "live_accel_old_logprob", None)
+            if torch.is_tensor(logprob_dst):
+                logprob = out.logprob.reshape(int(num_envs), int(self.num_agents))
+                if tuple(logprob_dst.shape) == tuple(logprob.shape):
+                    logprob_dst.copy_(logprob.to(device=logprob_dst.device, dtype=logprob_dst.dtype))
+                elif tuple(logprob_dst.shape) == (int(num_envs),):
+                    logprob_dst.copy_(logprob.sum(dim=1).to(device=logprob_dst.device, dtype=logprob_dst.dtype))
+                else:
+                    raise RuntimeError(
+                        "flat native accel policy cannot write logprob shape "
+                        f"{tuple(logprob.shape)} into {tuple(logprob_dst.shape)}."
+                    )
         self.accel_action_batch = None
         self.accel_logprob_batch = None
 
@@ -1013,6 +1083,95 @@ class _StructuredMAPPOGpuActorBridge:
             deterministic=deterministic,
             rng_step=int(runtime.random.step),
         )
+        self.sat_action_batch = None
+        self.sat_logprob_batch = None
+
+    def _write_sat_action_policy_module(
+        self,
+        sat_obs: Any,
+        *,
+        runtime: Any,
+        num_envs: int,
+        sat_max_select: int,
+        deterministic: bool,
+    ) -> None:
+        self._write_sat_action_with_module(
+            self.learner.actor,
+            sat_obs,
+            runtime=runtime,
+            num_envs=num_envs,
+            sat_max_select=sat_max_select,
+            deterministic=deterministic,
+        )
+
+    def _write_sat_action_with_module(
+        self,
+        actor_module: Any,
+        sat_obs: Any,
+        *,
+        runtime: Any,
+        num_envs: int,
+        sat_max_select: int,
+        deterministic: bool,
+    ) -> None:
+        del sat_max_select
+        if self.num_agents <= 0:
+            self.num_agents = self._num_agents_from_flat_obs_tensor(
+                getattr(sat_obs, "ego_features", None),
+                num_envs,
+            )
+        self.sat_batch = sat_obs
+        main = runtime.main
+        with torch.no_grad():
+            out = actor_module.act_sat(sat_obs, deterministic=deterministic)
+            sat_policy = getattr(actor_module, "sat_subset_policy", None)
+            if sat_policy is not None and hasattr(sat_policy, "_compute_logits") and hasattr(sat_policy, "_legal_subset_mask"):
+                logits = sat_policy._compute_logits(sat_obs)
+                legal_mask = sat_policy._legal_subset_mask(sat_obs, logits)
+                chosen = out.subset_index.reshape(-1).to(device=logits.device, dtype=torch.long)
+                row_ids = torch.arange(int(chosen.shape[0]), device=logits.device, dtype=torch.long)
+                chosen_in_range = (chosen >= 0) & (chosen < int(legal_mask.shape[1]))
+                chosen_safe = chosen.clamp(min=0, max=max(int(legal_mask.shape[1]) - 1, 0))
+                legal_count = legal_mask.sum(dim=-1)
+                illegal_with_fallback = (legal_count > 0) & (~chosen_in_range | ~legal_mask[row_ids, chosen_safe])
+                if bool(illegal_with_fallback.any().detach().cpu().item()):
+                    fallback = legal_mask.to(dtype=torch.long).argmax(dim=-1)
+                    fixed_chosen = torch.where(illegal_with_fallback, fallback, chosen_safe)
+                    out = sat_policy.evaluate_actions(sat_obs, fixed_chosen, compute_entropy=True)
+            subset_index = out.subset_index.reshape(int(num_envs), int(self.num_agents))
+            subset_dst = getattr(main, "live_sat_subset_index", None)
+            if not torch.is_tensor(subset_dst):
+                raise RuntimeError("flat native SAT policy requires live_sat_subset_index buffer.")
+            subset_dst.copy_(subset_index.to(device=subset_dst.device, dtype=subset_dst.dtype))
+
+            action_dst = getattr(main, "live_sat_action_indices", None)
+            if torch.is_tensor(action_dst):
+                selected = out.selected_sat_indices.reshape(int(num_envs), int(self.num_agents), -1)
+                selected_t = selected.to(device=action_dst.device, dtype=action_dst.dtype)
+                if tuple(selected_t.shape) == tuple(action_dst.shape):
+                    action_dst.copy_(selected_t)
+                else:
+                    action_dst.fill_(-1)
+                    keep = min(int(selected_t.shape[-1]), int(action_dst.shape[-1]))
+                    if keep > 0:
+                        action_dst[..., :keep].copy_(selected_t[..., :keep])
+
+            logprob = out.logprob.reshape(int(num_envs), int(self.num_agents))
+            logprob_dst = getattr(main, "live_sat_old_logprobs_per_agent", None)
+            if torch.is_tensor(logprob_dst):
+                if tuple(logprob_dst.shape) != tuple(logprob.shape):
+                    raise RuntimeError(
+                        "flat native SAT policy cannot write logprob shape "
+                        f"{tuple(logprob.shape)} into {tuple(logprob_dst.shape)}."
+                    )
+                logprob_dst.copy_(logprob.to(device=logprob_dst.device, dtype=logprob_dst.dtype))
+            entropy_dst = getattr(main, "live_sat_entropy_per_agent", None)
+            if torch.is_tensor(entropy_dst):
+                entropy = out.entropy.reshape(int(num_envs), int(self.num_agents))
+                if tuple(entropy_dst.shape) == tuple(entropy.shape):
+                    entropy_dst.copy_(entropy.to(device=entropy_dst.device, dtype=entropy_dst.dtype))
+                else:
+                    entropy_dst.zero_()
         self.sat_action_batch = None
         self.sat_logprob_batch = None
 
@@ -1229,6 +1388,22 @@ class _StructuredMAPPOGpuActorBridge:
         self.bw_action_batch = None
         self.bw_ref_action_batch = None
         self.bw_logprob_batch = None
+
+    def _write_bw_action_policy_module(
+        self,
+        bw_obs: Any,
+        *,
+        runtime: Any,
+        num_envs: int,
+        deterministic: bool,
+    ) -> None:
+        self._write_bw_action_with_module(
+            self.learner.actor,
+            bw_obs,
+            runtime=runtime,
+            num_envs=num_envs,
+            deterministic=deterministic,
+        )
 
     def _write_bw_action_policy_single_uav_queue_aware(
         self,
@@ -2712,8 +2887,24 @@ class StructuredMAPPO:
         return bool(
             backend == "native"
             and tensor_backend == "cuda"
-            and any(self.exec_source_by_stage.get(stage_id) in _NATIVE_POLICY_ACTION_SOURCES for stage_id in (0, 1, 2))
+            and any(
+                self._native_policy_source_requires_cuda_binding(self.exec_source_by_stage.get(stage_id))
+                for stage_id in (0, 1, 2)
+            )
         )
+
+    def _flat_policy_actor_native_module_enabled(self) -> bool:
+        if self.cfg is None:
+            return False
+        return str(getattr(self.cfg, "structured_actor_backbone", "") or "").strip().lower() == "flat_mlp"
+
+    def _native_policy_source_requires_cuda_binding(self, source: Any) -> bool:
+        source_s = str(source or "")
+        if source_s not in _NATIVE_POLICY_ACTION_SOURCES:
+            return False
+        if source_s == "policy" and self._flat_policy_actor_native_module_enabled():
+            return False
+        return True
 
     def _native_rollout_teacher_actor_required(self) -> bool:
         if self.cfg is None or self.device.type != "cuda":

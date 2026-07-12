@@ -11,6 +11,9 @@ from sagin_marl.rl import (
 from sagin_marl.rl.structured_actor import (
     AccelPolicy,
     BwPolicy,
+    FlatAccelPolicy,
+    FlatBwPolicy,
+    FlatSatSubsetPolicy,
     SatSubsetPolicy,
     StructuredActor,
     _subset_member_tensor,
@@ -218,3 +221,31 @@ def test_structured_actor_wires_redesigned_subpolicies():
     assert accel_out.action.shape == (2, 2)
     assert sat_out.subset_index.shape == (2,)
     assert bw_out.action.shape == (3, 4)
+
+
+def test_structured_factory_can_build_flat_mappo_like_actor():
+    torch.manual_seed(4)
+    cfg = make_structured_test_cfg()
+    cfg.structured_actor_backbone = "flat_mlp"
+    cfg.critic_value_mode = "flat_mlp"
+
+    bundle = build_structured_modules_from_config(cfg, hidden_dim=32, embed_dim=16)
+    actor = bundle.actor
+
+    assert isinstance(actor.accel_policy, FlatAccelPolicy)
+    assert isinstance(actor.sat_subset_policy, FlatSatSubsetPolicy)
+    assert isinstance(actor.bw_policy, FlatBwPolicy)
+    accel_state = _accel_state(row_count=2, gu_count=cfg.users_obs_max, peer_count=cfg.num_uav - 1, sat_count=cfg.per_uav_visible_sat_token_max)
+    sat_state = _sat_state(row_count=2, sat_count=cfg.per_uav_visible_sat_token_max)
+    bw_state = _bw_state(row_count=3, gu_count=cfg.num_gu)
+
+    accel_out = actor.act_accel(accel_state, deterministic=True)
+    sat_out = actor.act_sat(sat_state, deterministic=True)
+    bw_out = actor.act_bw(bw_state, deterministic=True)
+
+    assert accel_out.action.shape == (2, 2)
+    assert sat_out.subset_index.shape == (2,)
+    assert bw_out.action.shape == (3, cfg.num_gu)
+    actor.evaluate_accel(accel_state, accel_out.action, latent_action=accel_out.latent_action)
+    actor.evaluate_sat(sat_state, sat_out.subset_index)
+    actor.evaluate_bw(bw_state, bw_out.action)

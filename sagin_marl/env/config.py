@@ -580,6 +580,7 @@ class SaginConfig:
     input_norm_enabled: bool = True
     structured_actor_input_norm_enabled: bool = False
     structured_critic_input_norm_enabled: bool = False
+    structured_actor_backbone: str = "topology_aware"  # "topology_aware" | "flat_mlp"
     kl_coef: float = 0.0
     target_kl: float = 0.0
     kl_stop: bool = False
@@ -871,7 +872,7 @@ class SaginConfig:
     critic_compile_fullgraph: bool = True
     critic_value_head_hidden: int = 256
     critic_value_head_layers: int = 2
-    critic_value_mode: str = "relational"  # "relational" | "global_only" | "global_linear"
+    critic_value_mode: str = "relational"  # "relational" | "global_only" | "global_linear" | "flat_mlp"
     critic_stage_specific_paths_enabled: bool = False
     critic_sat_hidden: int = 0
     critic_sat_embed_dim: int = 0
@@ -1297,6 +1298,14 @@ def _finalize_config(cfg: SaginConfig) -> None:
         "service_floor_bits_per_step",
     )
     cfg.bw_weighted_workload_eps = float(cfg.service_floor_bits_per_step)
+    actor_backbone = str(getattr(cfg, "structured_actor_backbone", "topology_aware") or "topology_aware").strip().lower()
+    if actor_backbone in {"structured", "staged", "topology", "topology-aware", "topology_aware_staged"}:
+        actor_backbone = "topology_aware"
+    if actor_backbone in {"flat", "mappo_like", "mappo-like", "flat_actor"}:
+        actor_backbone = "flat_mlp"
+    if actor_backbone not in {"topology_aware", "flat_mlp"}:
+        raise ValueError("structured_actor_backbone must be one of {'topology_aware', 'flat_mlp'}.")
+    cfg.structured_actor_backbone = actor_backbone
     mode = str(getattr(cfg, "access_fading_mode", "ergodic_rician") or "ergodic_rician").strip().lower()
     if mode in {"none", "off", "disabled"}:
         mode = "large_scale"
