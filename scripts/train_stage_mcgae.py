@@ -2225,6 +2225,49 @@ def _stage_actor_update_full_stage(
             return 0.0
         return float(values_f[mask_b].mean().detach().cpu().item())
 
+    def _masked_scalar_sum_abs(values: torch.Tensor, mask: torch.Tensor) -> float:
+        mask_b = mask.detach().to(device=values.device, dtype=torch.bool).reshape(-1)
+        values_f = values.detach().to(dtype=torch.float32).reshape(-1)
+        if int(mask_b.sum().detach().cpu().item()) <= 0:
+            return 0.0
+        return float(values_f[mask_b].abs().sum().detach().cpu().item())
+
+    def _masked_scalar_frac(mask: torch.Tensor, denom_mask: torch.Tensor) -> float:
+        denom_b = denom_mask.detach().to(dtype=torch.bool).reshape(-1)
+        denom_count = int(denom_b.sum().detach().cpu().item())
+        if denom_count <= 0:
+            return 0.0
+        mask_b = mask.detach().to(dtype=torch.bool).reshape(-1)
+        return float((mask_b & denom_b).to(dtype=torch.float32).sum().detach().cpu().item() / float(denom_count))
+
+    def _masked_scalar_stats(prefix: str, values: torch.Tensor, mask: torch.Tensor) -> dict[str, float]:
+        mask_b = mask.detach().to(device=values.device, dtype=torch.bool).reshape(-1)
+        values_f = values.detach().to(dtype=torch.float32).reshape(-1)
+        if int(mask_b.sum().detach().cpu().item()) <= 0:
+            return {
+                f"{prefix}_mean": 0.0,
+                f"{prefix}_p05": 0.0,
+                f"{prefix}_p10": 0.0,
+                f"{prefix}_p25": 0.0,
+                f"{prefix}_p50": 0.0,
+                f"{prefix}_p75": 0.0,
+                f"{prefix}_p90": 0.0,
+                f"{prefix}_p95": 0.0,
+            }
+        selected = values_f[mask_b]
+        quantiles = torch.tensor([0.05, 0.10, 0.25, 0.50, 0.75, 0.90, 0.95], device=selected.device)
+        qs = torch.quantile(selected, quantiles).detach().cpu()
+        return {
+            f"{prefix}_mean": float(selected.mean().detach().cpu().item()),
+            f"{prefix}_p05": float(qs[0].item()),
+            f"{prefix}_p10": float(qs[1].item()),
+            f"{prefix}_p25": float(qs[2].item()),
+            f"{prefix}_p50": float(qs[3].item()),
+            f"{prefix}_p75": float(qs[4].item()),
+            f"{prefix}_p90": float(qs[5].item()),
+            f"{prefix}_p95": float(qs[6].item()),
+        }
+
     with torch.no_grad():
         delta_logprob = (post_logprob - old_logprob).detach().to(dtype=torch.float32).reshape(-1)
         ratio_full = torch.exp(torch.clamp(delta_logprob, min=-20.0, max=20.0))
@@ -2264,6 +2307,80 @@ def _stage_actor_update_full_stage(
             if neg_count > 0
             else 0.0
         )
+        pos_up = adv_pos & (delta_logprob > 0.0)
+        pos_down = adv_pos & (delta_logprob < 0.0)
+        neg_down = adv_neg & (delta_logprob < 0.0)
+        neg_up = adv_neg & (delta_logprob > 0.0)
+        correct_delta_abs_sum = _masked_scalar_sum_abs(delta_logprob, direction_agree)
+        wrong_delta_abs_sum = _masked_scalar_sum_abs(delta_logprob, direction_wrong)
+        pos_up_abs_sum = _masked_scalar_sum_abs(delta_logprob, pos_up)
+        pos_down_abs_sum = _masked_scalar_sum_abs(delta_logprob, pos_down)
+        neg_down_abs_sum = _masked_scalar_sum_abs(delta_logprob, neg_down)
+        neg_up_abs_sum = _masked_scalar_sum_abs(delta_logprob, neg_up)
+        credit_positive_abs_sum = _masked_scalar_sum_abs(credit, credit > 0.0)
+        credit_negative_abs_sum = _masked_scalar_sum_abs(credit, credit < 0.0)
+        adv_pos_abs_sum = _masked_scalar_sum_abs(adv, adv_pos)
+        adv_neg_abs_sum = _masked_scalar_sum_abs(adv, adv_neg)
+        ratio_upper_clip = ratio_full > (1.0 + float(learner.clip_ratio))
+        ratio_lower_clip = ratio_full < (1.0 - float(learner.clip_ratio))
+        pos_active = adv_pos & (~ratio_upper_clip)
+        neg_active = adv_neg & (~ratio_lower_clip)
+        pos_active_abs_sum = _masked_scalar_sum_abs(adv, pos_active)
+        neg_active_abs_sum = _masked_scalar_sum_abs(adv, neg_active)
+        all_mask = torch.ones_like(adv_pos, dtype=torch.bool)
+        delta_magnitude_diag: dict[str, float] = {
+            **_masked_scalar_stats("delta_logprob", delta_logprob, all_mask),
+            **_masked_scalar_stats("delta_logprob_abs", delta_logprob.abs(), all_mask),
+            **_masked_scalar_stats("delta_logprob_when_adv_positive", delta_logprob, adv_pos),
+            **_masked_scalar_stats("delta_logprob_when_adv_negative", delta_logprob, adv_neg),
+            **_masked_scalar_stats("credit", credit, all_mask),
+            **_masked_scalar_stats("credit_when_adv_positive", credit, adv_pos),
+            **_masked_scalar_stats("credit_when_adv_negative", credit, adv_neg),
+            "delta_logprob_abs_gt_0p02_frac": _masked_scalar_frac(delta_logprob.abs() > 0.02, all_mask),
+            "delta_logprob_abs_gt_0p05_frac": _masked_scalar_frac(delta_logprob.abs() > 0.05, all_mask),
+            "delta_logprob_abs_gt_0p10_frac": _masked_scalar_frac(delta_logprob.abs() > 0.10, all_mask),
+            "delta_logprob_abs_gt_0p20_frac": _masked_scalar_frac(delta_logprob.abs() > 0.20, all_mask),
+            "delta_logprob_abs_gt_0p05_when_adv_positive_frac": _masked_scalar_frac(
+                delta_logprob.abs() > 0.05, adv_pos
+            ),
+            "delta_logprob_abs_gt_0p05_when_adv_negative_frac": _masked_scalar_frac(
+                delta_logprob.abs() > 0.05, adv_neg
+            ),
+            "delta_logprob_direction_correct_abs_sum": float(correct_delta_abs_sum),
+            "delta_logprob_direction_wrong_abs_sum": float(wrong_delta_abs_sum),
+            "delta_logprob_direction_correct_abs_share": float(
+                correct_delta_abs_sum / max(correct_delta_abs_sum + wrong_delta_abs_sum, 1.0e-12)
+            ),
+            "delta_logprob_adv_positive_up_abs_sum": float(pos_up_abs_sum),
+            "delta_logprob_adv_positive_down_abs_sum": float(pos_down_abs_sum),
+            "delta_logprob_adv_positive_up_abs_share": float(
+                pos_up_abs_sum / max(pos_up_abs_sum + pos_down_abs_sum, 1.0e-12)
+            ),
+            "delta_logprob_adv_negative_down_abs_sum": float(neg_down_abs_sum),
+            "delta_logprob_adv_negative_up_abs_sum": float(neg_up_abs_sum),
+            "delta_logprob_adv_negative_down_abs_share": float(
+                neg_down_abs_sum / max(neg_down_abs_sum + neg_up_abs_sum, 1.0e-12)
+            ),
+            "credit_positive_abs_sum": float(credit_positive_abs_sum),
+            "credit_negative_abs_sum": float(credit_negative_abs_sum),
+            "credit_positive_abs_share": float(
+                credit_positive_abs_sum / max(credit_positive_abs_sum + credit_negative_abs_sum, 1.0e-12)
+            ),
+            "adv_positive_abs_mass": float(adv_pos_abs_sum),
+            "adv_negative_abs_mass": float(adv_neg_abs_sum),
+            "adv_positive_abs_mass_share": float(adv_pos_abs_sum / max(adv_pos_abs_sum + adv_neg_abs_sum, 1.0e-12)),
+            "adv_negative_abs_mass_share": float(adv_neg_abs_sum / max(adv_pos_abs_sum + adv_neg_abs_sum, 1.0e-12)),
+            "adv_positive_upper_clip_frac": _masked_scalar_frac(ratio_upper_clip, adv_pos),
+            "adv_negative_lower_clip_frac": _masked_scalar_frac(ratio_lower_clip, adv_neg),
+            "adv_positive_active_abs_mass": float(pos_active_abs_sum),
+            "adv_negative_active_abs_mass": float(neg_active_abs_sum),
+            "adv_positive_active_abs_mass_share": float(
+                pos_active_abs_sum / max(pos_active_abs_sum + neg_active_abs_sum, 1.0e-12)
+            ),
+            "adv_negative_active_abs_mass_share": float(
+                neg_active_abs_sum / max(pos_active_abs_sum + neg_active_abs_sum, 1.0e-12)
+            ),
+        }
         raw_adv_diag: dict[str, float] = {"raw_adv_available": 0.0}
         if raw_adv is not None:
             raw_adv_t = raw_adv.detach().to(dtype=torch.float32).reshape(-1)
@@ -2281,6 +2398,16 @@ def _stage_actor_update_full_stage(
             norm_raw_agree = ((adv_pos & raw_pos) | (adv_neg & raw_neg)) & norm_raw_nonzero
             norm_raw_disagree = ((adv_pos & raw_neg) | (adv_neg & raw_pos)) & norm_raw_nonzero
             raw_credit_stats = _summ_tensor(raw_credit)
+            raw_pos_up = raw_pos & (delta_logprob > 0.0)
+            raw_pos_down = raw_pos & (delta_logprob < 0.0)
+            raw_neg_down = raw_neg & (delta_logprob < 0.0)
+            raw_neg_up = raw_neg & (delta_logprob > 0.0)
+            raw_pos_up_abs_sum = _masked_scalar_sum_abs(delta_logprob, raw_pos_up)
+            raw_pos_down_abs_sum = _masked_scalar_sum_abs(delta_logprob, raw_pos_down)
+            raw_neg_down_abs_sum = _masked_scalar_sum_abs(delta_logprob, raw_neg_down)
+            raw_neg_up_abs_sum = _masked_scalar_sum_abs(delta_logprob, raw_neg_up)
+            raw_credit_positive_abs_sum = _masked_scalar_sum_abs(raw_credit, raw_credit > 0.0)
+            raw_credit_negative_abs_sum = _masked_scalar_sum_abs(raw_credit, raw_credit < 0.0)
 
             def _frac_mask(mask: torch.Tensor, denom_mask: torch.Tensor) -> float:
                 denom_count = int(denom_mask.to(dtype=torch.bool).sum().detach().cpu().item())
@@ -2326,12 +2453,31 @@ def _stage_actor_update_full_stage(
                 ),
                 "delta_logprob_when_raw_adv_positive_mean": _masked_scalar_mean(delta_logprob, raw_pos),
                 "delta_logprob_when_raw_adv_negative_mean": _masked_scalar_mean(delta_logprob, raw_neg),
+                **_masked_scalar_stats("delta_logprob_when_raw_adv_positive", delta_logprob, raw_pos),
+                **_masked_scalar_stats("delta_logprob_when_raw_adv_negative", delta_logprob, raw_neg),
+                "delta_logprob_raw_adv_positive_up_abs_sum": float(raw_pos_up_abs_sum),
+                "delta_logprob_raw_adv_positive_down_abs_sum": float(raw_pos_down_abs_sum),
+                "delta_logprob_raw_adv_positive_up_abs_share": float(
+                    raw_pos_up_abs_sum / max(raw_pos_up_abs_sum + raw_pos_down_abs_sum, 1.0e-12)
+                ),
+                "delta_logprob_raw_adv_negative_down_abs_sum": float(raw_neg_down_abs_sum),
+                "delta_logprob_raw_adv_negative_up_abs_sum": float(raw_neg_up_abs_sum),
+                "delta_logprob_raw_adv_negative_down_abs_share": float(
+                    raw_neg_down_abs_sum / max(raw_neg_down_abs_sum + raw_neg_up_abs_sum, 1.0e-12)
+                ),
                 "raw_credit_mean": float(raw_credit_stats["mean"]),
                 "raw_credit_std": float(raw_credit_stats["std"]),
                 "raw_credit_min": float(raw_credit_stats["min"]),
                 "raw_credit_max": float(raw_credit_stats["max"]),
+                **_masked_scalar_stats("raw_credit_nonzero", raw_credit, raw_nonzero),
                 "raw_credit_positive_frac": float(
                     (raw_credit > 0.0).to(dtype=torch.float32).mean().detach().cpu().item()
+                ),
+                "raw_credit_positive_abs_sum": float(raw_credit_positive_abs_sum),
+                "raw_credit_negative_abs_sum": float(raw_credit_negative_abs_sum),
+                "raw_credit_positive_abs_share": float(
+                    raw_credit_positive_abs_sum
+                    / max(raw_credit_positive_abs_sum + raw_credit_negative_abs_sum, 1.0e-12)
                 ),
                 "raw_credit_direction_agree_frac": float(
                     raw_direction_agree.to(dtype=torch.float32).sum().detach().cpu().item() / float(max(raw_nonzero_count, 1))
@@ -2383,6 +2529,7 @@ def _stage_actor_update_full_stage(
         "delta_logprob_abs_mean": float(delta_logprob.abs().mean().detach().cpu().item()),
         "delta_logprob_when_adv_positive_mean": _masked_scalar_mean(delta_logprob, adv_pos),
         "delta_logprob_when_adv_negative_mean": _masked_scalar_mean(delta_logprob, adv_neg),
+        **delta_magnitude_diag,
         "credit_mean": float(credit_stats["mean"]),
         "credit_std": float(credit_stats["std"]),
         "credit_min": float(credit_stats["min"]),
