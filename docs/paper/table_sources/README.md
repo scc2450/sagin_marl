@@ -47,6 +47,12 @@ Each row tries to record:
 - 6UAV GU-load and 12UAV/80GU smoke diagnostics.
 - Phase4 3UAV/20GU checkpoint-validation snapshot for RelCritic, GlobalCritic,
   and MAPPO-like source-scenario Section 5 planning.
+- Phase4 3UAV/20GU formal held-out source-scenario main table for selected
+  learned checkpoints and fixed baselines.
+- Phase4 3UAV/20GU formal held-out raw rows, learned seed-level rows, and
+  selected-versus-final companion rows for Section 5 checkpoint selection.
+- Phase4 Section 5 training-validation curves, main performance bars,
+  GlobalCritic seed-level displays, and runtime/resource summaries.
 
 ## Important Caveats
 
@@ -70,3 +76,11 @@ Each row tries to record:
 - Phase4 source-validation rows use checkpoint-eval seed base `910000` and
   should not be described as final held-out source-scenario results. They are
   planning evidence for Section 5 curves/tables.
+- Phase4 formal held-out rows use seed bases `980000`, `981000`, and `982000`
+  with 64 episodes per seed base. These are paper-facing source-scenario rows.
+- For Section 5 main performance, use selected learned checkpoints plus fixed
+  baselines in the main table. Treat final checkpoint rows as checkpoint
+  stability/selection companion evidence or appendix material.
+- MAPPO-like is a same-scenario, same held-out seed, same hybrid action
+  interface learned adapter baseline. It should not be described as a faithful
+  reproduction of a specific external MAPPO or MADDPG implementation.
