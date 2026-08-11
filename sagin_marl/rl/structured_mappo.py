@@ -447,6 +447,27 @@ def _native_source_uses_live_action(source: str) -> bool:
     return str(source).strip().lower() in _NATIVE_LIVE_ACTION_SOURCES
 
 
+def validate_satellite_control_consistency(
+    cfg: Any | None,
+    *,
+    train_sat: bool,
+    exec_sat_source: str,
+    context: str,
+) -> None:
+    if cfg is None or not bool(getattr(cfg, "fixed_satellite_strategy", False)):
+        return
+    sat_source = _normalize_exec_source(exec_sat_source)
+    if not bool(train_sat) and sat_source != "policy":
+        return
+    raise ValueError(
+        f"{context}: fixed_satellite_strategy=true conflicts with learned satellite control "
+        f"(train_sat={bool(train_sat)}, exec_sat_source={sat_source!r}). "
+        "Set fixed_satellite_strategy=false for learned/policy satellite selection. "
+        "For a fixed nearest-satellite path, use train_sat=false with exec_sat_source='zero' "
+        "or an explicit non-policy heuristic source."
+    )
+
+
 def _native_exec_source_mode_code(source: object) -> int:
     source_s = str(source or "policy").strip().lower()
     table = {

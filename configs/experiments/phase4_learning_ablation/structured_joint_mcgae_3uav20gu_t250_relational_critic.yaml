@@ -138,7 +138,7 @@ access_ergodic_rician_quadrature_points: 16
 interference_enabled: true
 
 enable_bw_action: true
-fixed_satellite_strategy: true
+fixed_satellite_strategy: false
 sat_select_mode: sample
 N_RF: 2
 sat_num_select: 2

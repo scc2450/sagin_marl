@@ -63,6 +63,39 @@ Absorbed notes:
 - `phase4_stars_gc_stability_10seeds_status_20260714.md`;
 - `phase4_baseline_consolidation_review_20260811.md`.
 
+## Satellite-Control Consistency Audit
+
+Audit date: 2026-08-11.
+
+Issue: several active learned configs inherited `fixed_satellite_strategy: true`
+while also setting `train_sat: true` and `exec_sat_source: policy`. In the
+Python structured driver, `fixed_satellite_strategy=true` overrides the
+satellite action and chooses the nearest visible satellite, so this combination
+is not semantically valid for learned satellite selection.
+
+Resolution:
+
+- active learned configs under `configs/current`, `configs/experiments`,
+  `configs/comparison/ref`, `configs/stage_sanity/sat`, `configs/smoke`, and
+  `configs/variants` were normalized to `fixed_satellite_strategy: false`
+  whenever satellite execution is policy-controlled;
+- `train_joint_mcgae.py` and `evaluate_structured_actor_exec_sources` now reject
+  `fixed_satellite_strategy=true` together with learned/policy satellite
+  control;
+- `tests/test_config_parsing.py` includes an active-config invariant so this
+  conflict cannot be reintroduced outside `configs/archive`.
+
+Impact on existing Phase 4 formal results: the old field value is a real config
+hygiene problem, but the paper-facing friday runs were executed through
+`GpuStructuredDriverGroup` with `structured_env_backend=native` and
+`structured_env_tensor_backend=cuda`. The native CUDA rollout uses the source
+mode code: `SOURCE_POLICY` decodes the actor's satellite subset action, while
+nearest-visible satellite selection is used by the `SOURCE_ZERO` path. The
+recorded RelCritic seed45211 training log also reports
+`exec=(policy,policy,policy)`. Therefore the formal GPU/native Phase 4 learned
+runs should not be described as fixed-satellite runs, but future Python fallback
+or smoke/eval runs must use the corrected configs.
+
 ## Paper Evidence Freeze
 
 Controlled source scenario: `3uav20gu_t250`, deterministic held-out

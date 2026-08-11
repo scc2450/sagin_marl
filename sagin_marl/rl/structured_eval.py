@@ -39,6 +39,7 @@ from sagin_marl.rl.structured_mappo import (
     _normalize_exec_source,
     _sat_action_select_k_from_cfg,
     _sat_mask_to_ids,
+    validate_satellite_control_consistency,
 )
 from sagin_marl.rl.structured_parallel_eval import (
     _refresh_stage_obs_cache,
@@ -3066,6 +3067,21 @@ def _evaluate_structured_actor_exec_sources_internal(
     collect_step_traces: bool = False,
 ) -> Tuple[Dict[str, float], List[Dict[str, float]], List[List[Dict[str, float]]] | None]:
     active_slots = max(min(int(num_envs), int(episodes)), 1)
+    resolved_accel_source = _normalize_exec_source(
+        getattr(cfg, "exec_accel_source", "policy") if exec_accel_source is None else exec_accel_source
+    )
+    resolved_sat_source = _normalize_exec_source(
+        getattr(cfg, "exec_sat_source", "policy") if exec_sat_source is None else exec_sat_source
+    )
+    resolved_bw_source = _normalize_exec_source(
+        getattr(cfg, "exec_bw_source", "policy") if exec_bw_source is None else exec_bw_source
+    )
+    validate_satellite_control_consistency(
+        cfg,
+        train_sat=resolved_sat_source == "policy",
+        exec_sat_source=resolved_sat_source,
+        context="evaluate_structured_actor_exec_sources",
+    )
     env_group = make_structured_env_group(cfg, num_envs=active_slots, backend=vec_backend, mode="eval")
     drivers = env_group if looks_like_driver_group(env_group) else _as_driver_list(env_group)
     actor.eval()
@@ -3085,27 +3101,12 @@ def _evaluate_structured_actor_exec_sources_internal(
         device=device,
         target_mode="step_level",
         cfg=cfg,
-        train_accel=_normalize_exec_source(
-            getattr(cfg, "exec_accel_source", "policy") if exec_accel_source is None else exec_accel_source
-        )
-        == "policy",
-        train_sat=_normalize_exec_source(
-            getattr(cfg, "exec_sat_source", "policy") if exec_sat_source is None else exec_sat_source
-        )
-        == "policy",
-        train_bw=_normalize_exec_source(
-            getattr(cfg, "exec_bw_source", "policy") if exec_bw_source is None else exec_bw_source
-        )
-        == "policy",
-        exec_accel_source=_normalize_exec_source(
-            getattr(cfg, "exec_accel_source", "policy") if exec_accel_source is None else exec_accel_source
-        ),
-        exec_sat_source=_normalize_exec_source(
-            getattr(cfg, "exec_sat_source", "policy") if exec_sat_source is None else exec_sat_source
-        ),
-        exec_bw_source=_normalize_exec_source(
-            getattr(cfg, "exec_bw_source", "policy") if exec_bw_source is None else exec_bw_source
-        ),
+        train_accel=resolved_accel_source == "policy",
+        train_sat=resolved_sat_source == "policy",
+        train_bw=resolved_bw_source == "policy",
+        exec_accel_source=resolved_accel_source,
+        exec_sat_source=resolved_sat_source,
+        exec_bw_source=resolved_bw_source,
     )
     rows: List[Dict[str, float]] = []
     episode_traces: Dict[int, List[Dict[str, float]]] = {}

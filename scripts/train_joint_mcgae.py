@@ -30,7 +30,7 @@ from sagin_marl.rl.structured_bw_update_direction import (
 )
 from sagin_marl.rl.structured_buffer import StructuredRolloutBuffer
 from sagin_marl.rl.structured_factory import build_structured_modules_from_config
-from sagin_marl.rl.structured_mappo import StructuredMAPPO
+from sagin_marl.rl.structured_mappo import StructuredMAPPO, validate_satellite_control_consistency
 from sagin_marl.rl.structured_eval import (
     append_structured_checkpoint_eval_row,
     evaluate_structured_actor_exec_sources,
@@ -2854,6 +2854,12 @@ def main() -> None:
     run_dir.mkdir(parents=True, exist_ok=True)
     cfg = load_config(args.config)
     _force_joint_config(cfg, reward_mode=str(args.reward_mode))
+    validate_satellite_control_consistency(
+        cfg,
+        train_sat=bool(cfg.train_sat),
+        exec_sat_source=str(cfg.exec_sat_source),
+        context="train_joint_mcgae.py",
+    )
     if bool(args.disable_checkpoint_eval):
         cfg.checkpoint_eval_enabled = False
     target_updates = int(args.max_updates) if args.max_updates is not None else int(args.updates)

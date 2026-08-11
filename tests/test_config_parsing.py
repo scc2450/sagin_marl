@@ -1,8 +1,49 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from sagin_marl.env.config import SaginConfig, ablation_flag, load_config, update_config
+from sagin_marl.rl.structured_mappo import validate_satellite_control_consistency
+
+
+def _top_level_yaml_flags(path: Path) -> dict[str, str]:
+    flags: dict[str, str] = {}
+    for line in path.read_text(encoding="utf-8").splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#") or ":" not in stripped:
+            continue
+        key, value = stripped.split(":", 1)
+        if key in flags:
+            continue
+        flags[key] = value.split("#", 1)[0].strip().lower()
+    return flags
+
+
+def test_active_learned_satellite_configs_do_not_enable_fixed_satellite_strategy():
+    repo_root = Path(__file__).resolve().parents[1]
+    offenders: list[str] = []
+    for path in sorted((repo_root / "configs").rglob("*.yaml")):
+        if "archive" in path.relative_to(repo_root / "configs").parts:
+            continue
+        flags = _top_level_yaml_flags(path)
+        fixed_sat = flags.get("fixed_satellite_strategy") == "true"
+        learned_sat = flags.get("train_sat") == "true" or flags.get("exec_sat_source") == "policy"
+        if fixed_sat and learned_sat:
+            offenders.append(str(path.relative_to(repo_root)))
+    assert offenders == []
+
+
+def test_satellite_control_consistency_rejects_fixed_policy_satellite_control():
+    cfg = SaginConfig(fixed_satellite_strategy=True)
+    with pytest.raises(ValueError, match="fixed_satellite_strategy=true conflicts"):
+        validate_satellite_control_consistency(
+            cfg,
+            train_sat=True,
+            exec_sat_source="policy",
+            context="unit-test",
+        )
 
 
 def test_load_config_coerces_numeric_strings(tmp_path):
