@@ -53,6 +53,15 @@ Each row tries to record:
   selected-versus-final companion rows for Section 5 checkpoint selection.
 - Phase4 Section 5 training-validation curves, main performance bars,
   GlobalCritic seed-level displays, and runtime/resource summaries.
+- Phase4 no-HA-PPO formal parameter sweeps for offered load and joint
+  access/backhaul/service-capacity sensitivity. These rows cover STARS,
+  STARS-GC, QCCS, Lyapunov, QBS, and Uniform across seven points per sweep.
+- Phase4 nominal selected-evaluation rich metrics for queue-layer and
+  access/backhaul/satellite flow decomposition. These rows reuse the nominal
+  `x1p00` selected-checkpoint held-out protocol from the formal parameter sweep.
+- Phase4 UAV-density collision smoke sweep for safety-stress triage. These rows
+  vary $N_{\mathrm{U}}=2,\ldots,6$ in the 1500 m x 1500 m source area and compare
+  STARS, STARS-GC, QCCS, and Lyapunov under three evaluation seed bases.
 
 ## Important Caveats
 
@@ -78,6 +87,18 @@ Each row tries to record:
   planning evidence for Section 5 curves/tables.
 - Phase4 formal held-out rows use seed bases `980000`, `981000`, and `982000`
   with 64 episodes per seed base. These are paper-facing source-scenario rows.
+- Phase4 parameter-sweep rows registered on 2026-07-14 intentionally exclude
+  HA-PPO because its flat learned evaluation path was much slower and caused
+  instability under concurrent execution. Treat HA-PPO sweep completion as a
+  separate companion task, not as a blocker for the main sensitivity figures.
+- Phase4 nominal selected rich metrics currently have complete coverage for
+  STARS, STARS-GC, QCCS, Lyapunov, QBS, and Uniform. The copied `x1p00` tree
+  contains only one HA-PPO row, so do not use HA-PPO in queue/flow mechanism
+  figures unless the missing selected-evaluation rows are rerun.
+- Phase4 UAV-density collision rows are smoke/stress-test evidence. They are
+  useful for identifying the UAV-density safety threshold, but should not be
+  promoted into a final safety claim without deciding whether the high-density
+  points are within the intended operating regime.
 - For Section 5 main performance, use selected learned checkpoints plus fixed
   baselines in the main table. Treat final checkpoint rows as checkpoint
   stability/selection companion evidence or appendix material.
