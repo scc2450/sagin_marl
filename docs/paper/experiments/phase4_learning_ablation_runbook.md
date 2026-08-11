@@ -305,7 +305,9 @@ Recommended PR split:
 2. Core environment and evaluator fixes needed by later experiments:
    native/evaluator bug fixes, fixed-baseline support, and focused tests.
 3. Phase3 generalization configs and table sources:
-   keep separate from phase4 learning ablation.
+   keep separate from phase4 learning ablation; use
+   `docs/paper/experiments/phase3_generalization_runbook.md` as the canonical
+   review note.
 4. Phase4 learning-ablation code and configs:
    RelCritic/GlobalCritic/MAPPO-like config support, checkpoint-eval resume
    fixes, early-stop state restore, and launch scripts.

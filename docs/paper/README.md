@@ -8,6 +8,7 @@ assets for the SAGIN-MARL journal submission.
 ```text
 docs/paper/
   manuscript/        IEEEtran LaTeX source that can be uploaded to Overleaf as a zip.
+  experiments/       Paper-facing experiment runbooks and integration notes.
   figure_sources/    Scripts or data used to generate publication figures.
   table_sources/     Scripts or data used to generate publication tables.
   experiment_protocol.md

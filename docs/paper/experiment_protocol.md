@@ -16,7 +16,8 @@ before numbers are copied into manuscript tables.
 | 3UAV/20GU/T=250 source scenario | Main training and validation source | Active mainline |
 | Same-scale perturbations | Zero-shot robustness evidence | Candidate paper result |
 | Nearby scale-transfer settings | Scale-transfer evidence | Candidate paper result |
-| 6UAV/80GU/T=250 | Larger-scale candidate main scenario | Needs more training seeds |
+| 6UAV/80GU/T=250 | Larger-scale stress scenario | Multi-seed bootstrap-GAE complete; keep serviceability caveat |
+| 6UAV/40GU resource-calibrated | Larger-scale capacity calibration | Baseline-only sweep complete; x4 first serviceable, x6 first 3UAV/20GU-like |
 
 ## Required table families
 
