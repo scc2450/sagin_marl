@@ -636,7 +636,8 @@ Not supported without additional experiments:
 - Claims that final checkpoint behavior is the primary performance target.
 - Broad larger-scale generalization claims from this Section 5 source-scenario evidence alone.
 """
-    (EXP_DIR / "section5_performance_assets_20260713.md").write_text(note)
+    # Narrative freeze notes are maintained in phase4_learning_ablation_runbook.md.
+    _ = note
 
 
 def main() -> None:

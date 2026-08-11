@@ -29,6 +29,311 @@ Implementation branch:
 git switch erik/phase4-learning-ablation-baseline
 ```
 
+## Canonical Status
+
+Last consolidated: 2026-08-11.
+
+This file is the canonical Phase 4 / Section 5 experiment runbook. Older
+dated notes about formal evaluation status, figure design, parameter sweeps,
+STARS-GC stability, and Section 5 claim placement have been absorbed here to
+avoid maintaining several nearly-overlapping paper guidance files.
+
+Keep:
+
+- source tables under `docs/paper/table_sources/`;
+- reproducible figure sources under `docs/paper/figure_sources/`;
+- manuscript-facing figure copies under `docs/paper/manuscript/figures/`;
+- generation and aggregation scripts under `docs/paper/experiments/` and
+  `scripts/analysis/phase4/`.
+
+Do not create a new dated markdown note for every small decision. Add short
+updates to this runbook, or update `docs/paper/evidence_index.md` when a claim
+becomes manuscript-facing.
+
+Absorbed notes:
+
+- `phase4_formal_eval_status_20260712.md`;
+- `phase4_formal_evaluation_matrix_20260712.md`;
+- `section5_performance_assets_20260713.md`;
+- `section5_table_figure_claim_plan_20260713.md`;
+- `performance_evaluation_figure_draft_20260714.md`;
+- `performance_figure_design_guidelines_20260714.md`;
+- `phase4_formal_parameter_sweep_status_20260714.md`;
+- `phase4_parameter_sweep_figure_notes_20260714.md`;
+- `phase4_stars_gc_stability_10seeds_status_20260714.md`;
+- `phase4_baseline_consolidation_review_20260811.md`.
+
+## Paper Evidence Freeze
+
+Controlled source scenario: `3uav20gu_t250`, deterministic held-out
+evaluation. The formal held-out protocol uses seed bases `980000`, `981000`,
+and `982000`, with 64 episodes per seed base. Learned methods use three
+training seeds, so each learned method has 576 held-out episodes in the main
+selected-checkpoint table. Fixed baselines use 192 held-out episodes.
+
+Primary table source:
+
+```text
+docs/paper/table_sources/phase4_formal_heldout_source_selected_main_20260713.csv
+```
+
+Selected-checkpoint source-scenario summary:
+
+| Method | Family | Reward | Processed | Drop | Backlog | D_sys | Collision |
+|---|---|---:|---:|---:|---:|---:|---:|
+| RelCritic / STARS | learned | 71.017 | 0.911 | 0.073 | 4.463 | 6.287 | 0.005 |
+| GlobalCritic / STARS-GC | learned ablation | 47.349 | 0.725 | 0.237 | 7.536 | 16.210 | 0.038 |
+| MAPPO-like | learned adapter | 27.477 | 0.508 | 0.376 | 16.742 | 37.213 | 0.302 |
+| QCCS | fixed heuristic | 50.448 | 0.893 | 0.079 | 6.179 | 8.512 | 0.005 |
+| Lyapunov | fixed heuristic | 44.656 | 0.845 | 0.124 | 7.729 | 10.969 | 0.000 |
+| Observable QCCS | fixed heuristic | 31.903 | 0.634 | 0.281 | 10.475 | 19.443 | 0.245 |
+| QBS | fixed heuristic | 32.965 | 0.474 | 0.438 | 16.589 | 39.708 | 0.005 |
+| Uniform | fixed heuristic | 33.229 | 0.473 | 0.463 | 13.614 | 37.053 | 0.005 |
+
+Selected-versus-final companion table source:
+
+```text
+docs/paper/table_sources/phase4_formal_heldout_source_learned_selected_final_20260713.csv
+```
+
+Use selected checkpoints in the main table because checkpoint selection was
+predefined and evaluated on held-out seeds. Report final checkpoints as
+companion evidence to show stability and avoid a peak-only narrative.
+
+10-seed critic stability sources:
+
+```text
+docs/paper/table_sources/phase4_stars_training_checkpoint_summary_10seed_20260714.csv
+docs/paper/table_sources/phase4_stars_gc_training_checkpoint_summary_10seed_20260714.csv
+docs/paper/table_sources/phase4_critic_convergence_best_so_far_10seed_20260714.csv
+```
+
+Stability interpretation:
+
+- STARS selected validation reward is consistently high across 10 seeds
+  (roughly 58.9--70.5 in the checkpoint summary).
+- STARS-GC can occasionally match STARS on favorable seeds, but its seed spread
+  is much larger and low-performing seeds are common.
+- This supports a relational-critic stability claim, not a claim that the
+  global critic always fails.
+
+No-HA-PPO parameter sweep sources:
+
+```text
+docs/paper/table_sources/phase4_formal_parameter_sweeps_nohappo_raw_20260714.csv
+docs/paper/table_sources/phase4_formal_parameter_sweeps_nohappo_aggregate_20260714.csv
+```
+
+The no-HA-PPO sweep has 420 raw rows and 84 aggregate rows: two sweeps, seven
+points each, and six methods (`STARS`, `STARS-GC`, `QCCS`, `Lyapunov`, `QBS`,
+`Uniform`). HA-PPO is intentionally excluded from paper-facing full sweeps
+because its evaluation path is orders of magnitude slower and has shown
+process-level instability. Keep HA-PPO only as a separately-labeled diagnostic
+unless it is repaired and rerun under the same sweep protocol.
+
+Current manuscript-facing Phase 4 figure copies are under:
+
+```text
+docs/paper/manuscript/figures/
+```
+
+Current source figures are under:
+
+```text
+docs/paper/figure_sources/performance_evaluation_20260714/
+docs/paper/figure_sources/phase4_section5_performance_20260713/
+```
+
+Recommended Section 5 figure/table roles:
+
+- training/checkpoint validation: mark selected and final checkpoints;
+- main source-scenario table: reward plus processed/drop/backlog/D_sys/collision;
+- critic ablation: show 10-seed best-so-far reward or selected seed spread;
+- MAPPO-like comparison: same selected/final protocol and same metrics;
+- load/resource sensitivity: use no-HA-PPO sweeps unless HA-PPO is repaired.
+
+## Section 5 Writing Scaffold
+
+Section 5 should answer four questions in this order:
+
+1. Does STARS improve source-scenario performance over strong fixed scheduling
+   heuristics under the same held-out protocol?
+2. Does the relational critic improve stability and performance over a global
+   critic while keeping the staged actor fixed?
+3. Is a flat MAPPO-like learned adapter sufficient under the same hybrid masked
+   SAGIN action interface?
+4. What training/evaluation cost is required to obtain the selected policies?
+
+Suggested structure:
+
+- `5.1 Experimental protocol`: scenario, seed bases, episodes, checkpoint
+  rule, hardware/runtime reporting, and vectorized interaction scale.
+- `5.2 Comparative methods and metrics`: baseline taxonomy and metric
+  directions.
+- `5.3 Training dynamics and checkpoint selection`: selected/final explanation
+  and validation curves.
+- `5.4 Source-scenario performance`: main table and network metrics.
+- `5.5 Learning-side ablation`: relational critic versus GlobalCritic and the
+  MAPPO-like adapter.
+
+Do not claim arbitrary scale generalization in Section 5. Scale transfer,
+larger retraining, and stress-case behavior belong in Section 6 unless the page
+budget later forces a merge.
+
+## Figure Style
+
+Use a stable color/marker mapping across Section 5:
+
+| Method | Color | Marker |
+|---|---|---|
+| STARS | `#0072B2` | circle |
+| STARS-GC | `#D55E00` | square |
+| HA-PPO / MAPPO-like | `#CC79A7` | diamond |
+| QCCS | `#009E73` | triangle |
+| Lyapunov | `#E69F00` | inverted triangle |
+| QBS | `#56B4E9` | pentagon |
+| Uniform | `#666666` | x |
+
+Prefer PDF in the manuscript. Keep PNG/SVG only for inspection or source
+archives. Avoid reward-only figures when a network metric table can carry the
+same claim more cleanly.
+
+## Friday Run Storage
+
+Remote worktree:
+
+```text
+/home/sgy/workspace/sagin_marl_phase4_learning_ablation
+```
+
+Remote run root:
+
+```text
+/home/sgy/workspace/sagin_marl_phase4_learning_ablation/runs/phase4_learning_ablation/3uav20gu_t250
+```
+
+Storage snapshot from 2026-08-11:
+
+| Path under `3uav20gu_t250` | Size | Keep/Action |
+|---|---:|---|
+| `stability_10seeds_20260714` | 32G | Keep until Section 5 ablation figures are frozen |
+| `relational_critic` | 11G | Keep selected evidence; old failed/diagnostic runs can later be quarantined |
+| `mappo_like_flat_actor_critic_stabilized` | 9.0G | Keep until MAPPO-like table/curve evidence is frozen |
+| `global_only_critic` | 6.2G | Keep until GlobalCritic evidence is frozen |
+| `formal_parameter_sweeps_20260714_full` | 29M | Keep |
+| `formal_heldout_20260712_202812` | 4.2M | Keep |
+| `_failed_compile` | 26M | Can be quarantined after audit |
+| `_queues`, `_logs`, small smoke folders | <10M each | Can be kept or archived |
+
+Two old directories returned `Input/output error` during `du`:
+
+```text
+mappo_like_flat_actor_critic/seed45211_20260711_2258_bootstrapgae_native_nocompile
+relational_critic/seed45211_20260711_213639_bootstrapgae_nocompile/diagnostics/bw_parity
+```
+
+Do not include these paths in paper evidence. Do not delete them casually from
+the current shell. Treat them as suspicious filesystem remnants and inspect or
+quarantine only after a separate disk-health pass.
+
+Current filesystem capacity is not the immediate bottleneck: `/dev/nvme0n1p6`
+has about 761G free and is roughly 31% used.
+
+## Three-Way Git Sync
+
+Use GitHub as the canonical sync mechanism for code, configs, docs, and
+paper-facing table/figure assets:
+
+```text
+GitHub origin <-> local Mac clone <-> friday clone
+```
+
+Remote `origin` on friday currently points to:
+
+```text
+git@github.com:scc2450/sagin_marl.git
+```
+
+Rules:
+
+- Commit repo changes on one side, push to `origin`, then pull with
+  `--ff-only` on the other side.
+- Do not use raw run directories as the cross-machine synchronization layer.
+  Promote only selected CSV/JSON summaries, figure sources, and scripts into
+  Git.
+- Keep `runs/` out of Git unless a small paper-facing table source has been
+  intentionally exported under `docs/paper/table_sources/`.
+- If friday produces a table/figure source, copy it into the repo on friday,
+  commit and push from friday, then `git pull --ff-only` locally.
+- If local produces a paper doc/script change, commit and push locally, then
+  `git pull --ff-only` on friday before launching any new run.
+
+Useful checks:
+
+```bash
+git status --short --branch
+git pull --ff-only
+git push origin erik/phase4-learning-ablation-baseline
+ssh sgy@100.80.212.103 'git -C /home/sgy/workspace/sagin_marl_phase4_learning_ablation status --short --branch'
+```
+
+Current remote sync note: friday had untracked scratch files before the
+2026-08-11 sync. They were saved as a remote stash named
+`phase4-untracked-before-sync-20260811`; do not pop it unless deliberately
+auditing pre-sync scratch outputs.
+
+## Main Integration Review
+
+Do not merge `erik/phase4-learning-ablation-baseline` directly into `main` as
+one PR. The branch is integration-heavy: relative to `main`, it contains 62
+commits and roughly 900 file-level changes across docs, configs, scripts,
+runtime code, tests, paper assets, and archives.
+
+Primary risks:
+
+- code changes and paper assets are interleaved;
+- phase3 generalization work, paper workspace setup, phase4 ablation work, and
+  script/archive reorganization are all present on the same branch lineage;
+- generated assets and experiment evidence are useful for the manuscript but
+  not all of them belong in the long-lived code mainline;
+- a single PR would make review quality poor and make rollback difficult.
+
+Recommended PR split:
+
+1. Paper workspace / IEEEtran manuscript skeleton:
+   `docs/paper/manuscript/`, Overleaf packaging, template audit, section files.
+2. Core environment and evaluator fixes needed by later experiments:
+   native/evaluator bug fixes, fixed-baseline support, and focused tests.
+3. Phase3 generalization configs and table sources:
+   keep separate from phase4 learning ablation.
+4. Phase4 learning-ablation code and configs:
+   RelCritic/GlobalCritic/MAPPO-like config support, checkpoint-eval resume
+   fixes, early-stop state restore, and launch scripts.
+5. Phase4 paper evidence assets:
+   `docs/paper/table_sources/`, `docs/paper/figure_sources/`, and figure
+   generation scripts. This may remain on the paper branch if `main` should not
+   carry paper artifacts.
+
+Review order:
+
+1. Review core code/tests first.
+2. Review experiment configs and launch scripts second.
+3. Review paper table/figure assets third.
+4. Keep raw remote `runs/` outside PR scope.
+
+Minimum checks before each PR:
+
+```bash
+python -m py_compile <changed-python-files>
+bash -n <changed-shell-files>
+git diff --check
+pytest tests/test_baselines.py tests/test_structured_action_modules.py tests/test_structured_critic_system_readout.py
+```
+
+The current branch should stay as the paper integration branch until these
+splits are prepared. Use it as the working paper branch, not as a direct
+candidate for `main`.
+
 ## Configs
 
 Full method anchor:

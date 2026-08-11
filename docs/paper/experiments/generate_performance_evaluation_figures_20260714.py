@@ -559,7 +559,8 @@ LaTeX-ready copies are under:
 
 For the paper draft, the first three figures can support the controlled source-scenario Section 5 claims. The draft sensitivity figures should either be placed in the merged later part of Performance Evaluation with explicit protocol wording, or regenerated after a unified formal sweep using the current selected checkpoints.
 """
-    (EXP_DIR / "performance_evaluation_figure_draft_20260714.md").write_text(note)
+    # Narrative figure notes are maintained in phase4_learning_ablation_runbook.md.
+    _ = note
 
 
 def main() -> None:
