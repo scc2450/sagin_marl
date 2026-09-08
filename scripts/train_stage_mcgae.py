@@ -60,6 +60,27 @@ def _summ_tensor(x: torch.Tensor) -> dict[str, float]:
     }
 
 
+def _summ_tensor_extended(x: torch.Tensor) -> dict[str, float]:
+    stats = _summ_tensor(x)
+    if int(x.numel()) <= 0:
+        stats.update({"p10": 0.0, "p50": 0.0, "p90": 0.0})
+        return stats
+    y = x.detach().to(dtype=torch.float32).reshape(-1)
+    stats.update(
+        {
+            "p10": float(torch.quantile(y, 0.10).detach().cpu().item()),
+            "p50": float(torch.quantile(y, 0.50).detach().cpu().item()),
+            "p90": float(torch.quantile(y, 0.90).detach().cpu().item()),
+        }
+    )
+    return stats
+
+
+def _prefixed_stats(prefix: str, x: torch.Tensor, *, extended: bool = False) -> dict[str, float]:
+    stats = _summ_tensor_extended(x) if bool(extended) else _summ_tensor(x)
+    return {f"{prefix}_{key}": float(value) for key, value in stats.items()}
+
+
 def _critic_np_stats(pred: np.ndarray, target: np.ndarray) -> dict[str, float]:
     p = np.asarray(pred, dtype=np.float64).reshape(-1)
     t = np.asarray(target, dtype=np.float64).reshape(-1)
@@ -1572,9 +1593,165 @@ def _stage_actor_update_full_stage(
     def _index_sample_latent_actions(sample_idx: torch.Tensor) -> torch.Tensor:
         return all_latent_actions.index_select(0, sample_idx.to(device=device, dtype=torch.long).reshape(-1))
 
-    def _eval_stage_logprob_all() -> torch.Tensor:
+    def _finalize_bw_shape_stats(prefix: str, chunks: dict[str, list[torch.Tensor]]) -> dict[str, float]:
+        if not chunks.get("tau"):
+            return {}
+        out: dict[str, float] = {}
+
+        def _cat(name: str) -> torch.Tensor:
+            values = chunks.get(name, [])
+            if not values:
+                return torch.empty((0,), dtype=torch.float32, device=device)
+            return torch.cat([value.detach().to(device=device, dtype=torch.float32).reshape(-1) for value in values], dim=0)
+
+        for name in (
+            "tau",
+            "kappa",
+            "valid_count",
+            "latent_count",
+            "det_mean_top1",
+            "det_mean_top2_gap",
+            "det_mean_entropy_norm",
+            "det_mean_uniform_gap",
+            "action_det_l1",
+            "score_top2_gap",
+            "alpha_valid_min",
+        ):
+            out.update(_prefixed_stats(f"{prefix}_{name}", _cat(name), extended=True))
+
+        alpha_values = _cat("alpha_valid")
+        if int(alpha_values.numel()) > 0:
+            out[f"{prefix}_alpha_lt1_frac"] = float(
+                (alpha_values < 1.0).to(dtype=torch.float32).mean().detach().cpu().item()
+            )
+        else:
+            out[f"{prefix}_alpha_lt1_frac"] = 0.0
+
+        bw_policy = getattr(getattr(learner, "actor", None), "bw_policy", None)
+        tau_values = _cat("tau")
+        tau_min = float(getattr(bw_policy, "tau_min", float("nan")))
+        tau_max = float(getattr(bw_policy, "tau_max", float("nan")))
+        if int(tau_values.numel()) > 0 and math.isfinite(tau_min) and math.isfinite(tau_max):
+            tau_span = max(float(tau_max) - float(tau_min), 1.0e-12)
+            out[f"{prefix}_tau_low_frac"] = float(
+                (tau_values <= float(tau_min) + 0.1 * tau_span)
+                .to(dtype=torch.float32)
+                .mean()
+                .detach()
+                .cpu()
+                .item()
+            )
+            out[f"{prefix}_tau_high_frac"] = float(
+                (tau_values >= float(tau_max) - 0.1 * tau_span)
+                .to(dtype=torch.float32)
+                .mean()
+                .detach()
+                .cpu()
+                .item()
+            )
+        kappa_values = _cat("kappa")
+        kappa_min = float(getattr(bw_policy, "kappa_min", float("nan")))
+        kappa_max = float(getattr(bw_policy, "kappa_max", float("nan")))
+        if int(kappa_values.numel()) > 0 and math.isfinite(kappa_min) and math.isfinite(kappa_max):
+            kappa_span = max(float(kappa_max) - float(kappa_min), 1.0e-12)
+            out[f"{prefix}_kappa_low_frac"] = float(
+                (kappa_values <= float(kappa_min) + 0.1 * kappa_span)
+                .to(dtype=torch.float32)
+                .mean()
+                .detach()
+                .cpu()
+                .item()
+            )
+            out[f"{prefix}_kappa_high_frac"] = float(
+                (kappa_values >= float(kappa_max) - 0.1 * kappa_span)
+                .to(dtype=torch.float32)
+                .mean()
+                .detach()
+                .cpu()
+                .item()
+            )
+        return out
+
+    def _append_bw_shape_chunk(
+        chunks: dict[str, list[torch.Tensor]],
+        *,
+        out_i: Any,
+        local_i: Any,
+        action_i: torch.Tensor,
+    ) -> None:
+        tau = getattr(out_i, "tau", None)
+        kappa = getattr(out_i, "kappa", None)
+        det_mean = getattr(out_i, "det_mean", None)
+        if tau is None or kappa is None or det_mean is None:
+            return
+        valid = (
+            local_i.gu_mask.to(device=device, dtype=torch.bool)
+            & local_i.bw_valid_mask.to(device=device, dtype=torch.bool)
+        )
+        det = det_mean.detach().to(device=device, dtype=torch.float32).reshape(valid.shape)
+        action_flat = action_i.detach().to(device=device, dtype=torch.float32).reshape(valid.shape)
+        valid_count = valid.sum(dim=-1).to(dtype=torch.float32)
+        latent_count = torch.clamp(valid_count - 1.0, min=0.0)
+        active_rows = valid_count >= 2.0
+        det_valid = torch.where(valid, det.clamp_min(1.0e-12), torch.zeros_like(det))
+        entropy = -(det_valid * torch.log(det_valid.clamp_min(1.0e-12))).sum(dim=-1)
+        log_count = torch.log(valid_count.clamp_min(1.0))
+        entropy_norm = torch.where(active_rows, entropy / log_count.clamp_min(1.0e-12), torch.zeros_like(entropy))
+        uniform_gap = torch.where(active_rows, log_count - entropy, torch.zeros_like(entropy))
+        det_masked = det.masked_fill(~valid, -float("inf"))
+        top_k = min(2, int(det_masked.shape[-1]))
+        top_values = torch.topk(det_masked, k=max(top_k, 1), dim=-1).values
+        top1 = torch.where(active_rows, top_values[:, 0], torch.zeros_like(valid_count))
+        if top_k >= 2:
+            top2_gap = torch.where(active_rows, top_values[:, 0] - top_values[:, 1], torch.zeros_like(valid_count))
+        else:
+            top2_gap = torch.zeros_like(valid_count)
+        action_det_l1 = torch.where(
+            active_rows,
+            (torch.where(valid, action_flat, torch.zeros_like(action_flat)) - det_valid).abs().sum(dim=-1),
+            torch.zeros_like(valid_count),
+        )
+        score = getattr(out_i, "score", None)
+        if score is not None:
+            score_t = score.detach().to(device=device, dtype=torch.float32).reshape(valid.shape).masked_fill(~valid, -float("inf"))
+            score_top = torch.topk(score_t, k=max(top_k, 1), dim=-1).values
+            if top_k >= 2:
+                score_top = torch.where(torch.isfinite(score_top), score_top, torch.zeros_like(score_top))
+                score_gap = torch.where(active_rows, score_top[:, 0] - score_top[:, 1], torch.zeros_like(valid_count))
+            else:
+                score_gap = torch.zeros_like(valid_count)
+        else:
+            score_gap = torch.zeros_like(valid_count)
+        alpha = getattr(out_i, "alpha", None)
+        if alpha is not None and int(alpha.numel()) > 0:
+            alpha_t = alpha.detach().to(device=device, dtype=torch.float32).reshape(valid.shape)
+            alpha_valid = alpha_t[valid]
+            alpha_min = torch.where(
+                active_rows,
+                alpha_t.masked_fill(~valid, float("inf")).amin(dim=-1),
+                torch.zeros_like(valid_count),
+            )
+        else:
+            alpha_valid = torch.empty((0,), dtype=torch.float32, device=device)
+            alpha_min = torch.zeros_like(valid_count)
+
+        chunks.setdefault("tau", []).append(tau.detach().to(dtype=torch.float32).reshape(-1))
+        chunks.setdefault("kappa", []).append(kappa.detach().to(dtype=torch.float32).reshape(-1))
+        chunks.setdefault("valid_count", []).append(valid_count.detach().reshape(-1))
+        chunks.setdefault("latent_count", []).append(latent_count.detach().reshape(-1))
+        chunks.setdefault("det_mean_top1", []).append(top1.detach().reshape(-1))
+        chunks.setdefault("det_mean_top2_gap", []).append(top2_gap.detach().reshape(-1))
+        chunks.setdefault("det_mean_entropy_norm", []).append(entropy_norm.detach().reshape(-1))
+        chunks.setdefault("det_mean_uniform_gap", []).append(uniform_gap.detach().reshape(-1))
+        chunks.setdefault("action_det_l1", []).append(action_det_l1.detach().reshape(-1))
+        chunks.setdefault("score_top2_gap", []).append(score_gap.detach().reshape(-1))
+        chunks.setdefault("alpha_valid", []).append(alpha_valid.detach().reshape(-1))
+        chunks.setdefault("alpha_valid_min", []).append(alpha_min.detach().reshape(-1))
+
+    def _eval_stage_logprob_all(*, bw_shape_prefix: str | None = None) -> tuple[torch.Tensor, dict[str, float]]:
         batch_eval = 1024
         chunks: list[torch.Tensor] = []
+        bw_shape_chunks: dict[str, list[torch.Tensor]] = {}
         with torch.no_grad():
             for start in range(0, sample_count, batch_eval):
                 end = min(int(start) + int(batch_eval), int(sample_count))
@@ -1590,10 +1767,41 @@ def _stage_actor_update_full_stage(
                     latent_actions=latent_i if stage_id_i == 0 else None,
                 )
                 chunks.append(lp_i.detach())
-        return torch.cat(chunks, dim=0).to(device=device, dtype=torch.float32)
+                if bw_shape_prefix is not None and stage_id_i == 2:
+                    _append_bw_shape_chunk(bw_shape_chunks, out_i=_out_i, local_i=local_i, action_i=action_i)
+        logprob_all = torch.cat(chunks, dim=0).to(device=device, dtype=torch.float32)
+        return logprob_all, _finalize_bw_shape_stats(str(bw_shape_prefix), bw_shape_chunks)
+
+    def _bw_shape_delta_stats(pre: dict[str, float], post: dict[str, float]) -> dict[str, float]:
+        out: dict[str, float] = {}
+        for metric in (
+            "tau_mean",
+            "tau_p50",
+            "tau_low_frac",
+            "tau_high_frac",
+            "kappa_mean",
+            "kappa_p50",
+            "kappa_low_frac",
+            "kappa_high_frac",
+            "det_mean_top1_mean",
+            "det_mean_top2_gap_mean",
+            "det_mean_entropy_norm_mean",
+            "det_mean_uniform_gap_mean",
+            "action_det_l1_mean",
+            "score_top2_gap_mean",
+            "alpha_valid_min_mean",
+            "alpha_lt1_frac",
+        ):
+            pre_key = f"bw_shape_pre_{metric}"
+            post_key = f"bw_shape_post_{metric}"
+            if pre_key in pre and post_key in post:
+                out[f"bw_shape_delta_{metric}"] = float(post[post_key]) - float(pre[pre_key])
+        return out
 
     old_t0 = time.perf_counter()
-    old_logprob = _eval_stage_logprob_all()
+    old_logprob, bw_shape_pre_stats = _eval_stage_logprob_all(
+        bw_shape_prefix="bw_shape_pre" if stage_id_i == 2 else None
+    )
     if device.type == "cuda":
         torch.cuda.synchronize(device)
     old_logprob_sec = time.perf_counter() - old_t0
@@ -1857,6 +2065,38 @@ def _stage_actor_update_full_stage(
             danger_enabled=danger_enabled,
         )
         actor_loss_compile_enabled = False
+
+    def _grad_norm_for_named_prefix(prefix: str) -> float:
+        total_sq = 0.0
+        matched = False
+        for name, param in learner.actor.named_parameters():
+            if not str(name).startswith(str(prefix)):
+                continue
+            grad = param.grad
+            if grad is None:
+                continue
+            matched = True
+            norm_v = float(grad.detach().to(dtype=torch.float32).norm(2).detach().cpu().item())
+            total_sq += norm_v * norm_v
+        return math.sqrt(total_sq) if matched else 0.0
+
+    def _series_stats(prefix: str, values: list[float]) -> dict[str, float]:
+        if not values:
+            return {f"{prefix}_mean": 0.0, f"{prefix}_max": 0.0}
+        arr = np.asarray(values, dtype=np.float64)
+        return {f"{prefix}_mean": float(np.mean(arr)), f"{prefix}_max": float(np.max(arr))}
+
+    grad_norm_values: list[float] = []
+    grad_clip_count = 0
+    grad_step_count = 0
+    bw_grad_group_values: dict[str, list[float]] = {
+        "bw_grad_norm_policy": [],
+        "bw_grad_norm_score_head": [],
+        "bw_grad_norm_tau_head": [],
+        "bw_grad_norm_kappa_head": [],
+    }
+    max_grad_norm_eff = float(learner.max_grad_norm)
+
     for _epoch in range(max(int(epochs), 1)):
         epoch_t0 = time.perf_counter()
         epoch_sample_total = 0
@@ -1920,6 +2160,11 @@ def _stage_actor_update_full_stage(
                     clip_sum_t = clip_sum_t + clip_frac.detach().to(dtype=torch.float32) * w
                     danger_loss_sum_t = danger_loss_sum_t + danger_loss.detach().to(dtype=torch.float32) * w
                     danger_active_sum_t = danger_active_sum_t + danger_active.detach().to(dtype=torch.float32) * w
+            if stage_id_i == 2:
+                bw_grad_group_values["bw_grad_norm_policy"].append(_grad_norm_for_named_prefix("bw_policy"))
+                bw_grad_group_values["bw_grad_norm_score_head"].append(_grad_norm_for_named_prefix("bw_policy.score_head"))
+                bw_grad_group_values["bw_grad_norm_tau_head"].append(_grad_norm_for_named_prefix("bw_policy.tau_head"))
+                bw_grad_group_values["bw_grad_norm_kappa_head"].append(_grad_norm_for_named_prefix("bw_policy.kappa_head"))
             grad_norm = torch.nn.utils.clip_grad_norm_(params, float(learner.max_grad_norm))
             optimizer.step()
             with torch.no_grad():
@@ -1937,6 +2182,10 @@ def _stage_actor_update_full_stage(
                     + float(getattr(learner, "danger_imitation_coef", 0.0)) * danger_loss_sum
                 )
                 last_grad_norm = float(torch.as_tensor(grad_norm).detach().cpu().item())
+                grad_step_count += 1
+                grad_norm_values.append(float(last_grad_norm))
+                if max_grad_norm_eff > 0.0 and float(last_grad_norm) > max_grad_norm_eff:
+                    grad_clip_count += 1
                 last_kl = float(kl_sum_t.detach().cpu().item())
                 last_clip_frac = float(clip_sum_t.detach().cpu().item())
                 epoch_sample_total += int(mb_total)
@@ -1961,10 +2210,13 @@ def _stage_actor_update_full_stage(
             break
 
     credit_diag_t0 = time.perf_counter()
-    post_logprob = _eval_stage_logprob_all()
+    post_logprob, bw_shape_post_stats = _eval_stage_logprob_all(
+        bw_shape_prefix="bw_shape_post" if stage_id_i == 2 else None
+    )
     if device.type == "cuda":
         torch.cuda.synchronize(device)
     credit_diag_sec = time.perf_counter() - credit_diag_t0
+    bw_shape_delta_stats = _bw_shape_delta_stats(bw_shape_pre_stats, bw_shape_post_stats)
 
     def _masked_scalar_mean(values: torch.Tensor, mask: torch.Tensor) -> float:
         mask_b = mask.detach().to(device=values.device, dtype=torch.bool).reshape(-1)
@@ -1972,6 +2224,49 @@ def _stage_actor_update_full_stage(
         if int(mask_b.sum().detach().cpu().item()) <= 0:
             return 0.0
         return float(values_f[mask_b].mean().detach().cpu().item())
+
+    def _masked_scalar_sum_abs(values: torch.Tensor, mask: torch.Tensor) -> float:
+        mask_b = mask.detach().to(device=values.device, dtype=torch.bool).reshape(-1)
+        values_f = values.detach().to(dtype=torch.float32).reshape(-1)
+        if int(mask_b.sum().detach().cpu().item()) <= 0:
+            return 0.0
+        return float(values_f[mask_b].abs().sum().detach().cpu().item())
+
+    def _masked_scalar_frac(mask: torch.Tensor, denom_mask: torch.Tensor) -> float:
+        denom_b = denom_mask.detach().to(dtype=torch.bool).reshape(-1)
+        denom_count = int(denom_b.sum().detach().cpu().item())
+        if denom_count <= 0:
+            return 0.0
+        mask_b = mask.detach().to(dtype=torch.bool).reshape(-1)
+        return float((mask_b & denom_b).to(dtype=torch.float32).sum().detach().cpu().item() / float(denom_count))
+
+    def _masked_scalar_stats(prefix: str, values: torch.Tensor, mask: torch.Tensor) -> dict[str, float]:
+        mask_b = mask.detach().to(device=values.device, dtype=torch.bool).reshape(-1)
+        values_f = values.detach().to(dtype=torch.float32).reshape(-1)
+        if int(mask_b.sum().detach().cpu().item()) <= 0:
+            return {
+                f"{prefix}_mean": 0.0,
+                f"{prefix}_p05": 0.0,
+                f"{prefix}_p10": 0.0,
+                f"{prefix}_p25": 0.0,
+                f"{prefix}_p50": 0.0,
+                f"{prefix}_p75": 0.0,
+                f"{prefix}_p90": 0.0,
+                f"{prefix}_p95": 0.0,
+            }
+        selected = values_f[mask_b]
+        quantiles = torch.tensor([0.05, 0.10, 0.25, 0.50, 0.75, 0.90, 0.95], device=selected.device)
+        qs = torch.quantile(selected, quantiles).detach().cpu()
+        return {
+            f"{prefix}_mean": float(selected.mean().detach().cpu().item()),
+            f"{prefix}_p05": float(qs[0].item()),
+            f"{prefix}_p10": float(qs[1].item()),
+            f"{prefix}_p25": float(qs[2].item()),
+            f"{prefix}_p50": float(qs[3].item()),
+            f"{prefix}_p75": float(qs[4].item()),
+            f"{prefix}_p90": float(qs[5].item()),
+            f"{prefix}_p95": float(qs[6].item()),
+        }
 
     with torch.no_grad():
         delta_logprob = (post_logprob - old_logprob).detach().to(dtype=torch.float32).reshape(-1)
@@ -2012,6 +2307,80 @@ def _stage_actor_update_full_stage(
             if neg_count > 0
             else 0.0
         )
+        pos_up = adv_pos & (delta_logprob > 0.0)
+        pos_down = adv_pos & (delta_logprob < 0.0)
+        neg_down = adv_neg & (delta_logprob < 0.0)
+        neg_up = adv_neg & (delta_logprob > 0.0)
+        correct_delta_abs_sum = _masked_scalar_sum_abs(delta_logprob, direction_agree)
+        wrong_delta_abs_sum = _masked_scalar_sum_abs(delta_logprob, direction_wrong)
+        pos_up_abs_sum = _masked_scalar_sum_abs(delta_logprob, pos_up)
+        pos_down_abs_sum = _masked_scalar_sum_abs(delta_logprob, pos_down)
+        neg_down_abs_sum = _masked_scalar_sum_abs(delta_logprob, neg_down)
+        neg_up_abs_sum = _masked_scalar_sum_abs(delta_logprob, neg_up)
+        credit_positive_abs_sum = _masked_scalar_sum_abs(credit, credit > 0.0)
+        credit_negative_abs_sum = _masked_scalar_sum_abs(credit, credit < 0.0)
+        adv_pos_abs_sum = _masked_scalar_sum_abs(adv, adv_pos)
+        adv_neg_abs_sum = _masked_scalar_sum_abs(adv, adv_neg)
+        ratio_upper_clip = ratio_full > (1.0 + float(learner.clip_ratio))
+        ratio_lower_clip = ratio_full < (1.0 - float(learner.clip_ratio))
+        pos_active = adv_pos & (~ratio_upper_clip)
+        neg_active = adv_neg & (~ratio_lower_clip)
+        pos_active_abs_sum = _masked_scalar_sum_abs(adv, pos_active)
+        neg_active_abs_sum = _masked_scalar_sum_abs(adv, neg_active)
+        all_mask = torch.ones_like(adv_pos, dtype=torch.bool)
+        delta_magnitude_diag: dict[str, float] = {
+            **_masked_scalar_stats("delta_logprob", delta_logprob, all_mask),
+            **_masked_scalar_stats("delta_logprob_abs", delta_logprob.abs(), all_mask),
+            **_masked_scalar_stats("delta_logprob_when_adv_positive", delta_logprob, adv_pos),
+            **_masked_scalar_stats("delta_logprob_when_adv_negative", delta_logprob, adv_neg),
+            **_masked_scalar_stats("credit", credit, all_mask),
+            **_masked_scalar_stats("credit_when_adv_positive", credit, adv_pos),
+            **_masked_scalar_stats("credit_when_adv_negative", credit, adv_neg),
+            "delta_logprob_abs_gt_0p02_frac": _masked_scalar_frac(delta_logprob.abs() > 0.02, all_mask),
+            "delta_logprob_abs_gt_0p05_frac": _masked_scalar_frac(delta_logprob.abs() > 0.05, all_mask),
+            "delta_logprob_abs_gt_0p10_frac": _masked_scalar_frac(delta_logprob.abs() > 0.10, all_mask),
+            "delta_logprob_abs_gt_0p20_frac": _masked_scalar_frac(delta_logprob.abs() > 0.20, all_mask),
+            "delta_logprob_abs_gt_0p05_when_adv_positive_frac": _masked_scalar_frac(
+                delta_logprob.abs() > 0.05, adv_pos
+            ),
+            "delta_logprob_abs_gt_0p05_when_adv_negative_frac": _masked_scalar_frac(
+                delta_logprob.abs() > 0.05, adv_neg
+            ),
+            "delta_logprob_direction_correct_abs_sum": float(correct_delta_abs_sum),
+            "delta_logprob_direction_wrong_abs_sum": float(wrong_delta_abs_sum),
+            "delta_logprob_direction_correct_abs_share": float(
+                correct_delta_abs_sum / max(correct_delta_abs_sum + wrong_delta_abs_sum, 1.0e-12)
+            ),
+            "delta_logprob_adv_positive_up_abs_sum": float(pos_up_abs_sum),
+            "delta_logprob_adv_positive_down_abs_sum": float(pos_down_abs_sum),
+            "delta_logprob_adv_positive_up_abs_share": float(
+                pos_up_abs_sum / max(pos_up_abs_sum + pos_down_abs_sum, 1.0e-12)
+            ),
+            "delta_logprob_adv_negative_down_abs_sum": float(neg_down_abs_sum),
+            "delta_logprob_adv_negative_up_abs_sum": float(neg_up_abs_sum),
+            "delta_logprob_adv_negative_down_abs_share": float(
+                neg_down_abs_sum / max(neg_down_abs_sum + neg_up_abs_sum, 1.0e-12)
+            ),
+            "credit_positive_abs_sum": float(credit_positive_abs_sum),
+            "credit_negative_abs_sum": float(credit_negative_abs_sum),
+            "credit_positive_abs_share": float(
+                credit_positive_abs_sum / max(credit_positive_abs_sum + credit_negative_abs_sum, 1.0e-12)
+            ),
+            "adv_positive_abs_mass": float(adv_pos_abs_sum),
+            "adv_negative_abs_mass": float(adv_neg_abs_sum),
+            "adv_positive_abs_mass_share": float(adv_pos_abs_sum / max(adv_pos_abs_sum + adv_neg_abs_sum, 1.0e-12)),
+            "adv_negative_abs_mass_share": float(adv_neg_abs_sum / max(adv_pos_abs_sum + adv_neg_abs_sum, 1.0e-12)),
+            "adv_positive_upper_clip_frac": _masked_scalar_frac(ratio_upper_clip, adv_pos),
+            "adv_negative_lower_clip_frac": _masked_scalar_frac(ratio_lower_clip, adv_neg),
+            "adv_positive_active_abs_mass": float(pos_active_abs_sum),
+            "adv_negative_active_abs_mass": float(neg_active_abs_sum),
+            "adv_positive_active_abs_mass_share": float(
+                pos_active_abs_sum / max(pos_active_abs_sum + neg_active_abs_sum, 1.0e-12)
+            ),
+            "adv_negative_active_abs_mass_share": float(
+                neg_active_abs_sum / max(pos_active_abs_sum + neg_active_abs_sum, 1.0e-12)
+            ),
+        }
         raw_adv_diag: dict[str, float] = {"raw_adv_available": 0.0}
         if raw_adv is not None:
             raw_adv_t = raw_adv.detach().to(dtype=torch.float32).reshape(-1)
@@ -2029,6 +2398,16 @@ def _stage_actor_update_full_stage(
             norm_raw_agree = ((adv_pos & raw_pos) | (adv_neg & raw_neg)) & norm_raw_nonzero
             norm_raw_disagree = ((adv_pos & raw_neg) | (adv_neg & raw_pos)) & norm_raw_nonzero
             raw_credit_stats = _summ_tensor(raw_credit)
+            raw_pos_up = raw_pos & (delta_logprob > 0.0)
+            raw_pos_down = raw_pos & (delta_logprob < 0.0)
+            raw_neg_down = raw_neg & (delta_logprob < 0.0)
+            raw_neg_up = raw_neg & (delta_logprob > 0.0)
+            raw_pos_up_abs_sum = _masked_scalar_sum_abs(delta_logprob, raw_pos_up)
+            raw_pos_down_abs_sum = _masked_scalar_sum_abs(delta_logprob, raw_pos_down)
+            raw_neg_down_abs_sum = _masked_scalar_sum_abs(delta_logprob, raw_neg_down)
+            raw_neg_up_abs_sum = _masked_scalar_sum_abs(delta_logprob, raw_neg_up)
+            raw_credit_positive_abs_sum = _masked_scalar_sum_abs(raw_credit, raw_credit > 0.0)
+            raw_credit_negative_abs_sum = _masked_scalar_sum_abs(raw_credit, raw_credit < 0.0)
 
             def _frac_mask(mask: torch.Tensor, denom_mask: torch.Tensor) -> float:
                 denom_count = int(denom_mask.to(dtype=torch.bool).sum().detach().cpu().item())
@@ -2074,12 +2453,31 @@ def _stage_actor_update_full_stage(
                 ),
                 "delta_logprob_when_raw_adv_positive_mean": _masked_scalar_mean(delta_logprob, raw_pos),
                 "delta_logprob_when_raw_adv_negative_mean": _masked_scalar_mean(delta_logprob, raw_neg),
+                **_masked_scalar_stats("delta_logprob_when_raw_adv_positive", delta_logprob, raw_pos),
+                **_masked_scalar_stats("delta_logprob_when_raw_adv_negative", delta_logprob, raw_neg),
+                "delta_logprob_raw_adv_positive_up_abs_sum": float(raw_pos_up_abs_sum),
+                "delta_logprob_raw_adv_positive_down_abs_sum": float(raw_pos_down_abs_sum),
+                "delta_logprob_raw_adv_positive_up_abs_share": float(
+                    raw_pos_up_abs_sum / max(raw_pos_up_abs_sum + raw_pos_down_abs_sum, 1.0e-12)
+                ),
+                "delta_logprob_raw_adv_negative_down_abs_sum": float(raw_neg_down_abs_sum),
+                "delta_logprob_raw_adv_negative_up_abs_sum": float(raw_neg_up_abs_sum),
+                "delta_logprob_raw_adv_negative_down_abs_share": float(
+                    raw_neg_down_abs_sum / max(raw_neg_down_abs_sum + raw_neg_up_abs_sum, 1.0e-12)
+                ),
                 "raw_credit_mean": float(raw_credit_stats["mean"]),
                 "raw_credit_std": float(raw_credit_stats["std"]),
                 "raw_credit_min": float(raw_credit_stats["min"]),
                 "raw_credit_max": float(raw_credit_stats["max"]),
+                **_masked_scalar_stats("raw_credit_nonzero", raw_credit, raw_nonzero),
                 "raw_credit_positive_frac": float(
                     (raw_credit > 0.0).to(dtype=torch.float32).mean().detach().cpu().item()
+                ),
+                "raw_credit_positive_abs_sum": float(raw_credit_positive_abs_sum),
+                "raw_credit_negative_abs_sum": float(raw_credit_negative_abs_sum),
+                "raw_credit_positive_abs_share": float(
+                    raw_credit_positive_abs_sum
+                    / max(raw_credit_positive_abs_sum + raw_credit_negative_abs_sum, 1.0e-12)
                 ),
                 "raw_credit_direction_agree_frac": float(
                     raw_direction_agree.to(dtype=torch.float32).sum().detach().cpu().item() / float(max(raw_nonzero_count, 1))
@@ -2090,6 +2488,16 @@ def _stage_actor_update_full_stage(
                 "raw_credit_when_raw_adv_positive_mean": _masked_scalar_mean(raw_credit, raw_pos),
                 "raw_credit_when_raw_adv_negative_mean": _masked_scalar_mean(raw_credit, raw_neg),
             }
+
+    grad_diag: dict[str, float] = {
+        "grad_norm_mean": float(np.mean(np.asarray(grad_norm_values, dtype=np.float64))) if grad_norm_values else 0.0,
+        "grad_norm_max": float(np.max(np.asarray(grad_norm_values, dtype=np.float64))) if grad_norm_values else 0.0,
+        "grad_norm_clip_threshold": float(max_grad_norm_eff),
+        "grad_norm_clip_frac": float(grad_clip_count / max(grad_step_count, 1)),
+    }
+    if stage_id_i == 2:
+        for key, values in bw_grad_group_values.items():
+            grad_diag.update(_series_stats(key, values))
 
     return {
         "actor_samples": float(sample_count),
@@ -2121,6 +2529,7 @@ def _stage_actor_update_full_stage(
         "delta_logprob_abs_mean": float(delta_logprob.abs().mean().detach().cpu().item()),
         "delta_logprob_when_adv_positive_mean": _masked_scalar_mean(delta_logprob, adv_pos),
         "delta_logprob_when_adv_negative_mean": _masked_scalar_mean(delta_logprob, adv_neg),
+        **delta_magnitude_diag,
         "credit_mean": float(credit_stats["mean"]),
         "credit_std": float(credit_stats["std"]),
         "credit_min": float(credit_stats["min"]),
@@ -2149,6 +2558,10 @@ def _stage_actor_update_full_stage(
         "actor_chunk_size": float(actor_chunk_preferred),
         "danger_imitation_loss": float(last_danger_loss),
         "danger_imitation_active_rate": float(last_danger_active),
+        **grad_diag,
+        **bw_shape_pre_stats,
+        **bw_shape_post_stats,
+        **bw_shape_delta_stats,
     }
 
 
