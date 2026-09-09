@@ -18,13 +18,15 @@ As of this note, the branch has absorbed the two remaining
 
 `codex/phase3-scenario-generalization`, `codex/paper-submission-workspace`, and
 `origin/mac-python-rollout` have no commits that are unique relative to this
-phase4 branch. The historical `lyapunov-dpp` branch has one remaining unique
+phase4 branch. The historical `lyapunov-dpp` branch previously had one unique
 commit, `d771119` (`添加DPP策略，搜索最佳候选动作，更新配置和环境回调以实现链路质量重算`).
 Current phase4 already contains the maintained `topology_dpp` and
 `dpp_resource_hybrid` Python baselines, plus native staged sources including
-`topology_dpp_accel`, `topology_dpp_sat`, and `topology_dpp_bw`. Do not merge
-`lyapunov-dpp` directly into phase4; treat it as a superseded historical
-reference unless a specific old interface must be recovered.
+`topology_dpp_accel`, `topology_dpp_sat`, and `topology_dpp_bw`. After this
+audit, `lyapunov-dpp` was removed from local macOS, GitHub `origin`, and the
+Friday repositories without creating an archive tag; treat `d771119` only as a
+superseded historical reference unless a specific old interface must be
+recovered.
 
 ## Remote Stash Audit
 
