@@ -18,8 +18,36 @@ As of this note, the branch has absorbed the two remaining
 
 `codex/phase3-scenario-generalization`, `codex/paper-submission-workspace`, and
 `origin/mac-python-rollout` have no commits that are unique relative to this
-phase4 branch. The `lyapunov-dpp` branch remains a separate function branch and
-should be ported manually if needed.
+phase4 branch. The historical `lyapunov-dpp` branch has one remaining unique
+commit, `d771119` (`添加DPP策略，搜索最佳候选动作，更新配置和环境回调以实现链路质量重算`).
+Current phase4 already contains the maintained `topology_dpp` and
+`dpp_resource_hybrid` Python baselines, plus native staged sources including
+`topology_dpp_accel`, `topology_dpp_sat`, and `topology_dpp_bw`. Do not merge
+`lyapunov-dpp` directly into phase4; treat it as a superseded historical
+reference unless a specific old interface must be recovered.
+
+## Remote Stash Audit
+
+Friday's `/home/sgy/workspace/sagin_marl` worktree still has one old stash:
+`phase4-untracked-before-sync-20260811`. It contains untracked phase4 CSV
+summaries and helper scripts:
+
+- `docs/paper/table_sources/phase4_formal_parameter_sweeps_nohappo_aggregate_20260714.csv`
+- `docs/paper/table_sources/phase4_formal_parameter_sweeps_nohappo_raw_20260714.csv`
+- `docs/paper/table_sources/phase4_uav_density_collision_smoke_aggregate_20260715.csv`
+- `docs/paper/table_sources/phase4_uav_density_collision_smoke_raw_20260715.csv`
+- `scripts/analysis/phase4/aggregate_uav_density_collision_smoke_20260715.py`
+- `scripts/experiments/phase4/launch_stars_gc_stability_10seeds_20260714.sh`
+- `scripts/experiments/phase4/run_uav_density_collision_smoke_20260715.py`
+
+Compared against
+`/home/sgy/workspace/sagin_marl_phase4_learning_ablation` after syncing to
+`c7c110a`, the launch script is an exact match. The two Python scripts differ
+only because the current tracked versions explicitly set CSV
+`lineterminator="\n"`. The four CSV files have matching normalized content after
+removing carriage returns; the UAV-density CSV rows also match after sorting.
+The stash content is therefore covered by current phase4, but the stash has not
+been dropped because dropping it is a destructive cleanup action.
 
 ## Artifact Roots
 
