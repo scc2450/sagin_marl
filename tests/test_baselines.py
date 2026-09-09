@@ -206,6 +206,7 @@ def test_queue_aware_policy_batch_matches_per_env_numpy_outputs():
         "users": np.zeros((cfg.users_obs_max, 5), dtype=np.float32),
         "users_mask": np.zeros((cfg.users_obs_max,), dtype=np.float32),
         "bw_valid_mask": np.zeros((cfg.users_obs_max,), dtype=np.float32),
+        "candidate_indices": np.array([1, 3, 5], dtype=np.int64),
         "sats": np.zeros((cfg.sats_obs_max, SAT_OBS_DIM), dtype=np.float32),
         "sats_mask": np.zeros((cfg.sats_obs_max,), dtype=np.float32),
         "sat_valid_mask": np.zeros((cfg.sats_obs_max,), dtype=np.float32),
@@ -230,6 +231,7 @@ def test_queue_aware_policy_batch_matches_per_env_numpy_outputs():
         "users": np.zeros((cfg.users_obs_max, 5), dtype=np.float32),
         "users_mask": np.zeros((cfg.users_obs_max,), dtype=np.float32),
         "bw_valid_mask": np.zeros((cfg.users_obs_max,), dtype=np.float32),
+        "candidate_indices": np.array([0, 3, 6], dtype=np.int64),
         "sats": np.zeros((cfg.sats_obs_max, SAT_OBS_DIM), dtype=np.float32),
         "sats_mask": np.zeros((cfg.sats_obs_max,), dtype=np.float32),
         "sat_valid_mask": np.zeros((cfg.sats_obs_max,), dtype=np.float32),
@@ -275,6 +277,7 @@ def test_queue_aware_policy_batch_preserves_torch_outputs():
         "users": np.zeros((cfg.users_obs_max, 5), dtype=np.float32),
         "users_mask": np.zeros((cfg.users_obs_max,), dtype=np.float32),
         "bw_valid_mask": np.zeros((cfg.users_obs_max,), dtype=np.float32),
+        "candidate_indices": np.array([0, 2], dtype=np.int64),
         "sats": np.zeros((cfg.sats_obs_max, SAT_OBS_DIM), dtype=np.float32),
         "sats_mask": np.zeros((cfg.sats_obs_max,), dtype=np.float32),
         "sat_valid_mask": np.zeros((cfg.sats_obs_max,), dtype=np.float32),
@@ -523,6 +526,7 @@ def test_cluster_center_batch_policies_match_per_env_outputs():
         "nbrs": np.zeros((cfg.nbrs_obs_max, 4), dtype=np.float32),
         "nbrs_mask": np.zeros((cfg.nbrs_obs_max,), dtype=np.float32),
     }
+    obs_left["candidate_indices"] = np.array([0, 2], dtype=np.int64)
     obs_left["users_mask"][0] = 1.0
     obs_left["bw_valid_mask"][0] = 1.0
     obs_left["users"][0, 0:2] = np.array([0.4, 0.0], dtype=np.float32)
@@ -547,6 +551,7 @@ def test_cluster_center_batch_policies_match_per_env_outputs():
         "nbrs": np.zeros((cfg.nbrs_obs_max, 4), dtype=np.float32),
         "nbrs_mask": np.zeros((cfg.nbrs_obs_max,), dtype=np.float32),
     }
+    obs_right["candidate_indices"] = np.array([1, 4], dtype=np.int64)
     obs_right["users_mask"][1] = 1.0
     obs_right["bw_valid_mask"][1] = 1.0
     obs_right["users"][1, 0:2] = np.array([-0.3, 0.1], dtype=np.float32)
