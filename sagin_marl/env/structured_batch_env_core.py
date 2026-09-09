@@ -12461,6 +12461,8 @@ class StructuredBatchEnvCore:
             int(bool(domains.history_output.runtime_snapshots_enabled)),
             max(int(getattr(cfg, "access_bw_decision_interval", 1) or 1), 1),
             max(int(getattr(cfg, "sat_decision_interval", 1) or 1), 1),
+            max(int(getattr(cfg, "topology_dpp_gu_max_select", 6) or 6), 1),
+            max(int(getattr(cfg, "topology_dpp_accel_num_candidates", 9) or 9), 1),
         )
         float_params = (
             float(domains.numeric.access_eta_quantum),
@@ -12665,6 +12667,20 @@ class StructuredBatchEnvCore:
             float(getattr(cfg, "baseline_lyapunov_sat_switch_bias", 0.1) or 0.0),
             float(getattr(cfg, "baseline_lyapunov_sat_abs_se_weight", 0.5) or 0.0),
             float(getattr(cfg, "baseline_lyapunov_sat_doppler_penalty", 0.35) or 0.0),
+            float(getattr(cfg, "topology_dpp_bw_temp", 0.55) or 0.55),
+            float(getattr(cfg, "topology_dpp_bw_floor", 0.01) or 0.0),
+            float(getattr(cfg, "topology_dpp_dist_penalty", 0.10) or 0.0),
+            float(getattr(cfg, "topology_dpp_sat_queue_gap_weight", 1.0) or 0.0),
+            float(getattr(cfg, "topology_dpp_sat_subset_penalty", 0.02) or 0.0),
+            float(getattr(cfg, "topology_dpp_sat_contention_weight", 0.15) or 0.0),
+            float(getattr(cfg, "topology_dpp_accel_step_scale", 0.6) or 0.0),
+            float(getattr(cfg, "topology_dpp_access_weight", 1.0) or 0.0),
+            float(getattr(cfg, "topology_dpp_backhaul_weight", 1.0) or 0.0),
+            float(getattr(cfg, "topology_dpp_mobility_weight", 0.75) or 0.0),
+            float(getattr(cfg, "topology_dpp_accel_cost", 0.08) or 0.0),
+            float(getattr(cfg, "topology_dpp_smoothness", 0.05) or 0.0),
+            float(getattr(cfg, "topology_dpp_accel_safety_weight", 4.0) or 0.0),
+            float(getattr(cfg, "topology_dpp_accel_role_weight", 0.35) or 0.0),
         )
         return native_cuda.NativeCudaRuntimeABI(
             float_tensors=tuple(float_tensors),

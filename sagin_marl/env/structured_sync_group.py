@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import copy
 from typing import Any, Sequence
 
 import numpy as np
 import torch
 
+from sagin_marl.env.sagin_env import SaginParallelEnv
 from sagin_marl.env.structured_batch_env_core import StructuredBatchEnvCore
 from sagin_marl.env.structured_driver import StructuredControlDriver
 from sagin_marl.env.structured_torch_env_batch import StructuredTorchEnvBatch
@@ -208,4 +210,95 @@ class GpuStructuredEnvGroup(_StructuredNativeBatchDriverGroup):
 
 
 class GpuStructuredDriverGroup(_StructuredNativeBatchDriverGroup):
+    pass
+
+
+class PythonStructuredDriverGroup:
+    """Small, portable structured driver group for CPU/Mac smoke runs.
+
+    The native group intentionally exposes CUDA rollout hooks.  This group does
+    not, so learners can distinguish it and fall back to the Python stage driver.
+    It is meant for correctness/debugging on machines without NVIDIA CUDA, not
+    for reproducing the fused native GPU throughput.
+    """
+
+    is_python_structured_driver_group = True
+
+    def __init__(
+        self,
+        cfg,
+        num_envs: int | None = None,
+        *,
+        tensor_device: torch.device | str | None = "cpu",
+    ) -> None:
+        if num_envs is None:
+            raise ValueError("num_envs is required for Python structured driver groups")
+        self._cfg = cfg
+        self._num_envs = max(int(num_envs), 1)
+        self._tensor_device = None if tensor_device is None else torch.device(tensor_device)
+        self._envs: list[Any] = []
+        self._drivers: list[StructuredControlDriver] = []
+        for env_index in range(self._num_envs):
+            env_cfg = copy.copy(cfg)
+            if hasattr(env_cfg, "seed"):
+                env_cfg.seed = int(getattr(cfg, "seed", 0) or 0) + int(env_index)
+            env = SaginParallelEnv(env_cfg)
+            env.reset(seed=int(getattr(env_cfg, "seed", 0) or 0))
+            self._envs.append(env)
+            self._drivers.append(StructuredControlDriver(env, tensor_device=self._tensor_device))
+
+    def __len__(self) -> int:
+        return len(self._drivers)
+
+    def __getitem__(self, index: int) -> StructuredControlDriver:
+        return self._drivers[int(index)]
+
+    @property
+    def drivers(self) -> list[StructuredControlDriver]:
+        return self._drivers
+
+    @property
+    def envs(self) -> list[Any]:
+        return self._envs
+
+    @property
+    def cfg(self):
+        return self._cfg
+
+    @property
+    def tensor_device(self) -> torch.device | None:
+        return self._tensor_device
+
+    def set_tensor_device(self, device: torch.device | str | None) -> None:
+        self._tensor_device = None if device is None else torch.device(device)
+        for driver in self._drivers:
+            driver.set_tensor_device(self._tensor_device)
+
+    def reset_many(self, seeds: Sequence[int | None] | None = None, indices: Sequence[int] | None = None) -> None:
+        selected = list(range(len(self._envs))) if indices is None else [int(index) for index in indices]
+        if seeds is None:
+            seeds_l = [None for _ in selected]
+        else:
+            seeds_l = [None if seed is None else int(seed) for seed in seeds]
+        if len(seeds_l) != len(selected):
+            raise ValueError("seeds length must match selected indices")
+        for env_index, seed in zip(selected, seeds_l):
+            env = self._envs[int(env_index)]
+            if seed is None:
+                env.reset()
+            else:
+                env.reset(seed=int(seed))
+            self._drivers[int(env_index)] = StructuredControlDriver(env, tensor_device=self._tensor_device)
+
+    def reset_at(self, index: int, seed: int | None = None) -> None:
+        self.reset_many([seed], indices=[int(index)])
+
+    def close(self) -> None:
+        for env in self._envs:
+            close_fn = getattr(env, "close", None)
+            if callable(close_fn):
+                close_fn()
+
+
+class PythonStructuredEnvGroup(PythonStructuredDriverGroup):
     pass

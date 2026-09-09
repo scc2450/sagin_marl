@@ -28,7 +28,7 @@ scripts/evaluate_structured_mixed_heads_native.py
 当前主配置：
 
 ```text
-configs/tmp/structured_joint_mcgae_3uav_20gu_t250_positive_relcritic.yaml
+configs/current/structured_joint_mcgae_3uav_20gu_t250_positive_relcritic.yaml
 ```
 
 ## 顶层目录
@@ -50,7 +50,7 @@ sagin_marl/
 ## 关键配置
 
 ```text
-configs/tmp/structured_joint_mcgae_3uav_20gu_t250_positive_relcritic.yaml
+configs/current/structured_joint_mcgae_3uav_20gu_t250_positive_relcritic.yaml
 ```
 
 当前 joint MC-GAE / 3UAV-20GU / positive reward / relational critic 主配置。注意：
@@ -173,25 +173,25 @@ scripts/evaluate_structured_mixed_heads_native.py
 ## 仍有用的辅助脚本
 
 ```text
-scripts/evaluate_thesis_native_methods.py
+scripts/evaluation/evaluate_thesis_native_methods.py
 ```
 
 论文方法对照 / baseline 汇总入口，适合批量评估 proposed、baseline、Lyapunov 等。
 
 ```text
-scripts/generate_joint_mcgae_training_ppt.py
+scripts/analysis/export/generate_joint_mcgae_training_ppt.py
 ```
 
 根据当前 joint MC-GAE 结果生成简版 PPT。
 
 ```text
-scripts/export_tb_scalars.py
+scripts/analysis/export/export_tb_scalars.py
 ```
 
 导出 TensorBoard scalar 曲线。
 
 ```text
-scripts/analyze_thesis_fairness.py
+scripts/analysis/analyze_thesis_fairness.py
 ```
 
 论文 fairness / 指标分析辅助。
@@ -215,37 +215,43 @@ scripts/render_episode.py
 ## 重要文档
 
 ```text
-docs/joint_mcgae_training_summary_for_slides_20260514.md
+docs/README.md
 ```
 
-给导师汇报用的 joint MC-GAE 简版材料。
+文档区导航：当前主线、历史实验、诊断记录、临时草稿和后续移动计划。
 
 ```text
-docs/joint_mcgae_macro_k5_nogrow_u300_rerun_eval_20260514.md
+docs/current/joint_mcgae_training_flow_summary_20260514.md
+```
+
+joint MC-GAE 训练流程梳理；同名 PPTX 是汇报材料。
+
+```text
+docs/current/joint_mcgae_macro_k5_nogrow_u300_rerun_eval_20260514.md
 ```
 
 K=5 当前主结果记录。
 
 ```text
-docs/joint_mcgae_macro_k10_nogrow_u300_eval_20260514.md
+docs/current/joint_mcgae_macro_k10_nogrow_u300_eval_20260514.md
 ```
 
 K=10 对照结果记录。
 
 ```text
-docs/joint_mcgae_k5_danger_imitation_ablation_20260515.md
+docs/current/joint_mcgae_k5_danger_imitation_ablation_20260515.md
 ```
 
 danger imitation 开关消融。
 
 ```text
-docs/bw_access_macro_decision_interval_design_20260513.md
+docs/current/bw_access_macro_decision_interval_design_20260513.md
 ```
 
 BW macro decision interval 设计与实现说明。
 
 ```text
-docs/torch_compile_cache_setup_20260510.md
+docs/guides/torch_compile_cache_setup_20260510.md
 ```
 
 Windows + torch.compile / Triton 缓存路径说明。

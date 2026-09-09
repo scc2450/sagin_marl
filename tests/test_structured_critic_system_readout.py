@@ -94,6 +94,29 @@ def _global_linear_critic() -> StructuredCritic:
     )
 
 
+def _flat_mlp_critic() -> StructuredCritic:
+    torch.manual_seed(321)
+    return StructuredCritic(
+        uav_dim=schema.CRITIC_UAV_NODE_DIM,
+        gu_dim=schema.CRITIC_GU_NODE_DIM,
+        sat_dim=schema.CRITIC_SAT_NODE_DIM,
+        uav_gu_edge_dim=schema.CRITIC_UAV_GU_EDGE_DIM,
+        uav_sat_edge_dim=schema.CRITIC_UAV_SAT_EDGE_DIM,
+        uav_uav_edge_dim=schema.CRITIC_UAV_UAV_EDGE_DIM,
+        hidden_dim=64,
+        embed_dim=schema.CRITIC_EMBED_DIM,
+        edge_embed_dim=schema.CRITIC_EDGE_EMBED_DIM,
+        global_embed_dim=schema.CRITIC_GLOBAL_EMBED_DIM,
+        system_token_dim=schema.CRITIC_SYSTEM_TOKEN_DIM,
+        message_layers=1,
+        value_head_hidden_dim=64,
+        value_mode="flat_mlp",
+        flat_num_uav=3,
+        flat_num_gu=4,
+        flat_num_sat=3,
+    )
+
+
 def test_structured_critic_system_readout_shapes_and_head_inputs() -> None:
     critic = _critic()
     world = _world()
@@ -204,6 +227,52 @@ def test_global_only_critic_ignores_tokens_edges_and_uses_global_scalars() -> No
     shifted_global.global_scalars[:, schema.GLOBAL_TOTAL_PREFIX_WEIGHTED_WORKLOAD_STEPS] += 10.0
     shifted_output = critic(shifted_global)
     assert any((shifted_output[key] - baseline[key]).abs().max().item() > 1.0e-6 for key in baseline)
+
+
+def test_flat_mlp_critic_uses_full_state_without_relational_messages() -> None:
+    critic = _flat_mlp_critic()
+    critic.eval()
+    world = _world()
+    baseline = critic(world)
+    shifted_tokens = StructuredWorldState(
+        uav_nodes=world.uav_nodes,
+        gu_nodes=world.gu_nodes.clone(),
+        sat_nodes=world.sat_nodes,
+        sat_ids=world.sat_ids,
+        uav_gu_edges=world.uav_gu_edges,
+        uav_sat_edges=world.uav_sat_edges,
+        uav_uav_edges=world.uav_uav_edges,
+        global_scalars=world.global_scalars,
+        gu_mask=world.gu_mask,
+        sat_mask=world.sat_mask,
+        uav_gu_mask=world.uav_gu_mask,
+        uav_sat_mask=world.uav_sat_mask,
+        uav_uav_mask=world.uav_uav_mask,
+        stage_id=world.stage_id,
+    )
+    shifted_tokens.gu_nodes[:, 0, schema.GU_QUEUE_STEPS] += 10.0
+    changed_tokens = critic(shifted_tokens)
+    assert any((changed_tokens[key] - baseline[key]).abs().max().item() > 1.0e-6 for key in baseline)
+
+    shifted_global = StructuredWorldState(
+        uav_nodes=world.uav_nodes,
+        gu_nodes=world.gu_nodes,
+        sat_nodes=world.sat_nodes,
+        sat_ids=world.sat_ids,
+        uav_gu_edges=world.uav_gu_edges,
+        uav_sat_edges=world.uav_sat_edges,
+        uav_uav_edges=world.uav_uav_edges,
+        global_scalars=world.global_scalars.clone(),
+        gu_mask=world.gu_mask,
+        sat_mask=world.sat_mask,
+        uav_gu_mask=world.uav_gu_mask,
+        uav_sat_mask=world.uav_sat_mask,
+        uav_uav_mask=world.uav_uav_mask,
+        stage_id=world.stage_id,
+    )
+    shifted_global.global_scalars[:, schema.GLOBAL_TOTAL_PREFIX_WEIGHTED_WORKLOAD_STEPS] += 10.0
+    changed_global = critic(shifted_global)
+    assert any((changed_global[key] - baseline[key]).abs().max().item() > 1.0e-6 for key in baseline)
 
 
 def test_global_linear_critic_closed_form_fit_and_running_decay() -> None:

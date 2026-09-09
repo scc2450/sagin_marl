@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import argparse
-import copy
 import csv
 import json
 import math
@@ -20,19 +19,19 @@ import torch
 import torch._dynamo as torch_dynamo
 import torch.nn.functional as F
 
-from scripts.audit_stage_critic_only_fit import (
-    _clone_dataclass_tensors,
-    _collect_one_rollout,
-    _eval_critic,
-    _make_learner,
-)
-from scripts.audit_stage_ppo_credit_alignment import _force_single_stage_config, _stage_optimizer_params
-
 from sagin_marl.env.config import load_config
 from sagin_marl.env.native_cuda import bindings as native_cuda
 from sagin_marl.rl.distributions import squash_action
-from sagin_marl.rl.structured_actor import NEG_INF, _masked_softmax, _multi_query_attention, _safe_categorical_logits
+from sagin_marl.rl.structured_actor import _safe_categorical_logits
 from sagin_marl.rl.structured_mappo import _index_dataclass, _slice_dataclass
+from sagin_marl.rl.stage_mcgae import (
+    clone_dataclass_tensors as _clone_dataclass_tensors,
+    collect_one_rollout as _collect_one_rollout,
+    eval_critic as _eval_critic,
+    force_single_stage_config as _force_single_stage_config,
+    make_learner as _make_learner,
+    stage_optimizer_params as _stage_optimizer_params,
+)
 from sagin_marl.rl.structured_train import close_structured_env_group, make_structured_driver_group
 from sagin_marl.utils.torch_compile_cache import report_torch_compile_cache
 
@@ -61,137 +60,44 @@ def _summ_tensor(x: torch.Tensor) -> dict[str, float]:
     }
 
 
-def _assert_finite_tensor(name: str, x: torch.Tensor, *, stage_name: str | None = None) -> None:
-    """Fail before optimizer state is mutated when a training tensor is non-finite."""
-
+def _summ_tensor_extended(x: torch.Tensor) -> dict[str, float]:
+    stats = _summ_tensor(x)
     if int(x.numel()) <= 0:
-        return
-    y = x.detach()
-    if bool(torch.isfinite(y).all().detach().cpu().item()):
-        return
-    bad = (~torch.isfinite(y)).nonzero(as_tuple=False).reshape(-1)
-    first_bad = int(bad[0].detach().cpu().item()) if int(bad.numel()) > 0 else -1
-    prefix = f"{stage_name} " if stage_name else ""
-    raise RuntimeError(f"{prefix}{name} contains NaN/Inf before actor optimizer step; first_bad_flat_index={first_bad}.")
-
-
-def _actor_param_snapshot(params: list[torch.nn.Parameter]) -> list[torch.Tensor]:
-    return [param.detach().clone() for param in params]
-
-
-def _restore_actor_param_snapshot(params: list[torch.nn.Parameter], snapshot: list[torch.Tensor]) -> None:
-    if len(params) != len(snapshot):
-        raise RuntimeError("actor snapshot parameter count mismatch.")
-    with torch.no_grad():
-        for param, value in zip(params, snapshot):
-            param.copy_(value.to(device=param.device, dtype=param.dtype))
-
-
-def _optimizer_lr(optimizer: torch.optim.Optimizer) -> float:
-    if not optimizer.param_groups:
-        return 0.0
-    return float(optimizer.param_groups[0].get("lr", 0.0))
-
-
-def _set_optimizer_lr(optimizer: torch.optim.Optimizer, lr: float) -> None:
-    for group in optimizer.param_groups:
-        group["lr"] = float(lr)
-
-
-def _stage_lr_min_from_cfg(cfg: Any, stage_name: str, default: float = 0.0) -> float:
-    stage_value = getattr(cfg, f"stage_actor_lr_min_{stage_name}", None) if cfg is not None else None
-    generic_value = getattr(cfg, "stage_actor_lr_min", None) if cfg is not None else None
-    value = stage_value if stage_value is not None else generic_value
-    if value is None:
-        return float(default)
-    return float(value)
-
-
-def _advantage_health_metrics(raw_adv: torch.Tensor, norm_adv: torch.Tensor) -> dict[str, float]:
-    raw = raw_adv.detach().to(dtype=torch.float32).reshape(-1)
-    norm = norm_adv.detach().to(dtype=torch.float32).reshape(-1)
-    if int(raw.numel()) <= 0 or int(norm.numel()) <= 0:
-        return {
-            "raw_std": 0.0,
-            "norm_std": 0.0,
-            "ess_frac": 0.0,
-            "top10_share": 0.0,
+        stats.update({"p10": 0.0, "p50": 0.0, "p90": 0.0})
+        return stats
+    y = x.detach().to(dtype=torch.float32).reshape(-1)
+    stats.update(
+        {
+            "p10": float(torch.quantile(y, 0.10).detach().cpu().item()),
+            "p50": float(torch.quantile(y, 0.50).detach().cpu().item()),
+            "p90": float(torch.quantile(y, 0.90).detach().cpu().item()),
         }
-    raw_std = float(raw.std(unbiased=False).detach().cpu().item()) if int(raw.numel()) > 1 else 0.0
-    norm_std = float(norm.std(unbiased=False).detach().cpu().item()) if int(norm.numel()) > 1 else 0.0
-    abs_norm = norm.abs()
-    sum_abs = abs_norm.sum()
-    sum_sq = norm.square().sum()
-    if float(sum_abs.detach().cpu().item()) <= 0.0 or float(sum_sq.detach().cpu().item()) <= 0.0:
-        ess_frac = 0.0
-        top10_share = 0.0
+    )
+    return stats
+
+
+def _prefixed_stats(prefix: str, x: torch.Tensor, *, extended: bool = False) -> dict[str, float]:
+    stats = _summ_tensor_extended(x) if bool(extended) else _summ_tensor(x)
+    return {f"{prefix}_{key}": float(value) for key, value in stats.items()}
+
+
+def _critic_np_stats(pred: np.ndarray, target: np.ndarray) -> dict[str, float]:
+    p = np.asarray(pred, dtype=np.float64).reshape(-1)
+    t = np.asarray(target, dtype=np.float64).reshape(-1)
+    if int(p.size) != int(t.size) or int(t.size) <= 0:
+        return {"ev": float("nan"), "mse": float("nan"), "corr": float("nan")}
+    mse = float(np.mean((p - t) ** 2))
+    if int(t.size) <= 1:
+        ev = 0.0
+        corr = 0.0
     else:
-        ess = sum_abs.square() / (float(norm.numel()) * sum_sq.clamp_min(1.0e-12))
-        ess_frac = float(ess.detach().cpu().item())
-        k = min(10, int(abs_norm.numel()))
-        top10 = torch.topk(abs_norm, k=k).values.sum()
-        top10_share = float((top10 / sum_abs.clamp_min(1.0e-12)).detach().cpu().item())
-    return {
-        "raw_std": raw_std,
-        "norm_std": norm_std,
-        "ess_frac": ess_frac,
-        "top10_share": top10_share,
-    }
-
-
-def _credit_response_metrics(
-    *,
-    advantage: torch.Tensor,
-    logprob_before: torch.Tensor,
-    logprob_after: torch.Tensor,
-    env_indices: Any,
-) -> dict[str, float]:
-    adv = advantage.detach().to(dtype=torch.float32).reshape(-1)
-    before = logprob_before.detach().to(device=adv.device, dtype=torch.float32).reshape(-1)
-    after = logprob_after.detach().to(device=adv.device, dtype=torch.float32).reshape(-1)
-    if int(adv.numel()) != int(before.numel()) or int(adv.numel()) != int(after.numel()):
-        raise RuntimeError("policy response gate tensor length mismatch.")
-    delta = after - before
-    credit = adv * delta
-    abs_adv = adv.abs()
-    sum_abs_adv = abs_adv.sum().clamp_min(1.0e-12)
-    weighted_sign = ((adv * delta) > 0.0).to(dtype=torch.float32)
-    weighted_sign_agree = float(((weighted_sign * abs_adv).sum() / sum_abs_adv).detach().cpu().item())
-    mean_abs_delta = float(delta.abs().mean().detach().cpu().item()) if int(delta.numel()) > 0 else 0.0
-    credit_mean_sample = float(credit.mean().detach().cpu().item()) if int(credit.numel()) > 0 else 0.0
-    env_np = np.asarray(env_indices, dtype=np.int64).reshape(-1) if env_indices is not None else np.empty((0,), dtype=np.int64)
-    if int(env_np.size) == int(credit.numel()) and int(env_np.size) > 0 and np.any(env_np >= 0):
-        credit_cpu = credit.detach().cpu().numpy().astype(np.float64, copy=False)
-        env_values: list[float] = []
-        for env_id in np.unique(env_np[env_np >= 0]):
-            mask = env_np == int(env_id)
-            if np.any(mask):
-                env_values.append(float(np.mean(credit_cpu[mask])))
-        if len(env_values) > 0:
-            env_arr = np.asarray(env_values, dtype=np.float64)
-            credit_mean = float(np.mean(env_arr))
-            credit_std = float(np.std(env_arr, ddof=0))
-            credit_t = float(credit_mean / (credit_std / math.sqrt(max(len(env_values), 1)) + 1.0e-12))
-            env_count = float(len(env_values))
+        var = float(np.var(t))
+        ev = 0.0 if var <= 1.0e-12 else 1.0 - float(np.var(t - p)) / var
+        if float(np.std(p)) <= 1.0e-12 or float(np.std(t)) <= 1.0e-12:
+            corr = 0.0
         else:
-            credit_mean = credit_mean_sample
-            credit_std = 0.0
-            credit_t = 0.0
-            env_count = 0.0
-    else:
-        credit_mean = credit_mean_sample
-        credit_std = float(credit.std(unbiased=False).detach().cpu().item()) if int(credit.numel()) > 1 else 0.0
-        credit_t = float(credit_mean / (credit_std / math.sqrt(max(int(credit.numel()), 1)) + 1.0e-12))
-        env_count = 0.0
-    return {
-        "credit_mean": credit_mean,
-        "credit_mean_sample": credit_mean_sample,
-        "credit_std_env": credit_std,
-        "credit_t": credit_t,
-        "credit_env_count": env_count,
-        "weighted_sign_agree": weighted_sign_agree,
-        "mean_abs_delta_logp": mean_abs_delta,
-    }
+            corr = float(np.corrcoef(p, t)[0, 1])
+    return {"ev": float(ev), "mse": float(mse), "corr": float(corr)}
 
 
 def _cuda_mem(prefix: str, device: torch.device) -> dict[str, float]:
@@ -217,36 +123,6 @@ def _stage_cfg_bool(cfg: Any, generic_name: str, sat_name: str, default: bool) -
     if value is None:
         return bool(default)
     return bool(value)
-
-
-def _stage_advantage_mode(cfg: Any, *, stage_id: int, has_macro_duration: bool) -> str:
-    stage_name = STAGE_NAME[int(stage_id)]
-    stage_specific = getattr(cfg, f"stage_mcgae_{stage_name}_advantage_mode", None) if cfg is not None else None
-    generic = getattr(cfg, "stage_mcgae_advantage_mode", None) if cfg is not None else None
-    macro = getattr(cfg, "stage_mcgae_macro_advantage_mode", None) if cfg is not None else None
-    if stage_specific is not None:
-        value = stage_specific
-    elif generic is not None:
-        value = generic
-    elif bool(has_macro_duration) and macro is not None:
-        value = macro
-    else:
-        value = "gae"
-    mode = str(value).strip().lower().replace("-", "_")
-    aliases = {
-        "mc": "mc_residual",
-        "mc_v": "mc_residual",
-        "mc_resid": "mc_residual",
-        "mc_residual": "mc_residual",
-        "gae": "gae",
-        "macro_gae": "gae",
-    }
-    if mode not in aliases:
-        raise ValueError(
-            "stage MC-GAE advantage mode must be 'gae' or 'mc_residual'; "
-            f"got {value!r} for stage {stage_name}."
-        )
-    return aliases[mode]
 
 
 def _configure_accel_safety_for_training(cfg: Any, *, stage_id: int) -> None:
@@ -330,6 +206,8 @@ def _train_stage_critic_on_stage(
     stage_id: int,
     stage_batch: Any,
     target: torch.Tensor,
+    aux_target: torch.Tensor | None = None,
+    aux_coef: float = 0.0,
     optimizer: torch.optim.Optimizer,
     lr: float,
     epochs: int,
@@ -391,6 +269,22 @@ def _train_stage_critic_on_stage(
     if n <= 0:
         raise RuntimeError(f"{STAGE_NAME[stage_id_i]} critic target is empty.")
     target = target.detach().to(device=learner.device, dtype=torch.float32).reshape(-1)
+    aux_coef_f = max(float(aux_coef or 0.0), 0.0)
+    if aux_target is not None and aux_coef_f > 0.0:
+        aux_target_t: torch.Tensor | None = aux_target.detach().to(
+            device=learner.device,
+            dtype=torch.float32,
+        ).reshape(-1)
+        if int(aux_target_t.numel()) != n:
+            raise RuntimeError(
+                f"{STAGE_NAME[stage_id_i]} aux critic target length {int(aux_target_t.numel())} != samples {n}."
+            )
+    else:
+        aux_target_t = None
+        aux_coef_f = 0.0
+    train_main_loss_sum = 0.0
+    train_aux_loss_sum = 0.0
+    train_loss_chunks = 0
 
     t_train = time.perf_counter()
     outer_minibatches = _env_group_minibatch_indices(
@@ -450,7 +344,16 @@ def _train_stage_critic_on_stage(
                     epoch_forward_sec += time.perf_counter() - t
 
                     t = time.perf_counter()
-                    loss = F.mse_loss(pred, target.index_select(0, idx)) * loss_scale
+                    main_loss = F.mse_loss(pred, target.index_select(0, idx))
+                    if aux_target_t is not None:
+                        aux_loss = F.mse_loss(pred, aux_target_t.index_select(0, idx))
+                        loss = (main_loss + aux_coef_f * aux_loss) * loss_scale
+                        train_aux_loss_sum += float(aux_loss.detach().cpu().item())
+                    else:
+                        aux_loss = None
+                        loss = main_loss * loss_scale
+                    train_main_loss_sum += float(main_loss.detach().cpu().item())
+                    train_loss_chunks += 1
                     _sync()
                     epoch_loss_sec += time.perf_counter() - t
 
@@ -482,7 +385,15 @@ def _train_stage_critic_on_stage(
                         forward_idx = torch.cat([idx, pad], dim=0)
                     loss_scale = float(real_count) / float(max(full_count, 1))
                     pred = learner._stage_value_eval_from_batch(stage_id_i, _index_dataclass(world, forward_idx))[:real_count]
-                    loss = F.mse_loss(pred, target.index_select(0, idx)) * loss_scale
+                    main_loss = F.mse_loss(pred, target.index_select(0, idx))
+                    if aux_target_t is not None:
+                        aux_loss = F.mse_loss(pred, aux_target_t.index_select(0, idx))
+                        loss = (main_loss + aux_coef_f * aux_loss) * loss_scale
+                        train_aux_loss_sum += float(aux_loss.detach().cpu().item())
+                    else:
+                        loss = main_loss * loss_scale
+                    train_main_loss_sum += float(main_loss.detach().cpu().item())
+                    train_loss_chunks += 1
                     loss.backward()
                 torch.nn.utils.clip_grad_norm_(params, float(learner.max_grad_norm))
                 optimizer.step()
@@ -535,6 +446,11 @@ def _train_stage_critic_on_stage(
         torch.cuda.synchronize(learner.device)
     eval_after_sec = time.perf_counter() - t_after
     after_values = torch.as_tensor(after_pred_np, dtype=torch.float32, device=learner.device).reshape(-1)
+    if aux_target_t is not None:
+        aux_after_stats = _critic_np_stats(after_pred_np, aux_target_t.detach().cpu().numpy())
+    else:
+        aux_after_stats = {"ev": float("nan"), "mse": float("nan"), "corr": float("nan")}
+    denom = float(max(int(train_loss_chunks), 1))
     return {
         "critic_lr": float(lr),
         "critic_epochs": float(epochs),
@@ -553,6 +469,12 @@ def _train_stage_critic_on_stage(
         "critic_corr_after": float(after_stats["corr"]),
         "critic_train_final_ev": float(after_stats["ev"]),
         "critic_train_final_mse": float(after_stats["mse"]),
+        "critic_aux_coef": float(aux_coef_f),
+        "critic_loss_main": float(train_main_loss_sum / denom),
+        "critic_loss_aux": float(train_aux_loss_sum / denom) if aux_target_t is not None else 0.0,
+        "critic_aux_ev_after": float(aux_after_stats["ev"]),
+        "critic_aux_mse_after": float(aux_after_stats["mse"]),
+        "critic_aux_corr_after": float(aux_after_stats["corr"]),
     }, after_values, trace_rows
 
 
@@ -633,6 +555,9 @@ def _stage_gae_native_dense(
 ) -> tuple[torch.Tensor, torch.Tensor] | None:
     if device.type != "cuda":
         return None
+    cfg = getattr(learner, "cfg", None)
+    if str(getattr(cfg, "structured_env_backend", "native") or "native").strip().lower() != "native":
+        return None
     durations = getattr(stage_batch, "duration", None)
     if torch.is_tensor(durations) and not bool(torch.all(durations.reshape(-1).to(device=device) == 1).item()):
         return None
@@ -705,25 +630,22 @@ def _stage_gae_from_mc_targets(
     if int(stage_values.numel()) != sample_count:
         raise RuntimeError(f"value length {int(stage_values.numel())} != samples {sample_count}.")
 
-    duration_attr = getattr(stage_batch, "duration", None)
-    if torch.is_tensor(duration_attr):
-        durations_np = duration_attr.detach().cpu().numpy().astype(np.int64, copy=False).reshape(-1)
-    elif duration_attr is None:
-        durations_np = np.ones((sample_count,), dtype=np.int64)
-    else:
-        durations_np = np.asarray(duration_attr, dtype=np.int64).reshape(-1)
-    if int(durations_np.size) != sample_count:
-        raise RuntimeError("stage duration length mismatch.")
-    durations_np = np.maximum(durations_np.astype(np.int64, copy=False), 1)
-
-    advantage_mode = _stage_advantage_mode(
-        getattr(learner, "cfg", None),
-        stage_id=int(stage_id),
-        has_macro_duration=bool(np.any(durations_np != 1)),
-    )
-    if advantage_mode == "mc_residual":
-        adv = mc - stage_values
-        return mc, adv, stage_values
+    duration_attr_probe = getattr(stage_batch, "duration", None)
+    if duration_attr_probe is not None:
+        if torch.is_tensor(duration_attr_probe):
+            duration_probe = duration_attr_probe.detach().to(device=device).reshape(-1)
+            has_macro_rows = bool(torch.any(duration_probe != 1).item()) if int(duration_probe.numel()) > 0 else False
+        else:
+            duration_probe_np = np.asarray(duration_attr_probe, dtype=np.int64).reshape(-1)
+            has_macro_rows = bool(np.any(duration_probe_np != 1)) if int(duration_probe_np.size) > 0 else False
+        if has_macro_rows:
+            # Macro modes hold one stage action over multiple primitive steps,
+            # but the return target is still gathered from the primitive-step
+            # MC chain at the macro-start transition.  Do not rebuild a
+            # duration-compressed SMDP reward here: the actor row is sparse,
+            # not a new SMDP transition with a collapsed reward.
+            adv = mc - stage_values
+            return mc, adv, stage_values
 
     native_result = _stage_gae_native_dense(
         learner,
@@ -748,6 +670,17 @@ def _stage_gae_from_mc_targets(
     truncated = _as_bool_np(getattr(stage_batch, "truncated"))
     if int(terminated.size) != sample_count or int(truncated.size) != sample_count:
         raise RuntimeError("stage terminal flag length mismatch.")
+    duration_attr = getattr(stage_batch, "duration", None)
+    if torch.is_tensor(duration_attr):
+        durations_np = duration_attr.detach().cpu().numpy().astype(np.int64, copy=False).reshape(-1)
+    elif duration_attr is None:
+        durations_np = np.ones((sample_count,), dtype=np.int64)
+    else:
+        durations_np = np.asarray(duration_attr, dtype=np.int64).reshape(-1)
+    if int(durations_np.size) != sample_count:
+        raise RuntimeError("stage duration length mismatch.")
+    durations_np = np.maximum(durations_np.astype(np.int64, copy=False), 1)
+
     adv = torch.zeros((sample_count,), dtype=torch.float32, device=device)
     ret = torch.zeros((sample_count,), dtype=torch.float32, device=device)
     gamma = float(learner.gamma)
@@ -767,7 +700,7 @@ def _stage_gae_from_mc_targets(
             ended_here = bool(terminated[pos] or truncated[pos])
             duration_i = max(int(durations_np[pos]), 1)
             gamma_d = float(gamma) ** duration_i
-            gamma_lam_d = gamma_d * float(lam)
+            gamma_lam_d = (float(gamma) * float(lam)) ** duration_i
             if have_next and not ended_here:
                 collapsed_reward = mc[pos] - float(gamma_d) * next_mc
                 bootstrap_value = next_value
@@ -783,11 +716,7 @@ def _stage_gae_from_mc_targets(
             next_adv = adv_pos
             next_value = stage_values[pos]
             next_mc = mc[pos]
-            # The current row is still the next decision state for the
-            # previous row, even if this current row itself terminates after
-            # its reward.  The previous row will decide whether to connect by
-            # checking its own terminated/truncated flag.
-            have_next = True
+            have_next = not ended_here
     return ret, adv, stage_values
 
 
@@ -998,301 +927,6 @@ def _bw_logprob_entropy(policy: Any, local_state: Any, action: torch.Tensor, *, 
     return logprob, entropy
 
 
-def _tensor_quantile(x: torch.Tensor, q: float) -> float:
-    y = x.detach().to(dtype=torch.float32).reshape(-1)
-    if int(y.numel()) <= 0:
-        return 0.0
-    q_f = min(max(float(q), 0.0), 1.0)
-    return float(torch.quantile(y, q_f).detach().cpu().item())
-
-
-def _accel_output_score_norm(policy: Any, local_state: Any, latent_action: torch.Tensor, *, num_agents: int) -> torch.Tensor:
-    with torch.no_grad():
-        ctx = policy._context(local_state)
-        mean = policy.mu_head(ctx)
-        std = torch.clamp(policy.log_std, -5.0, 2.0).exp().reshape((1,) * max(mean.ndim - 1, 0) + (2,)).expand_as(mean)
-        z = latent_action.to(dtype=mean.dtype, device=mean.device).reshape_as(mean)
-        score_mu = (z - mean) / std.square().clamp_min(1.0e-12)
-        score_sq = score_mu.square().sum(dim=-1)
-        if bool(getattr(policy.log_std, "requires_grad", False)):
-            score_log_std = ((z - mean).square() / std.square().clamp_min(1.0e-12)) - 1.0
-            score_sq = score_sq + score_log_std.square().sum(dim=-1)
-        rows = int(score_sq.numel()) // int(num_agents)
-        return score_sq.reshape(rows, int(num_agents)).sum(dim=1).clamp_min(0.0).sqrt()
-
-
-def _sat_output_score_norm(policy: Any, local_state: Any, subset_index: torch.Tensor, *, num_agents: int) -> torch.Tensor:
-    with torch.no_grad():
-        logits = policy._compute_logits(local_state)
-        subset_mask = policy._legal_subset_mask(local_state, logits)
-        safe_logits = _safe_categorical_logits(logits, subset_mask)
-        legal_count = subset_mask.sum(dim=-1)
-        probs = torch.softmax(safe_logits, dim=-1)
-        chosen = subset_index.to(device=logits.device, dtype=torch.long).reshape(-1)
-        chosen_safe = chosen.clamp(min=0, max=max(int(logits.shape[1]) - 1, 0))
-        p_chosen = probs.gather(1, chosen_safe.unsqueeze(1)).squeeze(1)
-        score_sq = probs.square().sum(dim=-1) + 1.0 - 2.0 * p_chosen
-        score_sq = torch.where(legal_count > 1, score_sq.clamp_min(0.0), torch.zeros_like(score_sq))
-        rows = int(score_sq.numel()) // int(num_agents)
-        return score_sq.reshape(rows, int(num_agents)).sum(dim=1).clamp_min(0.0).sqrt()
-
-
-def _bw_det_mean_from_score_tau(score: torch.Tensor, tau: torch.Tensor, valid: torch.Tensor, valid_count: torch.Tensor) -> torch.Tensor:
-    det_mean = _masked_softmax(score / tau[:, None], valid, dim=-1)
-    det_mean = torch.where(valid_count.unsqueeze(-1) == 1, valid.to(det_mean.dtype), det_mean)
-    det_mean = torch.where(valid_count.unsqueeze(-1) <= 0, torch.zeros_like(det_mean), det_mean)
-    return det_mean
-
-
-def _bw_dirichlet_logprob_from_mean_kappa(
-    mean: torch.Tensor,
-    kappa: torch.Tensor,
-    valid: torch.Tensor,
-    valid_count: torch.Tensor,
-    action: torch.Tensor,
-    objective_denominator: torch.Tensor,
-) -> torch.Tensor:
-    eps = 1.0e-8
-    mask_f = valid.to(dtype=mean.dtype)
-    mean_valid = torch.where(valid, mean.clamp_min(eps), torch.zeros_like(mean))
-    mean_sum = mean_valid.sum(dim=-1, keepdim=True).clamp_min(eps)
-    normalized_mean = torch.where(valid, mean_valid / mean_sum, torch.zeros_like(mean_valid))
-    normalized_mean = torch.where(valid_count.unsqueeze(-1) == 1, mask_f, normalized_mean)
-    normalized_mean = torch.where(valid_count.unsqueeze(-1) <= 0, torch.zeros_like(normalized_mean), normalized_mean)
-    kappa_s = kappa.clamp_min(eps)
-    concentration = normalized_mean * kappa_s.unsqueeze(-1)
-    masked_concentration = torch.where(valid, concentration.clamp_min(eps), torch.ones_like(concentration))
-    action_eval = action.to(dtype=mean.dtype, device=mean.device).masked_fill(~valid, 0.0)
-    action_eval = torch.where(valid_count.unsqueeze(-1) == 1, mask_f, action_eval)
-    action_eval = torch.where(valid_count.unsqueeze(-1) <= 0, torch.zeros_like(action_eval), action_eval)
-    action_valid = torch.where(valid, action_eval.clamp_min(eps), torch.zeros_like(action_eval))
-    action_sum = action_valid.sum(dim=-1, keepdim=True).clamp_min(eps)
-    probs = torch.where(valid, action_valid / action_sum, torch.zeros_like(action_valid))
-    action_safe = torch.where(valid, probs.clamp_min(eps), torch.ones_like(probs))
-    alpha0 = (concentration * mask_f).sum(dim=-1).clamp_min(eps)
-    logprob_raw = (
-        torch.lgamma(alpha0)
-        - torch.lgamma(masked_concentration).sum(dim=-1)
-        + ((masked_concentration - 1.0) * torch.log(action_safe)).sum(dim=-1)
-    )
-    logprob_raw = torch.where(valid_count >= 2, logprob_raw, torch.zeros_like(logprob_raw))
-    return logprob_raw / objective_denominator.to(dtype=logprob_raw.dtype, device=logprob_raw.device)
-
-
-def _bw_raw_distribution_outputs(policy: Any, local_state: Any) -> tuple[torch.Tensor, torch.Tensor | None, torch.Tensor | None, torch.Tensor, torch.Tensor]:
-    valid = local_state.gu_mask.to(dtype=torch.bool) & local_state.bw_valid_mask.to(dtype=torch.bool)
-    valid_count = valid.sum(dim=-1).to(dtype=torch.long)
-    row_count = int(local_state.ego_features.shape[0])
-    embed_dim = int(policy.embed_dim)
-    ego_emb = policy.ego_encoder(policy.ego_input_norm(local_state.ego_features))
-    sat_emb = policy.sat_encoder(policy.sat_input_norm(local_state.selected_sat_tokens))
-    gu_emb = policy.gu_encoder(policy.gu_input_norm(local_state.gu_tokens))
-    queries = policy.down_query_proj(ego_emb).view(row_count, int(policy.down_query_count), embed_dim)
-    sat_mask = local_state.selected_sat_mask.to(dtype=torch.bool)
-    down_attn = _multi_query_attention(queries, sat_emb, sat_mask)
-    sat_add_pool = policy._masked_sum(policy.sat_add_proj(sat_emb), sat_mask)
-    down_ctx = policy.down_context_encoder(torch.cat([down_attn.flatten(1), sat_add_pool], dim=-1))
-    ctx0 = policy.ctx0_encoder(torch.cat([ego_emb, down_ctx], dim=-1))
-    ctx_expand = ctx0[:, None, :].expand(-1, int(gu_emb.shape[1]), -1)
-    gu_h = policy.gu_context_fusion(torch.cat([gu_emb, ctx_expand], dim=-1))
-    for block in policy.competition_blocks:
-        gu_h = block(gu_h, valid)
-    raw_score = policy.score_head(gu_h).squeeze(-1)
-    tau_raw = policy.tau_head(ctx0).squeeze(-1) if policy.fixed_tau is None else None
-    kappa_raw = policy.kappa_head(ctx0).squeeze(-1) if policy.fixed_kappa is None else None
-    return raw_score, tau_raw, kappa_raw, valid, valid_count
-
-
-def _bw_output_score_norm(policy: Any, local_state: Any, action: torch.Tensor, *, num_agents: int) -> torch.Tensor:
-    # Compute exact score norm with respect to the policy distribution outputs,
-    # not full actor parameters. A single backward over detached output tensors
-    # gives per-row output gradients because rows are independent after outputs.
-    with torch.no_grad():
-        raw_score, tau_raw, kappa_raw, valid, valid_count = _bw_raw_distribution_outputs(policy, local_state)
-    score_var = raw_score.detach().requires_grad_(True)
-    tau_var: torch.Tensor
-    if tau_raw is None:
-        tau_var = score_var.new_full((int(score_var.shape[0]),), float(policy.fixed_tau))
-        tau_raw_var = None
-    else:
-        tau_raw_var = tau_raw.detach().requires_grad_(True)
-        tau_var = float(policy.tau_min) + (float(policy.tau_max) - float(policy.tau_min)) * torch.sigmoid(tau_raw_var)
-    if kappa_raw is None:
-        kappa_var = score_var.new_full((int(score_var.shape[0]),), float(policy.fixed_kappa))
-        kappa_raw_var = None
-    else:
-        kappa_raw_var = kappa_raw.detach().requires_grad_(True)
-        kappa_var = float(policy.kappa_min) + (float(policy.kappa_max) - float(policy.kappa_min)) * torch.sigmoid(kappa_raw_var)
-    score_masked = score_var.masked_fill(~valid, NEG_INF)
-    det_mean = _bw_det_mean_from_score_tau(score_masked, tau_var, valid, valid_count)
-    denom = policy._objective_denominator(valid_count, score_var.dtype)
-    action_flat = action.to(device=score_var.device, dtype=score_var.dtype).reshape_as(score_var)
-    logprob = _bw_dirichlet_logprob_from_mean_kappa(det_mean, kappa_var, valid, valid_count, action_flat, denom)
-    grads = torch.autograd.grad(
-        logprob.sum(),
-        [x for x in (score_var, tau_raw_var, kappa_raw_var) if x is not None],
-        retain_graph=False,
-        create_graph=False,
-        allow_unused=True,
-    )
-    grad_iter = iter(grads)
-    score_grad = next(grad_iter)
-    if score_grad is None:
-        score_grad = torch.zeros_like(score_var)
-    score_sq = torch.where(valid, score_grad.square(), torch.zeros_like(score_grad)).sum(dim=-1)
-    if tau_raw_var is not None:
-        tau_grad = next(grad_iter)
-        if tau_grad is None:
-            tau_grad = torch.zeros_like(tau_raw_var)
-        score_sq = score_sq + tau_grad.square()
-    if kappa_raw_var is not None:
-        kappa_grad = next(grad_iter)
-        if kappa_grad is None:
-            kappa_grad = torch.zeros_like(kappa_raw_var)
-        score_sq = score_sq + kappa_grad.square()
-    rows = int(score_sq.numel()) // int(num_agents)
-    return score_sq.reshape(rows, int(num_agents)).sum(dim=1).clamp_min(0.0).sqrt().detach()
-
-
-def _stage_policy_output_score_norm(
-    learner: Any,
-    *,
-    stage_id: int,
-    stage_batch: Any,
-    all_actions: torch.Tensor,
-    all_latent_actions: torch.Tensor,
-    num_agents: int,
-) -> torch.Tensor:
-    stage_id_i = int(stage_id)
-    if stage_id_i == 0:
-        return _accel_output_score_norm(
-            learner.actor.accel_policy,
-            stage_batch.local_batch,
-            all_latent_actions.reshape(int(stage_batch.num_samples) * int(num_agents), -1),
-            num_agents=int(num_agents),
-        )
-    if stage_id_i == 1:
-        return _sat_output_score_norm(
-            learner.actor.sat_subset_policy,
-            stage_batch.local_batch,
-            all_actions.reshape(-1),
-            num_agents=int(num_agents),
-        )
-    return _bw_output_score_norm(
-        learner.actor.bw_policy,
-        stage_batch.local_batch,
-        all_actions.reshape(int(stage_batch.num_samples) * int(num_agents), -1),
-        num_agents=int(num_agents),
-    )
-
-
-def _stage_importance_default_metrics(cfg: Any, *, sample_count: int, enabled: bool | None = None) -> dict[str, float]:
-    enabled_flag = bool(getattr(cfg, "stage_actor_importance_sampling_enabled", False)) if enabled is None else bool(enabled)
-    return {
-        "actor_is_enabled": float(1.0 if enabled_flag else 0.0),
-        "actor_is_sample_frac": float(getattr(cfg, "stage_actor_is_sample_frac", 0.5) if cfg is not None else 0.5),
-        "actor_is_alpha": float(getattr(cfg, "stage_actor_is_alpha", 0.5) if cfg is not None else 0.5),
-        "actor_is_eps_scale": float(getattr(cfg, "stage_actor_is_eps_scale", 1.0e-6) if cfg is not None else 1.0e-6),
-        "actor_is_weight_clip_min": float(getattr(cfg, "stage_actor_is_weight_clip_min", 0.25) if cfg is not None else 0.25),
-        "actor_is_weight_clip_max": float(getattr(cfg, "stage_actor_is_weight_clip_max", 4.0) if cfg is not None else 4.0),
-        "actor_is_uniform_frac": float(getattr(cfg, "stage_actor_is_uniform_frac", 0.0) if cfg is not None else 0.0),
-        "actor_is_sample_count": float(sample_count),
-        "actor_is_priority_mean": 0.0,
-        "actor_is_priority_p95": 0.0,
-        "actor_is_priority_max": 0.0,
-        "actor_is_score_norm_mean": 0.0,
-        "actor_is_score_norm_p95": 0.0,
-        "actor_is_score_norm_max": 0.0,
-        "actor_is_q_min": 0.0,
-        "actor_is_q_max": 0.0,
-        "actor_is_fallback_uniform": 0.0,
-        "actor_is_sampled_rows_total": 0.0,
-        "actor_is_sampled_priority_mean": 0.0,
-        "actor_is_sampled_priority_p95": 0.0,
-        "actor_is_sampled_priority_max": 0.0,
-        "actor_is_weight_mean": 0.0,
-        "actor_is_weight_p95": 0.0,
-        "actor_is_weight_min": 0.0,
-        "actor_is_weight_max": 0.0,
-        "actor_is_ess_frac": 0.0,
-    }
-
-
-def _build_stage_importance_sampling_plan(
-    learner: Any,
-    *,
-    stage_id: int,
-    stage_batch: Any,
-    all_actions: torch.Tensor,
-    all_latent_actions: torch.Tensor,
-    advantage: torch.Tensor,
-    num_agents: int,
-    sample_count: int,
-) -> dict[str, Any]:
-    cfg = getattr(learner, "cfg", None)
-    enabled = bool(getattr(cfg, "stage_actor_importance_sampling_enabled", False))
-    metrics = _stage_importance_default_metrics(cfg, sample_count=sample_count, enabled=enabled)
-    if not enabled or int(sample_count) <= 0:
-        return {"enabled": False, "metrics": metrics}
-    uniform_frac = float(metrics["actor_is_uniform_frac"])
-    if abs(uniform_frac) > 1.0e-12:
-        raise RuntimeError("stage_actor_importance_sampling first implementation requires stage_actor_is_uniform_frac=0.0.")
-    sample_frac = min(max(float(metrics["actor_is_sample_frac"]), 0.0), 1.0)
-    if sample_frac <= 0.0:
-        raise RuntimeError("stage_actor_is_sample_frac must be positive when importance sampling is enabled.")
-    alpha = max(float(metrics["actor_is_alpha"]), 0.0)
-    eps_scale = max(float(metrics["actor_is_eps_scale"]), 0.0)
-    with torch.enable_grad():
-        score_norm = _stage_policy_output_score_norm(
-            learner,
-            stage_id=int(stage_id),
-            stage_batch=stage_batch,
-            all_actions=all_actions,
-            all_latent_actions=all_latent_actions,
-            num_agents=int(num_agents),
-        ).to(device=advantage.device, dtype=torch.float32)
-    if int(score_norm.numel()) != int(sample_count):
-        raise RuntimeError(
-            f"{STAGE_NAME[int(stage_id)]} score_norm length {int(score_norm.numel())} != sample_count {int(sample_count)}."
-        )
-    priority = advantage.detach().to(dtype=torch.float32).abs() * score_norm.detach().to(dtype=torch.float32)
-    priority = torch.where(torch.isfinite(priority), priority.clamp_min(0.0), torch.zeros_like(priority))
-    score_norm = torch.where(torch.isfinite(score_norm), score_norm.clamp_min(0.0), torch.zeros_like(score_norm))
-    metrics.update(
-        {
-            "actor_is_priority_mean": float(priority.mean().detach().cpu().item()) if int(priority.numel()) else 0.0,
-            "actor_is_priority_p95": _tensor_quantile(priority, 0.95),
-            "actor_is_priority_max": float(priority.max().detach().cpu().item()) if int(priority.numel()) else 0.0,
-            "actor_is_score_norm_mean": float(score_norm.mean().detach().cpu().item()) if int(score_norm.numel()) else 0.0,
-            "actor_is_score_norm_p95": _tensor_quantile(score_norm, 0.95),
-            "actor_is_score_norm_max": float(score_norm.max().detach().cpu().item()) if int(score_norm.numel()) else 0.0,
-        }
-    )
-    priority_mean = float(priority.mean().detach().cpu().item()) if int(priority.numel()) else 0.0
-    if not math.isfinite(priority_mean) or priority_mean <= 0.0 or float(priority.sum().detach().cpu().item()) <= 0.0:
-        q = torch.full((int(sample_count),), 1.0 / float(max(int(sample_count), 1)), dtype=torch.float32, device=advantage.device)
-        metrics["actor_is_fallback_uniform"] = 1.0
-    else:
-        eps = float(eps_scale) * float(priority_mean)
-        q_raw = (priority + eps).clamp_min(0.0).pow(alpha)
-        q_sum = q_raw.sum()
-        if not bool(torch.isfinite(q_sum).detach().cpu().item()) or float(q_sum.detach().cpu().item()) <= 0.0:
-            q = torch.full((int(sample_count),), 1.0 / float(max(int(sample_count), 1)), dtype=torch.float32, device=advantage.device)
-            metrics["actor_is_fallback_uniform"] = 1.0
-        else:
-            q = (q_raw / q_sum).to(dtype=torch.float32)
-    metrics["actor_is_q_min"] = float(q.min().detach().cpu().item()) if int(q.numel()) else 0.0
-    metrics["actor_is_q_max"] = float(q.max().detach().cpu().item()) if int(q.numel()) else 0.0
-    sample_size = max(1, int(math.ceil(float(sample_frac) * float(sample_count))))
-    return {
-        "enabled": True,
-        "q": q.detach(),
-        "priority": priority.detach(),
-        "sample_size": int(sample_size),
-        "metrics": metrics,
-    }
-
-
 def _make_stage_actor_loss_chunk_fn(
     learner: Any,
     *,
@@ -1317,7 +951,6 @@ def _make_stage_actor_loss_chunk_fn(
         danger_targets_i: torch.Tensor,
         danger_masks_i: torch.Tensor,
         valid_i: torch.Tensor,
-        row_weight_i: torch.Tensor,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         rows = int(action_i.shape[0])
         if stage_id_i == 0:
@@ -1338,14 +971,11 @@ def _make_stage_actor_loss_chunk_fn(
                 mask = danger_masks_i.to(dtype=mean.dtype, device=mean.device).reshape(rows, num_agents_i, 2)
                 pred = squash_action(mean, actor.accel_policy.action_scale).reshape(rows, num_agents_i, 2)
                 active = (mask.sum(dim=-1) > 0).to(dtype=mean.dtype)
-                row_weight = row_weight_i.to(dtype=mean.dtype, device=mean.device).reshape(rows, 1)
-                row_valid = valid_i.to(dtype=mean.dtype, device=mean.device).reshape(rows, 1)
                 denom = mask.sum(dim=-1).clamp_min(1.0)
                 per_agent = (((pred - target) * mask).pow(2).sum(dim=-1)) / denom
-                active_weight = active * row_valid * row_weight
-                active_count = active_weight.sum()
-                danger_loss = (per_agent * active_weight).sum() / active_count.clamp_min(1.0e-12)
-                danger_active = active_weight.sum() / ((row_valid * row_weight).sum().clamp_min(1.0e-12) * float(num_agents_i))
+                active_count = active.sum()
+                danger_loss = (per_agent * active).sum() / active_count.clamp_min(1.0)
+                danger_active = active.mean()
         elif stage_id_i == 1:
             logprob_agent, entropy_agent = _sat_logprob_entropy(
                 actor.sat_subset_policy,
@@ -1375,11 +1005,11 @@ def _make_stage_actor_loss_chunk_fn(
         log_ratio = torch.clamp(logprob - old_t.detach(), min=-20.0, max=20.0)
         ratio = torch.exp(log_ratio)
         clipped = torch.clamp(ratio, 1.0 - clip_ratio, 1.0 + clip_ratio)
-        policy_loss = -_weighted_row_mean(torch.minimum(ratio * adv_t.detach(), clipped * adv_t.detach()), valid_i, row_weight_i)
-        entropy_mean = _weighted_row_mean(entropy, valid_i, row_weight_i) if bool(need_entropy) else torch.zeros((), dtype=logprob.dtype, device=logprob.device)
+        policy_loss = -_masked_row_mean(torch.minimum(ratio * adv_t.detach(), clipped * adv_t.detach()), valid_i)
+        entropy_mean = _masked_row_mean(entropy, valid_i) if bool(need_entropy) else torch.zeros((), dtype=logprob.dtype, device=logprob.device)
         loss = policy_loss - entropy_coef * entropy_mean + danger_coef * danger_loss
-        approx_kl = _weighted_row_mean(old_t.detach() - logprob.detach(), valid_i, row_weight_i)
-        clip_frac = _weighted_row_mean((torch.abs(ratio.detach() - 1.0) > clip_ratio).to(dtype=logprob.dtype), valid_i, row_weight_i)
+        approx_kl = _masked_row_mean(old_t.detach() - logprob.detach(), valid_i)
+        clip_frac = _masked_row_mean((torch.abs(ratio.detach() - 1.0) > clip_ratio).to(dtype=logprob.dtype), valid_i)
         return loss, policy_loss.detach(), entropy_mean.detach(), approx_kl.detach(), clip_frac.detach(), danger_loss.detach(), danger_active.detach()
 
     return _loss_chunk
@@ -1418,7 +1048,6 @@ class _StageActorLossChunkModule(torch.nn.Module):
         danger_targets_i: torch.Tensor,
         danger_masks_i: torch.Tensor,
         valid_i: torch.Tensor,
-        row_weight_i: torch.Tensor,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         rows = int(action_i.shape[0])
         if self.stage_id == 0:
@@ -1439,14 +1068,11 @@ class _StageActorLossChunkModule(torch.nn.Module):
                 mask = danger_masks_i.to(dtype=mean.dtype, device=mean.device).reshape(rows, self.num_agents, 2)
                 pred = squash_action(mean, self.actor.accel_policy.action_scale).reshape(rows, self.num_agents, 2)
                 active = (mask.sum(dim=-1) > 0).to(dtype=mean.dtype)
-                row_weight = row_weight_i.to(dtype=mean.dtype, device=mean.device).reshape(rows, 1)
-                row_valid = valid_i.to(dtype=mean.dtype, device=mean.device).reshape(rows, 1)
                 denom = mask.sum(dim=-1).clamp_min(1.0)
                 per_agent = (((pred - target) * mask).pow(2).sum(dim=-1)) / denom
-                active_weight = active * row_valid * row_weight
-                active_count = active_weight.sum()
-                danger_loss = (per_agent * active_weight).sum() / active_count.clamp_min(1.0e-12)
-                danger_active = active_weight.sum() / ((row_valid * row_weight).sum().clamp_min(1.0e-12) * float(self.num_agents))
+                active_count = active.sum()
+                danger_loss = (per_agent * active).sum() / active_count.clamp_min(1.0)
+                danger_active = active.mean()
         elif self.stage_id == 1:
             logprob_agent, entropy_agent = _sat_logprob_entropy(
                 self.actor.sat_subset_policy,
@@ -1476,11 +1102,11 @@ class _StageActorLossChunkModule(torch.nn.Module):
         log_ratio = torch.clamp(logprob - old_t.detach(), min=-20.0, max=20.0)
         ratio = torch.exp(log_ratio)
         clipped = torch.clamp(ratio, 1.0 - self.clip_ratio, 1.0 + self.clip_ratio)
-        policy_loss = -_weighted_row_mean(torch.minimum(ratio * adv_t.detach(), clipped * adv_t.detach()), valid_i, row_weight_i)
-        entropy_mean = _weighted_row_mean(entropy, valid_i, row_weight_i) if self.need_entropy else torch.zeros((), dtype=logprob.dtype, device=logprob.device)
+        policy_loss = -_masked_row_mean(torch.minimum(ratio * adv_t.detach(), clipped * adv_t.detach()), valid_i)
+        entropy_mean = _masked_row_mean(entropy, valid_i) if self.need_entropy else torch.zeros((), dtype=logprob.dtype, device=logprob.device)
         loss = policy_loss - self.entropy_coef * entropy_mean + self.danger_coef * danger_loss
-        approx_kl = _weighted_row_mean(old_t.detach() - logprob.detach(), valid_i, row_weight_i)
-        clip_frac = _weighted_row_mean((torch.abs(ratio.detach() - 1.0) > self.clip_ratio).to(dtype=logprob.dtype), valid_i, row_weight_i)
+        approx_kl = _masked_row_mean(old_t.detach() - logprob.detach(), valid_i)
+        clip_frac = _masked_row_mean((torch.abs(ratio.detach() - 1.0) > self.clip_ratio).to(dtype=logprob.dtype), valid_i)
         return (
             loss,
             policy_loss,
@@ -1495,14 +1121,6 @@ class _StageActorLossChunkModule(torch.nn.Module):
 def _masked_row_mean(values: torch.Tensor, valid_i: torch.Tensor) -> torch.Tensor:
     weights = valid_i.to(dtype=values.dtype, device=values.device).reshape(-1)
     denom = weights.sum().clamp_min(1.0)
-    return (values.reshape(-1) * weights).sum() / denom
-
-
-def _weighted_row_mean(values: torch.Tensor, valid_i: torch.Tensor, row_weight_i: torch.Tensor) -> torch.Tensor:
-    valid = valid_i.to(dtype=values.dtype, device=values.device).reshape(-1)
-    row_weight = row_weight_i.to(dtype=values.dtype, device=values.device).reshape(-1)
-    weights = valid * row_weight
-    denom = weights.sum().clamp_min(1.0e-12)
     return (values.reshape(-1) * weights).sum() / denom
 
 
@@ -1537,7 +1155,6 @@ class _AccelActorLossChunkModule(torch.nn.Module):
         danger_targets_i: torch.Tensor,
         danger_masks_i: torch.Tensor,
         valid_i: torch.Tensor,
-        row_weight_i: torch.Tensor,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         rows = int(action_i.shape[0])
         flat_action = action_i.reshape(rows * self.num_agents, -1)
@@ -1553,7 +1170,6 @@ class _AccelActorLossChunkModule(torch.nn.Module):
         danger_loss = torch.zeros((), dtype=logprob.dtype, device=logprob.device)
         danger_active = torch.zeros((), dtype=logprob.dtype, device=logprob.device)
         row_valid = valid_i.to(dtype=mean.dtype, device=mean.device).reshape(rows, 1)
-        row_weight = row_weight_i.to(dtype=mean.dtype, device=mean.device).reshape(rows, 1)
         if self.danger_enabled:
             target = danger_targets_i.to(dtype=mean.dtype, device=mean.device).reshape(rows, self.num_agents, 2)
             mask = danger_masks_i.to(dtype=mean.dtype, device=mean.device).reshape(rows, self.num_agents, 2)
@@ -1561,20 +1177,20 @@ class _AccelActorLossChunkModule(torch.nn.Module):
             active = (mask.sum(dim=-1) > 0).to(dtype=mean.dtype)
             denom = mask.sum(dim=-1).clamp_min(1.0)
             per_agent = (((pred - target) * mask).pow(2).sum(dim=-1)) / denom
-            active_weight = active * row_valid * row_weight
+            active_weight = active * row_valid
             active_count = active_weight.sum()
-            danger_loss = (per_agent * active_weight).sum() / active_count.clamp_min(1.0e-12)
-            danger_active = active_weight.sum() / ((row_valid * row_weight).sum().clamp_min(1.0e-12) * float(self.num_agents))
+            danger_loss = (per_agent * active_weight).sum() / active_count.clamp_min(1.0)
+            danger_active = active_weight.sum() / (row_valid.sum().clamp_min(1.0) * float(self.num_agents))
         old_t = old_i.to(dtype=logprob.dtype)
         adv_t = adv_i.to(dtype=logprob.dtype)
         log_ratio = torch.clamp(logprob - old_t.detach(), min=-20.0, max=20.0)
         ratio = torch.exp(log_ratio)
         clipped = torch.clamp(ratio, 1.0 - self.clip_ratio, 1.0 + self.clip_ratio)
-        policy_loss = -_weighted_row_mean(torch.minimum(ratio * adv_t.detach(), clipped * adv_t.detach()), valid_i, row_weight_i)
-        entropy_mean = _weighted_row_mean(entropy, valid_i, row_weight_i) if self.need_entropy else torch.zeros((), dtype=logprob.dtype, device=logprob.device)
+        policy_loss = -_masked_row_mean(torch.minimum(ratio * adv_t.detach(), clipped * adv_t.detach()), valid_i)
+        entropy_mean = _masked_row_mean(entropy, valid_i) if self.need_entropy else torch.zeros((), dtype=logprob.dtype, device=logprob.device)
         loss = policy_loss - self.entropy_coef * entropy_mean + self.danger_coef * danger_loss
-        approx_kl = _weighted_row_mean(old_t.detach() - logprob.detach(), valid_i, row_weight_i)
-        clip_frac = _weighted_row_mean((torch.abs(ratio.detach() - 1.0) > self.clip_ratio).to(dtype=logprob.dtype), valid_i, row_weight_i)
+        approx_kl = _masked_row_mean(old_t.detach() - logprob.detach(), valid_i)
+        clip_frac = _masked_row_mean((torch.abs(ratio.detach() - 1.0) > self.clip_ratio).to(dtype=logprob.dtype), valid_i)
         return (
             loss,
             policy_loss.detach(),
@@ -1613,7 +1229,6 @@ class _AccelActorLossNoDangerModule(torch.nn.Module):
         danger_targets_i: torch.Tensor,
         danger_masks_i: torch.Tensor,
         valid_i: torch.Tensor,
-        row_weight_i: torch.Tensor,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         del danger_targets_i, danger_masks_i
         rows = int(action_i.shape[0])
@@ -1632,11 +1247,11 @@ class _AccelActorLossNoDangerModule(torch.nn.Module):
         log_ratio = torch.clamp(logprob - old_t.detach(), min=-20.0, max=20.0)
         ratio = torch.exp(log_ratio)
         clipped = torch.clamp(ratio, 1.0 - self.clip_ratio, 1.0 + self.clip_ratio)
-        policy_loss = -_weighted_row_mean(torch.minimum(ratio * adv_t.detach(), clipped * adv_t.detach()), valid_i, row_weight_i)
-        entropy_mean = _weighted_row_mean(entropy, valid_i, row_weight_i) if self.need_entropy else torch.zeros((), dtype=logprob.dtype, device=logprob.device)
+        policy_loss = -_masked_row_mean(torch.minimum(ratio * adv_t.detach(), clipped * adv_t.detach()), valid_i)
+        entropy_mean = _masked_row_mean(entropy, valid_i) if self.need_entropy else torch.zeros((), dtype=logprob.dtype, device=logprob.device)
         loss = policy_loss - self.entropy_coef * entropy_mean
-        approx_kl = _weighted_row_mean(old_t.detach() - logprob.detach(), valid_i, row_weight_i)
-        clip_frac = _weighted_row_mean((torch.abs(ratio.detach() - 1.0) > self.clip_ratio).to(dtype=logprob.dtype), valid_i, row_weight_i)
+        approx_kl = _masked_row_mean(old_t.detach() - logprob.detach(), valid_i)
+        clip_frac = _masked_row_mean((torch.abs(ratio.detach() - 1.0) > self.clip_ratio).to(dtype=logprob.dtype), valid_i)
         zero = torch.zeros((), dtype=logprob.dtype, device=logprob.device)
         return loss, policy_loss, entropy_mean, approx_kl, clip_frac, zero, zero
 
@@ -1670,7 +1285,6 @@ class _AccelActorLossDangerModule(torch.nn.Module):
         danger_targets_i: torch.Tensor,
         danger_masks_i: torch.Tensor,
         valid_i: torch.Tensor,
-        row_weight_i: torch.Tensor,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         rows = int(action_i.shape[0])
         flat_action = action_i.reshape(rows * self.num_agents, -1)
@@ -1684,27 +1298,26 @@ class _AccelActorLossDangerModule(torch.nn.Module):
         logprob = logprob_agent.reshape(rows, self.num_agents).sum(dim=1)
         entropy = entropy_agent.reshape(rows, self.num_agents).sum(dim=1)
         row_valid = valid_i.to(dtype=mean.dtype, device=mean.device).reshape(rows, 1)
-        row_weight = row_weight_i.to(dtype=mean.dtype, device=mean.device).reshape(rows, 1)
         target = danger_targets_i.to(dtype=mean.dtype, device=mean.device).reshape(rows, self.num_agents, 2)
         mask = danger_masks_i.to(dtype=mean.dtype, device=mean.device).reshape(rows, self.num_agents, 2)
         pred = squash_action(mean, self.policy.action_scale).reshape(rows, self.num_agents, 2)
         active = (mask.sum(dim=-1) > 0).to(dtype=mean.dtype)
         denom = mask.sum(dim=-1).clamp_min(1.0)
         per_agent = (((pred - target) * mask).pow(2).sum(dim=-1)) / denom
-        active_weight = active * row_valid * row_weight
+        active_weight = active * row_valid
         active_count = active_weight.sum()
-        danger_loss = (per_agent * active_weight).sum() / active_count.clamp_min(1.0e-12)
-        danger_active = active_weight.sum() / ((row_valid * row_weight).sum().clamp_min(1.0e-12) * float(self.num_agents))
+        danger_loss = (per_agent * active_weight).sum() / active_count.clamp_min(1.0)
+        danger_active = active_weight.sum() / (row_valid.sum().clamp_min(1.0) * float(self.num_agents))
         old_t = old_i.to(dtype=logprob.dtype)
         adv_t = adv_i.to(dtype=logprob.dtype)
         log_ratio = torch.clamp(logprob - old_t.detach(), min=-20.0, max=20.0)
         ratio = torch.exp(log_ratio)
         clipped = torch.clamp(ratio, 1.0 - self.clip_ratio, 1.0 + self.clip_ratio)
-        policy_loss = -_weighted_row_mean(torch.minimum(ratio * adv_t.detach(), clipped * adv_t.detach()), valid_i, row_weight_i)
-        entropy_mean = _weighted_row_mean(entropy, valid_i, row_weight_i) if self.need_entropy else torch.zeros((), dtype=logprob.dtype, device=logprob.device)
+        policy_loss = -_masked_row_mean(torch.minimum(ratio * adv_t.detach(), clipped * adv_t.detach()), valid_i)
+        entropy_mean = _masked_row_mean(entropy, valid_i) if self.need_entropy else torch.zeros((), dtype=logprob.dtype, device=logprob.device)
         loss = policy_loss - self.entropy_coef * entropy_mean + self.danger_coef * danger_loss
-        approx_kl = _weighted_row_mean(old_t.detach() - logprob.detach(), valid_i, row_weight_i)
-        clip_frac = _weighted_row_mean((torch.abs(ratio.detach() - 1.0) > self.clip_ratio).to(dtype=logprob.dtype), valid_i, row_weight_i)
+        approx_kl = _masked_row_mean(old_t.detach() - logprob.detach(), valid_i)
+        clip_frac = _masked_row_mean((torch.abs(ratio.detach() - 1.0) > self.clip_ratio).to(dtype=logprob.dtype), valid_i)
         return loss, policy_loss, entropy_mean, approx_kl, clip_frac, danger_loss, danger_active
 
 
@@ -1735,7 +1348,6 @@ class _SatActorLossChunkModule(torch.nn.Module):
         danger_targets_i: torch.Tensor,
         danger_masks_i: torch.Tensor,
         valid_i: torch.Tensor,
-        row_weight_i: torch.Tensor,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         del latent_i, danger_targets_i, danger_masks_i
         rows = int(action_i.shape[0])
@@ -1753,11 +1365,11 @@ class _SatActorLossChunkModule(torch.nn.Module):
         log_ratio = torch.clamp(logprob - old_t.detach(), min=-20.0, max=20.0)
         ratio = torch.exp(log_ratio)
         clipped = torch.clamp(ratio, 1.0 - self.clip_ratio, 1.0 + self.clip_ratio)
-        policy_loss = -_weighted_row_mean(torch.minimum(ratio * adv_t.detach(), clipped * adv_t.detach()), valid_i, row_weight_i)
-        entropy_mean = _weighted_row_mean(entropy, valid_i, row_weight_i) if self.need_entropy else torch.zeros((), dtype=logprob.dtype, device=logprob.device)
+        policy_loss = -_masked_row_mean(torch.minimum(ratio * adv_t.detach(), clipped * adv_t.detach()), valid_i)
+        entropy_mean = _masked_row_mean(entropy, valid_i) if self.need_entropy else torch.zeros((), dtype=logprob.dtype, device=logprob.device)
         loss = policy_loss - self.entropy_coef * entropy_mean
-        approx_kl = _weighted_row_mean(old_t.detach() - logprob.detach(), valid_i, row_weight_i)
-        clip_frac = _weighted_row_mean((torch.abs(ratio.detach() - 1.0) > self.clip_ratio).to(dtype=logprob.dtype), valid_i, row_weight_i)
+        approx_kl = _masked_row_mean(old_t.detach() - logprob.detach(), valid_i)
+        clip_frac = _masked_row_mean((torch.abs(ratio.detach() - 1.0) > self.clip_ratio).to(dtype=logprob.dtype), valid_i)
         return (
             loss,
             policy_loss,
@@ -1796,7 +1408,6 @@ class _BwActorLossChunkModule(torch.nn.Module):
         danger_targets_i: torch.Tensor,
         danger_masks_i: torch.Tensor,
         valid_i: torch.Tensor,
-        row_weight_i: torch.Tensor,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         del latent_i, danger_targets_i, danger_masks_i
         rows = int(action_i.shape[0])
@@ -1815,11 +1426,11 @@ class _BwActorLossChunkModule(torch.nn.Module):
         log_ratio = torch.clamp(logprob - old_t.detach(), min=-20.0, max=20.0)
         ratio = torch.exp(log_ratio)
         clipped = torch.clamp(ratio, 1.0 - self.clip_ratio, 1.0 + self.clip_ratio)
-        policy_loss = -_weighted_row_mean(torch.minimum(ratio * adv_t.detach(), clipped * adv_t.detach()), valid_i, row_weight_i)
-        entropy_mean = _weighted_row_mean(entropy, valid_i, row_weight_i) if self.need_entropy else torch.zeros((), dtype=logprob.dtype, device=logprob.device)
+        policy_loss = -_masked_row_mean(torch.minimum(ratio * adv_t.detach(), clipped * adv_t.detach()), valid_i)
+        entropy_mean = _masked_row_mean(entropy, valid_i) if self.need_entropy else torch.zeros((), dtype=logprob.dtype, device=logprob.device)
         loss = policy_loss - self.entropy_coef * entropy_mean
-        approx_kl = _weighted_row_mean(old_t.detach() - logprob.detach(), valid_i, row_weight_i)
-        clip_frac = _weighted_row_mean((torch.abs(ratio.detach() - 1.0) > self.clip_ratio).to(dtype=logprob.dtype), valid_i, row_weight_i)
+        approx_kl = _masked_row_mean(old_t.detach() - logprob.detach(), valid_i)
+        clip_frac = _masked_row_mean((torch.abs(ratio.detach() - 1.0) > self.clip_ratio).to(dtype=logprob.dtype), valid_i)
         return (
             loss,
             policy_loss,
@@ -1838,7 +1449,6 @@ def _ppo_actor_loss_outputs(
     old_i: torch.Tensor,
     adv_i: torch.Tensor,
     valid_i: torch.Tensor,
-    row_weight_i: torch.Tensor,
     danger_loss: torch.Tensor,
     danger_active: torch.Tensor,
     need_entropy: bool,
@@ -1851,11 +1461,11 @@ def _ppo_actor_loss_outputs(
     log_ratio = torch.clamp(logprob - old_t.detach(), min=-20.0, max=20.0)
     ratio = torch.exp(log_ratio)
     clipped = torch.clamp(ratio, 1.0 - float(clip_ratio), 1.0 + float(clip_ratio))
-    policy_loss = -_weighted_row_mean(torch.minimum(ratio * adv_t.detach(), clipped * adv_t.detach()), valid_i, row_weight_i)
-    entropy_mean = _weighted_row_mean(entropy, valid_i, row_weight_i) if bool(need_entropy) else torch.zeros((), dtype=logprob.dtype, device=logprob.device)
+    policy_loss = -_masked_row_mean(torch.minimum(ratio * adv_t.detach(), clipped * adv_t.detach()), valid_i)
+    entropy_mean = _masked_row_mean(entropy, valid_i) if bool(need_entropy) else torch.zeros((), dtype=logprob.dtype, device=logprob.device)
     loss = policy_loss - float(entropy_coef) * entropy_mean + float(danger_coef) * danger_loss
-    approx_kl = _weighted_row_mean(old_t.detach() - logprob.detach(), valid_i, row_weight_i)
-    clip_frac = _weighted_row_mean((torch.abs(ratio.detach() - 1.0) > float(clip_ratio)).to(dtype=logprob.dtype), valid_i, row_weight_i)
+    approx_kl = _masked_row_mean(old_t.detach() - logprob.detach(), valid_i)
+    clip_frac = _masked_row_mean((torch.abs(ratio.detach() - 1.0) > float(clip_ratio)).to(dtype=logprob.dtype), valid_i)
     return (
         loss,
         policy_loss.detach(),
@@ -1932,7 +1542,7 @@ def _stage_actor_update_full_stage(
     stage_id: int,
     stage_batch: Any,
     stage_advantages: torch.Tensor,
-    stage_advantages_raw: torch.Tensor | None = None,
+    stage_raw_advantages: torch.Tensor | None = None,
     optimizer: torch.optim.Optimizer,
     epochs: int,
     minibatches: int,
@@ -1983,9 +1593,165 @@ def _stage_actor_update_full_stage(
     def _index_sample_latent_actions(sample_idx: torch.Tensor) -> torch.Tensor:
         return all_latent_actions.index_select(0, sample_idx.to(device=device, dtype=torch.long).reshape(-1))
 
-    def _compute_all_logprob() -> torch.Tensor:
+    def _finalize_bw_shape_stats(prefix: str, chunks: dict[str, list[torch.Tensor]]) -> dict[str, float]:
+        if not chunks.get("tau"):
+            return {}
+        out: dict[str, float] = {}
+
+        def _cat(name: str) -> torch.Tensor:
+            values = chunks.get(name, [])
+            if not values:
+                return torch.empty((0,), dtype=torch.float32, device=device)
+            return torch.cat([value.detach().to(device=device, dtype=torch.float32).reshape(-1) for value in values], dim=0)
+
+        for name in (
+            "tau",
+            "kappa",
+            "valid_count",
+            "latent_count",
+            "det_mean_top1",
+            "det_mean_top2_gap",
+            "det_mean_entropy_norm",
+            "det_mean_uniform_gap",
+            "action_det_l1",
+            "score_top2_gap",
+            "alpha_valid_min",
+        ):
+            out.update(_prefixed_stats(f"{prefix}_{name}", _cat(name), extended=True))
+
+        alpha_values = _cat("alpha_valid")
+        if int(alpha_values.numel()) > 0:
+            out[f"{prefix}_alpha_lt1_frac"] = float(
+                (alpha_values < 1.0).to(dtype=torch.float32).mean().detach().cpu().item()
+            )
+        else:
+            out[f"{prefix}_alpha_lt1_frac"] = 0.0
+
+        bw_policy = getattr(getattr(learner, "actor", None), "bw_policy", None)
+        tau_values = _cat("tau")
+        tau_min = float(getattr(bw_policy, "tau_min", float("nan")))
+        tau_max = float(getattr(bw_policy, "tau_max", float("nan")))
+        if int(tau_values.numel()) > 0 and math.isfinite(tau_min) and math.isfinite(tau_max):
+            tau_span = max(float(tau_max) - float(tau_min), 1.0e-12)
+            out[f"{prefix}_tau_low_frac"] = float(
+                (tau_values <= float(tau_min) + 0.1 * tau_span)
+                .to(dtype=torch.float32)
+                .mean()
+                .detach()
+                .cpu()
+                .item()
+            )
+            out[f"{prefix}_tau_high_frac"] = float(
+                (tau_values >= float(tau_max) - 0.1 * tau_span)
+                .to(dtype=torch.float32)
+                .mean()
+                .detach()
+                .cpu()
+                .item()
+            )
+        kappa_values = _cat("kappa")
+        kappa_min = float(getattr(bw_policy, "kappa_min", float("nan")))
+        kappa_max = float(getattr(bw_policy, "kappa_max", float("nan")))
+        if int(kappa_values.numel()) > 0 and math.isfinite(kappa_min) and math.isfinite(kappa_max):
+            kappa_span = max(float(kappa_max) - float(kappa_min), 1.0e-12)
+            out[f"{prefix}_kappa_low_frac"] = float(
+                (kappa_values <= float(kappa_min) + 0.1 * kappa_span)
+                .to(dtype=torch.float32)
+                .mean()
+                .detach()
+                .cpu()
+                .item()
+            )
+            out[f"{prefix}_kappa_high_frac"] = float(
+                (kappa_values >= float(kappa_max) - 0.1 * kappa_span)
+                .to(dtype=torch.float32)
+                .mean()
+                .detach()
+                .cpu()
+                .item()
+            )
+        return out
+
+    def _append_bw_shape_chunk(
+        chunks: dict[str, list[torch.Tensor]],
+        *,
+        out_i: Any,
+        local_i: Any,
+        action_i: torch.Tensor,
+    ) -> None:
+        tau = getattr(out_i, "tau", None)
+        kappa = getattr(out_i, "kappa", None)
+        det_mean = getattr(out_i, "det_mean", None)
+        if tau is None or kappa is None or det_mean is None:
+            return
+        valid = (
+            local_i.gu_mask.to(device=device, dtype=torch.bool)
+            & local_i.bw_valid_mask.to(device=device, dtype=torch.bool)
+        )
+        det = det_mean.detach().to(device=device, dtype=torch.float32).reshape(valid.shape)
+        action_flat = action_i.detach().to(device=device, dtype=torch.float32).reshape(valid.shape)
+        valid_count = valid.sum(dim=-1).to(dtype=torch.float32)
+        latent_count = torch.clamp(valid_count - 1.0, min=0.0)
+        active_rows = valid_count >= 2.0
+        det_valid = torch.where(valid, det.clamp_min(1.0e-12), torch.zeros_like(det))
+        entropy = -(det_valid * torch.log(det_valid.clamp_min(1.0e-12))).sum(dim=-1)
+        log_count = torch.log(valid_count.clamp_min(1.0))
+        entropy_norm = torch.where(active_rows, entropy / log_count.clamp_min(1.0e-12), torch.zeros_like(entropy))
+        uniform_gap = torch.where(active_rows, log_count - entropy, torch.zeros_like(entropy))
+        det_masked = det.masked_fill(~valid, -float("inf"))
+        top_k = min(2, int(det_masked.shape[-1]))
+        top_values = torch.topk(det_masked, k=max(top_k, 1), dim=-1).values
+        top1 = torch.where(active_rows, top_values[:, 0], torch.zeros_like(valid_count))
+        if top_k >= 2:
+            top2_gap = torch.where(active_rows, top_values[:, 0] - top_values[:, 1], torch.zeros_like(valid_count))
+        else:
+            top2_gap = torch.zeros_like(valid_count)
+        action_det_l1 = torch.where(
+            active_rows,
+            (torch.where(valid, action_flat, torch.zeros_like(action_flat)) - det_valid).abs().sum(dim=-1),
+            torch.zeros_like(valid_count),
+        )
+        score = getattr(out_i, "score", None)
+        if score is not None:
+            score_t = score.detach().to(device=device, dtype=torch.float32).reshape(valid.shape).masked_fill(~valid, -float("inf"))
+            score_top = torch.topk(score_t, k=max(top_k, 1), dim=-1).values
+            if top_k >= 2:
+                score_top = torch.where(torch.isfinite(score_top), score_top, torch.zeros_like(score_top))
+                score_gap = torch.where(active_rows, score_top[:, 0] - score_top[:, 1], torch.zeros_like(valid_count))
+            else:
+                score_gap = torch.zeros_like(valid_count)
+        else:
+            score_gap = torch.zeros_like(valid_count)
+        alpha = getattr(out_i, "alpha", None)
+        if alpha is not None and int(alpha.numel()) > 0:
+            alpha_t = alpha.detach().to(device=device, dtype=torch.float32).reshape(valid.shape)
+            alpha_valid = alpha_t[valid]
+            alpha_min = torch.where(
+                active_rows,
+                alpha_t.masked_fill(~valid, float("inf")).amin(dim=-1),
+                torch.zeros_like(valid_count),
+            )
+        else:
+            alpha_valid = torch.empty((0,), dtype=torch.float32, device=device)
+            alpha_min = torch.zeros_like(valid_count)
+
+        chunks.setdefault("tau", []).append(tau.detach().to(dtype=torch.float32).reshape(-1))
+        chunks.setdefault("kappa", []).append(kappa.detach().to(dtype=torch.float32).reshape(-1))
+        chunks.setdefault("valid_count", []).append(valid_count.detach().reshape(-1))
+        chunks.setdefault("latent_count", []).append(latent_count.detach().reshape(-1))
+        chunks.setdefault("det_mean_top1", []).append(top1.detach().reshape(-1))
+        chunks.setdefault("det_mean_top2_gap", []).append(top2_gap.detach().reshape(-1))
+        chunks.setdefault("det_mean_entropy_norm", []).append(entropy_norm.detach().reshape(-1))
+        chunks.setdefault("det_mean_uniform_gap", []).append(uniform_gap.detach().reshape(-1))
+        chunks.setdefault("action_det_l1", []).append(action_det_l1.detach().reshape(-1))
+        chunks.setdefault("score_top2_gap", []).append(score_gap.detach().reshape(-1))
+        chunks.setdefault("alpha_valid", []).append(alpha_valid.detach().reshape(-1))
+        chunks.setdefault("alpha_valid_min", []).append(alpha_min.detach().reshape(-1))
+
+    def _eval_stage_logprob_all(*, bw_shape_prefix: str | None = None) -> tuple[torch.Tensor, dict[str, float]]:
         batch_eval = 1024
         chunks: list[torch.Tensor] = []
+        bw_shape_chunks: dict[str, list[torch.Tensor]] = {}
         with torch.no_grad():
             for start in range(0, sample_count, batch_eval):
                 end = min(int(start) + int(batch_eval), int(sample_count))
@@ -2001,14 +1767,44 @@ def _stage_actor_update_full_stage(
                     latent_actions=latent_i if stage_id_i == 0 else None,
                 )
                 chunks.append(lp_i.detach())
-        return torch.cat(chunks, dim=0).to(device=device, dtype=torch.float32)
+                if bw_shape_prefix is not None and stage_id_i == 2:
+                    _append_bw_shape_chunk(bw_shape_chunks, out_i=_out_i, local_i=local_i, action_i=action_i)
+        logprob_all = torch.cat(chunks, dim=0).to(device=device, dtype=torch.float32)
+        return logprob_all, _finalize_bw_shape_stats(str(bw_shape_prefix), bw_shape_chunks)
+
+    def _bw_shape_delta_stats(pre: dict[str, float], post: dict[str, float]) -> dict[str, float]:
+        out: dict[str, float] = {}
+        for metric in (
+            "tau_mean",
+            "tau_p50",
+            "tau_low_frac",
+            "tau_high_frac",
+            "kappa_mean",
+            "kappa_p50",
+            "kappa_low_frac",
+            "kappa_high_frac",
+            "det_mean_top1_mean",
+            "det_mean_top2_gap_mean",
+            "det_mean_entropy_norm_mean",
+            "det_mean_uniform_gap_mean",
+            "action_det_l1_mean",
+            "score_top2_gap_mean",
+            "alpha_valid_min_mean",
+            "alpha_lt1_frac",
+        ):
+            pre_key = f"bw_shape_pre_{metric}"
+            post_key = f"bw_shape_post_{metric}"
+            if pre_key in pre and post_key in post:
+                out[f"bw_shape_delta_{metric}"] = float(post[post_key]) - float(pre[pre_key])
+        return out
 
     old_t0 = time.perf_counter()
-    old_logprob = _compute_all_logprob()
+    old_logprob, bw_shape_pre_stats = _eval_stage_logprob_all(
+        bw_shape_prefix="bw_shape_pre" if stage_id_i == 2 else None
+    )
     if device.type == "cuda":
         torch.cuda.synchronize(device)
     old_logprob_sec = time.perf_counter() - old_t0
-    _assert_finite_tensor("old_logprob", old_logprob, stage_name=stage_name)
 
     cfg = getattr(learner, "cfg", None)
     parity_enabled = bool(getattr(cfg, "stage_actor_logprob_parity_check_enabled", True))
@@ -2187,46 +1983,13 @@ def _stage_actor_update_full_stage(
     adv = stage_advantages.detach().to(device=device, dtype=torch.float32).reshape(-1)
     if int(adv.numel()) != sample_count:
         raise RuntimeError(f"advantage length {int(adv.numel())} != {stage_name} stage samples {sample_count}.")
-    _assert_finite_tensor("actor_advantage", adv, stage_name=stage_name)
-    raw_adv = (
-        stage_advantages_raw.detach().to(device=device, dtype=torch.float32).reshape(-1)
-        if stage_advantages_raw is not None
-        else adv
-    )
-    if int(raw_adv.numel()) != sample_count:
-        raise RuntimeError(f"raw advantage length {int(raw_adv.numel())} != {stage_name} stage samples {sample_count}.")
-    _assert_finite_tensor("actor_raw_advantage", raw_adv, stage_name=stage_name)
-
-    cfg = getattr(learner, "cfg", None)
-    credit_gate_enabled = bool(getattr(cfg, "stage_actor_credit_gate_enabled", False))
-    adv_gate_enabled = bool(getattr(cfg, "stage_actor_adv_health_gate_enabled", True)) and credit_gate_enabled
-    response_gate_enabled = bool(getattr(cfg, "stage_actor_policy_response_gate_enabled", True)) and credit_gate_enabled
-    adv_health = _advantage_health_metrics(raw_adv, adv)
-    gate_action = "keep"
-    gate_reason = ""
-    gate_reason_code = 0
-    gate_lr_scale = 1.0
-    if adv_gate_enabled:
-        raw_std_skip = max(float(getattr(cfg, "stage_actor_adv_raw_std_skip", 1.0e-8) or 0.0), 0.0)
-        norm_std_skip = max(float(getattr(cfg, "stage_actor_adv_norm_std_skip", 1.0e-6) or 0.0), 0.0)
-        ess_skip = max(float(getattr(cfg, "stage_actor_adv_ess_skip", 0.10) or 0.0), 0.0)
-        ess_halve = max(float(getattr(cfg, "stage_actor_adv_ess_halve", 0.20) or 0.0), 0.0)
-        top10_skip = max(float(getattr(cfg, "stage_actor_adv_top10_skip", 0.50) or 0.0), 0.0)
-        top10_halve = max(float(getattr(cfg, "stage_actor_adv_top10_halve", 0.30) or 0.0), 0.0)
-        if adv_health["raw_std"] < raw_std_skip:
-            gate_action, gate_reason, gate_reason_code = "skip", "raw_std", 1
-        elif adv_health["norm_std"] < norm_std_skip:
-            gate_action, gate_reason, gate_reason_code = "skip", "norm_std", 2
-        elif ess_skip > 0.0 and adv_health["ess_frac"] < ess_skip:
-            gate_action, gate_reason, gate_reason_code = "skip", "ess_frac", 3
-        elif top10_skip > 0.0 and adv_health["top10_share"] > top10_skip:
-            gate_action, gate_reason, gate_reason_code = "skip", "top10_share", 4
-        elif ess_halve > 0.0 and adv_health["ess_frac"] < ess_halve:
-            gate_action, gate_reason, gate_reason_code = "halve_lr", "ess_frac", 5
-            gate_lr_scale = 0.5
-        elif top10_halve > 0.0 and adv_health["top10_share"] > top10_halve:
-            gate_action, gate_reason, gate_reason_code = "halve_lr", "top10_share", 6
-            gate_lr_scale = 0.5
+    raw_adv: torch.Tensor | None = None
+    if stage_raw_advantages is not None:
+        raw_adv = stage_raw_advantages.detach().to(device=device, dtype=torch.float32).reshape(-1)
+        if int(raw_adv.numel()) != sample_count:
+            raise RuntimeError(
+                f"raw advantage length {int(raw_adv.numel())} != {stage_name} stage samples {sample_count}."
+            )
     entropy_coef = float(learner.entropy_coef_by_stage[stage_id_i])
     outer_minibatches = _env_group_minibatch_indices(
         stage_batch,
@@ -2236,118 +1999,6 @@ def _stage_actor_update_full_stage(
     )
     if not outer_minibatches:
         raise RuntimeError(f"{stage_name} actor has no optimizer minibatches.")
-
-    original_lr = _optimizer_lr(optimizer)
-    if gate_action == "skip":
-        return {
-            "actor_samples": float(sample_count),
-            "actor_epochs": float(epochs),
-            "actor_epochs_completed": 0.0,
-            "actor_early_stop": 0.0,
-            "actor_early_stop_epoch": -1.0,
-            "actor_early_stop_reason_code": 0.0,
-            "actor_kl_stop_threshold": 0.0,
-            "actor_clip_stop_threshold": 0.0,
-            "actor_minibatches": float(minibatches),
-            "actor_outer_minibatches": float(len(outer_minibatches)),
-            f"policy_loss_{stage_name}": 0.0,
-            f"entropy_{stage_name}": 0.0,
-            f"actor_loss_{stage_name}": 0.0,
-            f"grad_norm_{stage_name}": 0.0,
-            f"approx_kl_{stage_name}": 0.0,
-            f"clip_frac_{stage_name}": 0.0,
-            "old_logprob_mean": float(old_logprob.mean().detach().cpu().item()),
-            "old_logprob_parity_abs_mean": float(parity_abs_mean),
-            "old_logprob_parity_abs_max": float(parity_abs_max),
-            "old_logprob_parity_bad_frac": float(parity_bad_frac),
-            "adv_mean": float(adv.mean().detach().cpu().item()) if int(adv.numel()) else 0.0,
-            "adv_std": float(adv.std(unbiased=False).detach().cpu().item()) if int(adv.numel()) > 1 else 0.0,
-            "actor_old_logprob_sec": float(old_logprob_sec),
-            "actor_update_loop_sec": 0.0,
-            "actor_compile_enabled": 0.0,
-            "actor_chunk_size": 0.0,
-            "danger_imitation_loss": 0.0,
-            "danger_imitation_active_rate": 0.0,
-            "actor_credit_gate_enabled": float(1.0 if credit_gate_enabled else 0.0),
-            "actor_credit_gate_action_code": 1.0,
-            "actor_credit_gate_skip": 1.0,
-            "actor_credit_gate_halve_lr": 0.0,
-            "actor_credit_gate_rollback": 0.0,
-            "actor_credit_gate_reason_code": float(gate_reason_code),
-            "actor_credit_gate_lr_scale": 1.0,
-            "actor_adv_raw_std": float(adv_health["raw_std"]),
-            "actor_adv_norm_std": float(adv_health["norm_std"]),
-            "actor_adv_ess_frac": float(adv_health["ess_frac"]),
-            "actor_adv_top10_share": float(adv_health["top10_share"]),
-            "actor_response_credit_mean": 0.0,
-            "actor_response_credit_t": 0.0,
-            "actor_response_weighted_sign_agree": 0.0,
-            "actor_response_mean_abs_delta_logp": 0.0,
-            "actor_response_weak": 0.0,
-            f"actor_lr_used_{stage_name}": float(original_lr),
-            f"actor_lr_next_{stage_name}": float(original_lr),
-            **{
-                str(k): float(v)
-                for k, v in _stage_importance_default_metrics(cfg, sample_count=sample_count).items()
-            },
-        }
-
-    importance_plan = _build_stage_importance_sampling_plan(
-        learner,
-        stage_id=stage_id_i,
-        stage_batch=stage_batch,
-        all_actions=all_actions,
-        all_latent_actions=all_latent_actions,
-        advantage=adv,
-        num_agents=num_agents,
-        sample_count=sample_count,
-    )
-    importance_enabled = bool(importance_plan.get("enabled", False))
-    importance_metrics = dict(importance_plan.get("metrics", {}))
-    importance_q = importance_plan.get("q", None)
-    importance_priority = importance_plan.get("priority", None)
-    importance_sample_size = int(importance_plan.get("sample_size", sample_count))
-    importance_weight_clip_min = max(float(importance_metrics.get("actor_is_weight_clip_min", 0.25)), 0.0)
-    importance_weight_clip_max = max(
-        float(importance_metrics.get("actor_is_weight_clip_max", 4.0)),
-        max(float(importance_weight_clip_min), 1.0e-12),
-    )
-    importance_sampled_priority_chunks: list[torch.Tensor] = []
-    importance_sampled_weight_chunks: list[torch.Tensor] = []
-
-    def _epoch_actor_minibatches() -> list[tuple[torch.Tensor, torch.Tensor]]:
-        if not importance_enabled:
-            return [
-                (idx, torch.ones((int(idx.numel()),), dtype=torch.float32, device=device))
-                for idx in outer_minibatches
-                if int(idx.numel()) > 0
-            ]
-        if importance_q is None:
-            raise RuntimeError("importance sampling enabled but q is missing.")
-        q = importance_q.to(device=device, dtype=torch.float32).reshape(-1)
-        if int(q.numel()) != sample_count:
-            raise RuntimeError(f"{stage_name} importance q length {int(q.numel())} != sample_count {sample_count}.")
-        sampled_idx = torch.multinomial(q, num_samples=max(int(importance_sample_size), 1), replacement=True)
-        sampled_q = q.index_select(0, sampled_idx).clamp_min(1.0e-12)
-        sampled_weight = 1.0 / (float(max(sample_count, 1)) * sampled_q)
-        sampled_weight = sampled_weight / sampled_weight.mean().clamp_min(1.0e-12)
-        sampled_weight = sampled_weight.clamp(min=float(importance_weight_clip_min), max=float(importance_weight_clip_max))
-        if importance_priority is not None:
-            priority_device = importance_priority.to(device=device, dtype=torch.float32).reshape(-1)
-            importance_sampled_priority_chunks.append(priority_device.index_select(0, sampled_idx).detach())
-        importance_sampled_weight_chunks.append(sampled_weight.detach())
-        mb_count = max(int(minibatches), 1)
-        mb_size = max(1, int(math.ceil(float(sampled_idx.numel()) / float(mb_count))))
-        out: list[tuple[torch.Tensor, torch.Tensor]] = []
-        for start in range(0, int(sampled_idx.numel()), mb_size):
-            end = min(int(start) + int(mb_size), int(sampled_idx.numel()))
-            out.append((sampled_idx[start:end], sampled_weight[start:end]))
-        return out
-
-    actor_snapshot = _actor_param_snapshot(params) if response_gate_enabled else []
-    optimizer_snapshot = copy.deepcopy(optimizer.state_dict()) if response_gate_enabled else None
-    if gate_lr_scale != 1.0:
-        _set_optimizer_lr(optimizer, original_lr * gate_lr_scale)
 
     last_policy_loss = 0.0
     last_entropy = 0.0
@@ -2414,24 +2065,48 @@ def _stage_actor_update_full_stage(
             danger_enabled=danger_enabled,
         )
         actor_loss_compile_enabled = False
+
+    def _grad_norm_for_named_prefix(prefix: str) -> float:
+        total_sq = 0.0
+        matched = False
+        for name, param in learner.actor.named_parameters():
+            if not str(name).startswith(str(prefix)):
+                continue
+            grad = param.grad
+            if grad is None:
+                continue
+            matched = True
+            norm_v = float(grad.detach().to(dtype=torch.float32).norm(2).detach().cpu().item())
+            total_sq += norm_v * norm_v
+        return math.sqrt(total_sq) if matched else 0.0
+
+    def _series_stats(prefix: str, values: list[float]) -> dict[str, float]:
+        if not values:
+            return {f"{prefix}_mean": 0.0, f"{prefix}_max": 0.0}
+        arr = np.asarray(values, dtype=np.float64)
+        return {f"{prefix}_mean": float(np.mean(arr)), f"{prefix}_max": float(np.max(arr))}
+
+    grad_norm_values: list[float] = []
+    grad_clip_count = 0
+    grad_step_count = 0
+    bw_grad_group_values: dict[str, list[float]] = {
+        "bw_grad_norm_policy": [],
+        "bw_grad_norm_score_head": [],
+        "bw_grad_norm_tau_head": [],
+        "bw_grad_norm_kappa_head": [],
+    }
+    max_grad_norm_eff = float(learner.max_grad_norm)
+
     for _epoch in range(max(int(epochs), 1)):
         epoch_t0 = time.perf_counter()
-        epoch_weight_total = 0.0
+        epoch_sample_total = 0
         epoch_kl_weighted = 0.0
         epoch_clip_weighted = 0.0
-        epoch_minibatches = _epoch_actor_minibatches()
-        for group_idx in _shuffled_group_order(len(epoch_minibatches)):
-            idx_full, weight_full = epoch_minibatches[int(group_idx)]
+        for group_idx in _shuffled_group_order(len(outer_minibatches)):
+            idx_full = outer_minibatches[int(group_idx)]
             mb_total = int(idx_full.numel())
             if mb_total <= 0:
                 continue
-            weight_full = weight_full.to(device=device, dtype=torch.float32).reshape(-1)
-            if int(weight_full.numel()) != mb_total:
-                raise RuntimeError(
-                    f"{stage_name} actor row weight length {int(weight_full.numel())} != minibatch rows {mb_total}."
-                )
-            mb_weight_total_t = weight_full.sum().clamp_min(1.0e-12)
-            mb_weight_total = float(mb_weight_total_t.detach().cpu().item())
             optimizer.zero_grad(set_to_none=True)
             chunk_size = 2048
             policy_sum_t = torch.zeros((), dtype=torch.float32, device=device)
@@ -2443,12 +2118,10 @@ def _stage_actor_update_full_stage(
             chunk_size = actor_chunk_preferred
             for chunk_start in range(0, mb_total, chunk_size):
                 idx = idx_full[int(chunk_start) : int(chunk_start) + int(chunk_size)]
-                row_weight_real = weight_full[int(chunk_start) : int(chunk_start) + int(chunk_size)]
                 real_count = int(idx.numel())
                 if real_count <= 0:
                     continue
-                chunk_weight_t = row_weight_real.sum() / mb_weight_total_t
-                weight = float(chunk_weight_t.detach().cpu().item())
+                weight = float(real_count) / float(max(mb_total, 1))
                 pad_count = int(chunk_size) - int(real_count)
                 forward_idx = idx
                 if bool(actor_loss_compile_enabled) and pad_count > 0 and real_count > 0:
@@ -2462,14 +2135,12 @@ def _stage_actor_update_full_stage(
                 danger_targets_i = danger_targets_all.index_select(0, forward_idx)
                 danger_masks_i = danger_masks_all.index_select(0, forward_idx)
                 valid_i = torch.ones((real_count,), dtype=torch.float32, device=device)
-                row_weight_i = row_weight_real.to(device=device, dtype=torch.float32)
                 if bool(actor_loss_compile_enabled) and pad_count > 0 and real_count > 0:
                     adv_i = adv_i.clone()
                     adv_i[real_count:] = 0.0
                     danger_masks_i = danger_masks_i.clone()
                     danger_masks_i[real_count:] = 0.0
                     valid_i = torch.cat([valid_i, valid_i.new_zeros((pad_count,))], dim=0)
-                    row_weight_i = torch.cat([row_weight_i, row_weight_i.new_zeros((pad_count,))], dim=0)
                 loss, policy_loss, entropy_mean, approx_kl, clip_frac, danger_loss, danger_active = loss_chunk_fn(
                     local_i,
                     action_i,
@@ -2479,7 +2150,6 @@ def _stage_actor_update_full_stage(
                     danger_targets_i,
                     danger_masks_i,
                     valid_i,
-                    row_weight_i,
                 )
                 (loss * float(weight)).backward()
                 with torch.no_grad():
@@ -2490,8 +2160,12 @@ def _stage_actor_update_full_stage(
                     clip_sum_t = clip_sum_t + clip_frac.detach().to(dtype=torch.float32) * w
                     danger_loss_sum_t = danger_loss_sum_t + danger_loss.detach().to(dtype=torch.float32) * w
                     danger_active_sum_t = danger_active_sum_t + danger_active.detach().to(dtype=torch.float32) * w
+            if stage_id_i == 2:
+                bw_grad_group_values["bw_grad_norm_policy"].append(_grad_norm_for_named_prefix("bw_policy"))
+                bw_grad_group_values["bw_grad_norm_score_head"].append(_grad_norm_for_named_prefix("bw_policy.score_head"))
+                bw_grad_group_values["bw_grad_norm_tau_head"].append(_grad_norm_for_named_prefix("bw_policy.tau_head"))
+                bw_grad_group_values["bw_grad_norm_kappa_head"].append(_grad_norm_for_named_prefix("bw_policy.kappa_head"))
             grad_norm = torch.nn.utils.clip_grad_norm_(params, float(learner.max_grad_norm))
-            _assert_finite_tensor("actor_grad_norm", torch.as_tensor(grad_norm, device=device), stage_name=stage_name)
             optimizer.step()
             with torch.no_grad():
                 policy_sum = float(policy_sum_t.detach().cpu().item())
@@ -2508,18 +2182,22 @@ def _stage_actor_update_full_stage(
                     + float(getattr(learner, "danger_imitation_coef", 0.0)) * danger_loss_sum
                 )
                 last_grad_norm = float(torch.as_tensor(grad_norm).detach().cpu().item())
+                grad_step_count += 1
+                grad_norm_values.append(float(last_grad_norm))
+                if max_grad_norm_eff > 0.0 and float(last_grad_norm) > max_grad_norm_eff:
+                    grad_clip_count += 1
                 last_kl = float(kl_sum_t.detach().cpu().item())
                 last_clip_frac = float(clip_sum_t.detach().cpu().item())
-                epoch_weight_total += float(mb_weight_total)
-                epoch_kl_weighted += float(last_kl) * float(mb_weight_total)
-                epoch_clip_weighted += float(last_clip_frac) * float(mb_weight_total)
+                epoch_sample_total += int(mb_total)
+                epoch_kl_weighted += float(last_kl) * float(mb_total)
+                epoch_clip_weighted += float(last_clip_frac) * float(mb_total)
         if device.type == "cuda":
             torch.cuda.synchronize(device)
         update_loop_sec += time.perf_counter() - epoch_t0
         epochs_completed += 1
-        if epoch_weight_total > 0.0:
-            last_kl = float(epoch_kl_weighted / float(epoch_weight_total))
-            last_clip_frac = float(epoch_clip_weighted / float(epoch_weight_total))
+        if epoch_sample_total > 0:
+            last_kl = float(epoch_kl_weighted / float(epoch_sample_total))
+            last_clip_frac = float(epoch_clip_weighted / float(epoch_sample_total))
         if kl_stop_threshold_eff > 0.0 and last_kl > kl_stop_threshold_eff:
             early_stop_triggered = True
             early_stop_epoch = int(_epoch + 1)
@@ -2531,102 +2209,296 @@ def _stage_actor_update_full_stage(
             early_stop_reason = "clip"
             break
 
-    response_metrics = {
-        "credit_mean": 0.0,
-        "credit_mean_sample": 0.0,
-        "credit_std_env": 0.0,
-        "credit_t": 0.0,
-        "credit_env_count": 0.0,
-        "weighted_sign_agree": 0.0,
-        "mean_abs_delta_logp": 0.0,
-    }
-    response_weak = 0.0
-    response_rollback = False
-    if response_gate_enabled:
-        after_t0 = time.perf_counter()
-        after_logprob = _compute_all_logprob()
-        _assert_finite_tensor("after_logprob", after_logprob, stage_name=stage_name)
-        if device.type == "cuda":
-            torch.cuda.synchronize(device)
-        after_logprob_sec = time.perf_counter() - after_t0
-        response_metrics = _credit_response_metrics(
-            advantage=adv,
-            logprob_before=old_logprob,
-            logprob_after=after_logprob,
-            env_indices=getattr(stage_batch, "env_indices", None),
-        )
-        rollback_t = float(getattr(cfg, "stage_actor_response_rollback_t", -2.0) or -2.0)
-        weak_t = float(getattr(cfg, "stage_actor_response_weak_t", 1.0) or 1.0)
-        if (
-            float(response_metrics["credit_t"]) < rollback_t
-            and float(response_metrics["credit_mean"]) < 0.0
-        ):
-            response_rollback = True
-            gate_action = "rollback"
-            gate_reason = "credit_t"
-            gate_reason_code = 7
-            _restore_actor_param_snapshot(params, actor_snapshot)
-            if optimizer_snapshot is not None:
-                optimizer.load_state_dict(optimizer_snapshot)
-            rollback_factor = max(float(getattr(cfg, "stage_actor_response_rollback_lr_factor", 0.5) or 0.5), 0.0)
-            min_lr = _stage_lr_min_from_cfg(cfg, stage_name, default=0.0)
-            _set_optimizer_lr(optimizer, max(original_lr * rollback_factor, min_lr))
-        elif float(response_metrics["credit_t"]) < weak_t:
-            response_weak = 1.0
-    else:
-        after_logprob_sec = 0.0
+    credit_diag_t0 = time.perf_counter()
+    post_logprob, bw_shape_post_stats = _eval_stage_logprob_all(
+        bw_shape_prefix="bw_shape_post" if stage_id_i == 2 else None
+    )
+    if device.type == "cuda":
+        torch.cuda.synchronize(device)
+    credit_diag_sec = time.perf_counter() - credit_diag_t0
+    bw_shape_delta_stats = _bw_shape_delta_stats(bw_shape_pre_stats, bw_shape_post_stats)
 
-    if not response_rollback:
-        _set_optimizer_lr(optimizer, original_lr)
+    def _masked_scalar_mean(values: torch.Tensor, mask: torch.Tensor) -> float:
+        mask_b = mask.detach().to(device=values.device, dtype=torch.bool).reshape(-1)
+        values_f = values.detach().to(dtype=torch.float32).reshape(-1)
+        if int(mask_b.sum().detach().cpu().item()) <= 0:
+            return 0.0
+        return float(values_f[mask_b].mean().detach().cpu().item())
 
-    action_code = {"keep": 0, "skip": 1, "halve_lr": 2, "rollback": 3}.get(gate_action, 0)
-    if importance_sampled_weight_chunks:
-        sampled_weight_all = torch.cat([x.reshape(-1).to(device=device, dtype=torch.float32) for x in importance_sampled_weight_chunks])
-        weight_sum = sampled_weight_all.sum().clamp_min(1.0e-12)
-        ess_frac = float(
-            ((weight_sum * weight_sum) / (sampled_weight_all.square().sum().clamp_min(1.0e-12) * float(sampled_weight_all.numel())))
+    def _masked_scalar_sum_abs(values: torch.Tensor, mask: torch.Tensor) -> float:
+        mask_b = mask.detach().to(device=values.device, dtype=torch.bool).reshape(-1)
+        values_f = values.detach().to(dtype=torch.float32).reshape(-1)
+        if int(mask_b.sum().detach().cpu().item()) <= 0:
+            return 0.0
+        return float(values_f[mask_b].abs().sum().detach().cpu().item())
+
+    def _masked_scalar_frac(mask: torch.Tensor, denom_mask: torch.Tensor) -> float:
+        denom_b = denom_mask.detach().to(dtype=torch.bool).reshape(-1)
+        denom_count = int(denom_b.sum().detach().cpu().item())
+        if denom_count <= 0:
+            return 0.0
+        mask_b = mask.detach().to(dtype=torch.bool).reshape(-1)
+        return float((mask_b & denom_b).to(dtype=torch.float32).sum().detach().cpu().item() / float(denom_count))
+
+    def _masked_scalar_stats(prefix: str, values: torch.Tensor, mask: torch.Tensor) -> dict[str, float]:
+        mask_b = mask.detach().to(device=values.device, dtype=torch.bool).reshape(-1)
+        values_f = values.detach().to(dtype=torch.float32).reshape(-1)
+        if int(mask_b.sum().detach().cpu().item()) <= 0:
+            return {
+                f"{prefix}_mean": 0.0,
+                f"{prefix}_p05": 0.0,
+                f"{prefix}_p10": 0.0,
+                f"{prefix}_p25": 0.0,
+                f"{prefix}_p50": 0.0,
+                f"{prefix}_p75": 0.0,
+                f"{prefix}_p90": 0.0,
+                f"{prefix}_p95": 0.0,
+            }
+        selected = values_f[mask_b]
+        quantiles = torch.tensor([0.05, 0.10, 0.25, 0.50, 0.75, 0.90, 0.95], device=selected.device)
+        qs = torch.quantile(selected, quantiles).detach().cpu()
+        return {
+            f"{prefix}_mean": float(selected.mean().detach().cpu().item()),
+            f"{prefix}_p05": float(qs[0].item()),
+            f"{prefix}_p10": float(qs[1].item()),
+            f"{prefix}_p25": float(qs[2].item()),
+            f"{prefix}_p50": float(qs[3].item()),
+            f"{prefix}_p75": float(qs[4].item()),
+            f"{prefix}_p90": float(qs[5].item()),
+            f"{prefix}_p95": float(qs[6].item()),
+        }
+
+    with torch.no_grad():
+        delta_logprob = (post_logprob - old_logprob).detach().to(dtype=torch.float32).reshape(-1)
+        ratio_full = torch.exp(torch.clamp(delta_logprob, min=-20.0, max=20.0))
+        credit = (adv.detach().to(dtype=torch.float32).reshape(-1) * delta_logprob).detach()
+        adv_pos = adv > 0.0
+        adv_neg = adv < 0.0
+        adv_nonzero = adv.abs() > 1.0e-8
+        direction_agree = ((adv_pos & (delta_logprob > 0.0)) | (adv_neg & (delta_logprob < 0.0))) & adv_nonzero
+        direction_wrong = ((adv_pos & (delta_logprob < 0.0)) | (adv_neg & (delta_logprob > 0.0))) & adv_nonzero
+        nonzero_count = int(adv_nonzero.sum().detach().cpu().item())
+        nonzero_denom = float(max(nonzero_count, 1))
+        credit_stats = _summ_tensor(credit)
+        delta_stats = _summ_tensor(delta_logprob)
+        ratio_stats = _summ_tensor(ratio_full)
+        full_clip_frac = float(
+            (torch.abs(ratio_full - 1.0) > float(learner.clip_ratio))
+            .to(dtype=torch.float32)
+            .mean()
             .detach()
             .cpu()
             .item()
         )
-        importance_metrics.update(
-            {
-                "actor_is_sampled_rows_total": float(sampled_weight_all.numel()),
-                "actor_is_weight_mean": float(sampled_weight_all.mean().detach().cpu().item()),
-                "actor_is_weight_p95": _tensor_quantile(sampled_weight_all, 0.95),
-                "actor_is_weight_min": float(sampled_weight_all.min().detach().cpu().item()),
-                "actor_is_weight_max": float(sampled_weight_all.max().detach().cpu().item()),
-                "actor_is_ess_frac": ess_frac,
-            }
+        credit_positive_frac = float((credit > 0.0).to(dtype=torch.float32).mean().detach().cpu().item())
+        direction_agree_frac = float(direction_agree.to(dtype=torch.float32).sum().detach().cpu().item() / nonzero_denom)
+        direction_wrong_frac = float(direction_wrong.to(dtype=torch.float32).sum().detach().cpu().item() / nonzero_denom)
+        adv_pos_frac = float(adv_pos.to(dtype=torch.float32).mean().detach().cpu().item())
+        adv_neg_frac = float(adv_neg.to(dtype=torch.float32).mean().detach().cpu().item())
+        pos_count = int(adv_pos.sum().detach().cpu().item())
+        neg_count = int(adv_neg.sum().detach().cpu().item())
+        pos_delta_positive_frac = (
+            float(((delta_logprob > 0.0) & adv_pos).to(dtype=torch.float32).sum().detach().cpu().item() / float(pos_count))
+            if pos_count > 0
+            else 0.0
         )
-    else:
-        importance_metrics.update(
-            {
-                "actor_is_sampled_rows_total": 0.0,
-                "actor_is_weight_mean": 0.0,
-                "actor_is_weight_p95": 0.0,
-                "actor_is_weight_min": 0.0,
-                "actor_is_weight_max": 0.0,
-                "actor_is_ess_frac": 0.0,
-            }
+        neg_delta_negative_frac = (
+            float(((delta_logprob < 0.0) & adv_neg).to(dtype=torch.float32).sum().detach().cpu().item() / float(neg_count))
+            if neg_count > 0
+            else 0.0
         )
-    if importance_sampled_priority_chunks:
-        sampled_priority_all = torch.cat([x.reshape(-1).to(device=device, dtype=torch.float32) for x in importance_sampled_priority_chunks])
-        importance_metrics.update(
-            {
-                "actor_is_sampled_priority_mean": float(sampled_priority_all.mean().detach().cpu().item()),
-                "actor_is_sampled_priority_p95": _tensor_quantile(sampled_priority_all, 0.95),
-                "actor_is_sampled_priority_max": float(sampled_priority_all.max().detach().cpu().item()),
+        pos_up = adv_pos & (delta_logprob > 0.0)
+        pos_down = adv_pos & (delta_logprob < 0.0)
+        neg_down = adv_neg & (delta_logprob < 0.0)
+        neg_up = adv_neg & (delta_logprob > 0.0)
+        correct_delta_abs_sum = _masked_scalar_sum_abs(delta_logprob, direction_agree)
+        wrong_delta_abs_sum = _masked_scalar_sum_abs(delta_logprob, direction_wrong)
+        pos_up_abs_sum = _masked_scalar_sum_abs(delta_logprob, pos_up)
+        pos_down_abs_sum = _masked_scalar_sum_abs(delta_logprob, pos_down)
+        neg_down_abs_sum = _masked_scalar_sum_abs(delta_logprob, neg_down)
+        neg_up_abs_sum = _masked_scalar_sum_abs(delta_logprob, neg_up)
+        credit_positive_abs_sum = _masked_scalar_sum_abs(credit, credit > 0.0)
+        credit_negative_abs_sum = _masked_scalar_sum_abs(credit, credit < 0.0)
+        adv_pos_abs_sum = _masked_scalar_sum_abs(adv, adv_pos)
+        adv_neg_abs_sum = _masked_scalar_sum_abs(adv, adv_neg)
+        ratio_upper_clip = ratio_full > (1.0 + float(learner.clip_ratio))
+        ratio_lower_clip = ratio_full < (1.0 - float(learner.clip_ratio))
+        pos_active = adv_pos & (~ratio_upper_clip)
+        neg_active = adv_neg & (~ratio_lower_clip)
+        pos_active_abs_sum = _masked_scalar_sum_abs(adv, pos_active)
+        neg_active_abs_sum = _masked_scalar_sum_abs(adv, neg_active)
+        all_mask = torch.ones_like(adv_pos, dtype=torch.bool)
+        delta_magnitude_diag: dict[str, float] = {
+            **_masked_scalar_stats("delta_logprob", delta_logprob, all_mask),
+            **_masked_scalar_stats("delta_logprob_abs", delta_logprob.abs(), all_mask),
+            **_masked_scalar_stats("delta_logprob_when_adv_positive", delta_logprob, adv_pos),
+            **_masked_scalar_stats("delta_logprob_when_adv_negative", delta_logprob, adv_neg),
+            **_masked_scalar_stats("credit", credit, all_mask),
+            **_masked_scalar_stats("credit_when_adv_positive", credit, adv_pos),
+            **_masked_scalar_stats("credit_when_adv_negative", credit, adv_neg),
+            "delta_logprob_abs_gt_0p02_frac": _masked_scalar_frac(delta_logprob.abs() > 0.02, all_mask),
+            "delta_logprob_abs_gt_0p05_frac": _masked_scalar_frac(delta_logprob.abs() > 0.05, all_mask),
+            "delta_logprob_abs_gt_0p10_frac": _masked_scalar_frac(delta_logprob.abs() > 0.10, all_mask),
+            "delta_logprob_abs_gt_0p20_frac": _masked_scalar_frac(delta_logprob.abs() > 0.20, all_mask),
+            "delta_logprob_abs_gt_0p05_when_adv_positive_frac": _masked_scalar_frac(
+                delta_logprob.abs() > 0.05, adv_pos
+            ),
+            "delta_logprob_abs_gt_0p05_when_adv_negative_frac": _masked_scalar_frac(
+                delta_logprob.abs() > 0.05, adv_neg
+            ),
+            "delta_logprob_direction_correct_abs_sum": float(correct_delta_abs_sum),
+            "delta_logprob_direction_wrong_abs_sum": float(wrong_delta_abs_sum),
+            "delta_logprob_direction_correct_abs_share": float(
+                correct_delta_abs_sum / max(correct_delta_abs_sum + wrong_delta_abs_sum, 1.0e-12)
+            ),
+            "delta_logprob_adv_positive_up_abs_sum": float(pos_up_abs_sum),
+            "delta_logprob_adv_positive_down_abs_sum": float(pos_down_abs_sum),
+            "delta_logprob_adv_positive_up_abs_share": float(
+                pos_up_abs_sum / max(pos_up_abs_sum + pos_down_abs_sum, 1.0e-12)
+            ),
+            "delta_logprob_adv_negative_down_abs_sum": float(neg_down_abs_sum),
+            "delta_logprob_adv_negative_up_abs_sum": float(neg_up_abs_sum),
+            "delta_logprob_adv_negative_down_abs_share": float(
+                neg_down_abs_sum / max(neg_down_abs_sum + neg_up_abs_sum, 1.0e-12)
+            ),
+            "credit_positive_abs_sum": float(credit_positive_abs_sum),
+            "credit_negative_abs_sum": float(credit_negative_abs_sum),
+            "credit_positive_abs_share": float(
+                credit_positive_abs_sum / max(credit_positive_abs_sum + credit_negative_abs_sum, 1.0e-12)
+            ),
+            "adv_positive_abs_mass": float(adv_pos_abs_sum),
+            "adv_negative_abs_mass": float(adv_neg_abs_sum),
+            "adv_positive_abs_mass_share": float(adv_pos_abs_sum / max(adv_pos_abs_sum + adv_neg_abs_sum, 1.0e-12)),
+            "adv_negative_abs_mass_share": float(adv_neg_abs_sum / max(adv_pos_abs_sum + adv_neg_abs_sum, 1.0e-12)),
+            "adv_positive_upper_clip_frac": _masked_scalar_frac(ratio_upper_clip, adv_pos),
+            "adv_negative_lower_clip_frac": _masked_scalar_frac(ratio_lower_clip, adv_neg),
+            "adv_positive_active_abs_mass": float(pos_active_abs_sum),
+            "adv_negative_active_abs_mass": float(neg_active_abs_sum),
+            "adv_positive_active_abs_mass_share": float(
+                pos_active_abs_sum / max(pos_active_abs_sum + neg_active_abs_sum, 1.0e-12)
+            ),
+            "adv_negative_active_abs_mass_share": float(
+                neg_active_abs_sum / max(pos_active_abs_sum + neg_active_abs_sum, 1.0e-12)
+            ),
+        }
+        raw_adv_diag: dict[str, float] = {"raw_adv_available": 0.0}
+        if raw_adv is not None:
+            raw_adv_t = raw_adv.detach().to(dtype=torch.float32).reshape(-1)
+            raw_pos = raw_adv_t > 0.0
+            raw_neg = raw_adv_t < 0.0
+            raw_nonzero = raw_adv_t.abs() > 1.0e-8
+            raw_credit = (raw_adv_t * delta_logprob).detach()
+            raw_direction_agree = (
+                ((raw_pos & (delta_logprob > 0.0)) | (raw_neg & (delta_logprob < 0.0))) & raw_nonzero
+            )
+            raw_direction_wrong = (
+                ((raw_pos & (delta_logprob < 0.0)) | (raw_neg & (delta_logprob > 0.0))) & raw_nonzero
+            )
+            norm_raw_nonzero = adv_nonzero & raw_nonzero
+            norm_raw_agree = ((adv_pos & raw_pos) | (adv_neg & raw_neg)) & norm_raw_nonzero
+            norm_raw_disagree = ((adv_pos & raw_neg) | (adv_neg & raw_pos)) & norm_raw_nonzero
+            raw_credit_stats = _summ_tensor(raw_credit)
+            raw_pos_up = raw_pos & (delta_logprob > 0.0)
+            raw_pos_down = raw_pos & (delta_logprob < 0.0)
+            raw_neg_down = raw_neg & (delta_logprob < 0.0)
+            raw_neg_up = raw_neg & (delta_logprob > 0.0)
+            raw_pos_up_abs_sum = _masked_scalar_sum_abs(delta_logprob, raw_pos_up)
+            raw_pos_down_abs_sum = _masked_scalar_sum_abs(delta_logprob, raw_pos_down)
+            raw_neg_down_abs_sum = _masked_scalar_sum_abs(delta_logprob, raw_neg_down)
+            raw_neg_up_abs_sum = _masked_scalar_sum_abs(delta_logprob, raw_neg_up)
+            raw_credit_positive_abs_sum = _masked_scalar_sum_abs(raw_credit, raw_credit > 0.0)
+            raw_credit_negative_abs_sum = _masked_scalar_sum_abs(raw_credit, raw_credit < 0.0)
+
+            def _frac_mask(mask: torch.Tensor, denom_mask: torch.Tensor) -> float:
+                denom_count = int(denom_mask.to(dtype=torch.bool).sum().detach().cpu().item())
+                if denom_count <= 0:
+                    return 0.0
+                return float((mask & denom_mask).to(dtype=torch.float32).sum().detach().cpu().item() / float(denom_count))
+
+            raw_pos_count = int(raw_pos.sum().detach().cpu().item())
+            raw_neg_count = int(raw_neg.sum().detach().cpu().item())
+            raw_nonzero_count = int(raw_nonzero.sum().detach().cpu().item())
+            norm_raw_count = int(norm_raw_nonzero.sum().detach().cpu().item())
+            raw_adv_diag = {
+                "raw_adv_available": 1.0,
+                "raw_adv_positive_frac": float(raw_pos.to(dtype=torch.float32).mean().detach().cpu().item()),
+                "raw_adv_negative_frac": float(raw_neg.to(dtype=torch.float32).mean().detach().cpu().item()),
+                "norm_raw_adv_sign_agree_frac": float(
+                    norm_raw_agree.to(dtype=torch.float32).sum().detach().cpu().item() / float(max(norm_raw_count, 1))
+                ),
+                "norm_raw_adv_sign_disagree_frac": float(
+                    norm_raw_disagree.to(dtype=torch.float32).sum().detach().cpu().item() / float(max(norm_raw_count, 1))
+                ),
+                "norm_adv_positive_raw_adv_negative_within_norm_positive_frac": _frac_mask(raw_neg, adv_pos),
+                "norm_adv_negative_raw_adv_positive_within_norm_negative_frac": _frac_mask(raw_pos, adv_neg),
+                "raw_adv_positive_delta_positive_frac": (
+                    float(((delta_logprob > 0.0) & raw_pos).to(dtype=torch.float32).sum().detach().cpu().item() / float(raw_pos_count))
+                    if raw_pos_count > 0
+                    else 0.0
+                ),
+                "raw_adv_positive_delta_negative_frac": (
+                    float(((delta_logprob < 0.0) & raw_pos).to(dtype=torch.float32).sum().detach().cpu().item() / float(raw_pos_count))
+                    if raw_pos_count > 0
+                    else 0.0
+                ),
+                "raw_adv_negative_delta_negative_frac": (
+                    float(((delta_logprob < 0.0) & raw_neg).to(dtype=torch.float32).sum().detach().cpu().item() / float(raw_neg_count))
+                    if raw_neg_count > 0
+                    else 0.0
+                ),
+                "raw_adv_negative_delta_positive_frac": (
+                    float(((delta_logprob > 0.0) & raw_neg).to(dtype=torch.float32).sum().detach().cpu().item() / float(raw_neg_count))
+                    if raw_neg_count > 0
+                    else 0.0
+                ),
+                "delta_logprob_when_raw_adv_positive_mean": _masked_scalar_mean(delta_logprob, raw_pos),
+                "delta_logprob_when_raw_adv_negative_mean": _masked_scalar_mean(delta_logprob, raw_neg),
+                **_masked_scalar_stats("delta_logprob_when_raw_adv_positive", delta_logprob, raw_pos),
+                **_masked_scalar_stats("delta_logprob_when_raw_adv_negative", delta_logprob, raw_neg),
+                "delta_logprob_raw_adv_positive_up_abs_sum": float(raw_pos_up_abs_sum),
+                "delta_logprob_raw_adv_positive_down_abs_sum": float(raw_pos_down_abs_sum),
+                "delta_logprob_raw_adv_positive_up_abs_share": float(
+                    raw_pos_up_abs_sum / max(raw_pos_up_abs_sum + raw_pos_down_abs_sum, 1.0e-12)
+                ),
+                "delta_logprob_raw_adv_negative_down_abs_sum": float(raw_neg_down_abs_sum),
+                "delta_logprob_raw_adv_negative_up_abs_sum": float(raw_neg_up_abs_sum),
+                "delta_logprob_raw_adv_negative_down_abs_share": float(
+                    raw_neg_down_abs_sum / max(raw_neg_down_abs_sum + raw_neg_up_abs_sum, 1.0e-12)
+                ),
+                "raw_credit_mean": float(raw_credit_stats["mean"]),
+                "raw_credit_std": float(raw_credit_stats["std"]),
+                "raw_credit_min": float(raw_credit_stats["min"]),
+                "raw_credit_max": float(raw_credit_stats["max"]),
+                **_masked_scalar_stats("raw_credit_nonzero", raw_credit, raw_nonzero),
+                "raw_credit_positive_frac": float(
+                    (raw_credit > 0.0).to(dtype=torch.float32).mean().detach().cpu().item()
+                ),
+                "raw_credit_positive_abs_sum": float(raw_credit_positive_abs_sum),
+                "raw_credit_negative_abs_sum": float(raw_credit_negative_abs_sum),
+                "raw_credit_positive_abs_share": float(
+                    raw_credit_positive_abs_sum
+                    / max(raw_credit_positive_abs_sum + raw_credit_negative_abs_sum, 1.0e-12)
+                ),
+                "raw_credit_direction_agree_frac": float(
+                    raw_direction_agree.to(dtype=torch.float32).sum().detach().cpu().item() / float(max(raw_nonzero_count, 1))
+                ),
+                "raw_credit_direction_wrong_frac": float(
+                    raw_direction_wrong.to(dtype=torch.float32).sum().detach().cpu().item() / float(max(raw_nonzero_count, 1))
+                ),
+                "raw_credit_when_raw_adv_positive_mean": _masked_scalar_mean(raw_credit, raw_pos),
+                "raw_credit_when_raw_adv_negative_mean": _masked_scalar_mean(raw_credit, raw_neg),
             }
-        )
-    else:
-        importance_metrics.update(
-            {
-                "actor_is_sampled_priority_mean": 0.0,
-                "actor_is_sampled_priority_p95": 0.0,
-                "actor_is_sampled_priority_max": 0.0,
-            }
-        )
+
+    grad_diag: dict[str, float] = {
+        "grad_norm_mean": float(np.mean(np.asarray(grad_norm_values, dtype=np.float64))) if grad_norm_values else 0.0,
+        "grad_norm_max": float(np.max(np.asarray(grad_norm_values, dtype=np.float64))) if grad_norm_values else 0.0,
+        "grad_norm_clip_threshold": float(max_grad_norm_eff),
+        "grad_norm_clip_frac": float(grad_clip_count / max(grad_step_count, 1)),
+    }
+    if stage_id_i == 2:
+        for key, values in bw_grad_group_values.items():
+            grad_diag.update(_series_stats(key, values))
+
     return {
         "actor_samples": float(sample_count),
         "actor_epochs": float(epochs),
@@ -2644,7 +2516,36 @@ def _stage_actor_update_full_stage(
         f"grad_norm_{stage_name}": float(last_grad_norm),
         f"approx_kl_{stage_name}": float(last_kl),
         f"clip_frac_{stage_name}": float(last_clip_frac),
+        "full_update_kl": float((-delta_logprob).mean().detach().cpu().item()),
+        "full_update_clip_frac": float(full_clip_frac),
+        "full_update_ratio_mean": float(ratio_stats["mean"]),
+        "full_update_ratio_std": float(ratio_stats["std"]),
+        "full_update_ratio_min": float(ratio_stats["min"]),
+        "full_update_ratio_max": float(ratio_stats["max"]),
+        "delta_logprob_mean": float(delta_stats["mean"]),
+        "delta_logprob_std": float(delta_stats["std"]),
+        "delta_logprob_min": float(delta_stats["min"]),
+        "delta_logprob_max": float(delta_stats["max"]),
+        "delta_logprob_abs_mean": float(delta_logprob.abs().mean().detach().cpu().item()),
+        "delta_logprob_when_adv_positive_mean": _masked_scalar_mean(delta_logprob, adv_pos),
+        "delta_logprob_when_adv_negative_mean": _masked_scalar_mean(delta_logprob, adv_neg),
+        **delta_magnitude_diag,
+        "credit_mean": float(credit_stats["mean"]),
+        "credit_std": float(credit_stats["std"]),
+        "credit_min": float(credit_stats["min"]),
+        "credit_max": float(credit_stats["max"]),
+        "credit_positive_frac": float(credit_positive_frac),
+        "credit_direction_agree_frac": float(direction_agree_frac),
+        "credit_direction_wrong_frac": float(direction_wrong_frac),
+        "credit_adv_positive_delta_positive_frac": float(pos_delta_positive_frac),
+        "credit_adv_negative_delta_negative_frac": float(neg_delta_negative_frac),
+        "credit_when_adv_positive_mean": _masked_scalar_mean(credit, adv_pos),
+        "credit_when_adv_negative_mean": _masked_scalar_mean(credit, adv_neg),
+        "adv_positive_frac": float(adv_pos_frac),
+        "adv_negative_frac": float(adv_neg_frac),
+        **raw_adv_diag,
         "old_logprob_mean": float(old_logprob.mean().detach().cpu().item()),
+        "post_logprob_mean": float(post_logprob.mean().detach().cpu().item()),
         "old_logprob_parity_abs_mean": float(parity_abs_mean),
         "old_logprob_parity_abs_max": float(parity_abs_max),
         "old_logprob_parity_bad_frac": float(parity_bad_frac),
@@ -2652,31 +2553,15 @@ def _stage_actor_update_full_stage(
         "adv_std": float(adv.std(unbiased=False).detach().cpu().item()),
         "actor_old_logprob_sec": float(old_logprob_sec),
         "actor_update_loop_sec": float(update_loop_sec),
-        "actor_after_logprob_sec": float(after_logprob_sec),
+        "actor_credit_diag_sec": float(credit_diag_sec),
         "actor_compile_enabled": float(1.0 if actor_loss_compile_enabled else 0.0),
         "actor_chunk_size": float(actor_chunk_preferred),
         "danger_imitation_loss": float(last_danger_loss),
         "danger_imitation_active_rate": float(last_danger_active),
-        "actor_credit_gate_enabled": float(1.0 if credit_gate_enabled else 0.0),
-        "actor_credit_gate_action_code": float(action_code),
-        "actor_credit_gate_skip": 0.0,
-        "actor_credit_gate_halve_lr": float(1.0 if gate_lr_scale != 1.0 else 0.0),
-        "actor_credit_gate_rollback": float(1.0 if response_rollback else 0.0),
-        "actor_credit_gate_reason_code": float(gate_reason_code),
-        "actor_credit_gate_lr_scale": float(gate_lr_scale),
-        "actor_adv_raw_std": float(adv_health["raw_std"]),
-        "actor_adv_norm_std": float(adv_health["norm_std"]),
-        "actor_adv_ess_frac": float(adv_health["ess_frac"]),
-        "actor_adv_top10_share": float(adv_health["top10_share"]),
-        "actor_response_credit_mean": float(response_metrics["credit_mean"]),
-        "actor_response_credit_mean_sample": float(response_metrics["credit_mean_sample"]),
-        "actor_response_credit_std_env": float(response_metrics["credit_std_env"]),
-        "actor_response_credit_t": float(response_metrics["credit_t"]),
-        "actor_response_credit_env_count": float(response_metrics["credit_env_count"]),
-        "actor_response_weighted_sign_agree": float(response_metrics["weighted_sign_agree"]),
-        "actor_response_mean_abs_delta_logp": float(response_metrics["mean_abs_delta_logp"]),
-        "actor_response_weak": float(response_weak),
-        **{str(k): float(v) for k, v in importance_metrics.items()},
+        **grad_diag,
+        **bw_shape_pre_stats,
+        **bw_shape_post_stats,
+        **bw_shape_delta_stats,
     }
 
 
@@ -2915,7 +2800,7 @@ def main() -> None:
                 stage_id=stage_id,
                 stage_batch=stage_batch,
                 stage_advantages=stage_adv_norm,
-                stage_advantages_raw=stage_adv,
+                stage_raw_advantages=stage_adv,
                 optimizer=actor_optimizer,
                 epochs=int(actor_epochs),
                 minibatches=int(actor_minibatches),

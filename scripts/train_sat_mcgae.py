@@ -17,17 +17,17 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
-from scripts.audit_stage_critic_only_fit import (
-    _clone_dataclass_tensors,
-    _collect_one_rollout,
-    _eval_critic,
-    _make_learner,
-)
-from scripts.audit_stage_ppo_credit_alignment import _force_single_stage_config, _stage_optimizer_params
-
 from sagin_marl.env.config import load_config
 from sagin_marl.env.native_cuda import bindings as native_cuda
 from sagin_marl.rl.structured_mappo import _index_dataclass
+from sagin_marl.rl.stage_mcgae import (
+    clone_dataclass_tensors as _clone_dataclass_tensors,
+    collect_one_rollout as _collect_one_rollout,
+    eval_critic as _eval_critic,
+    force_single_stage_config as _force_single_stage_config,
+    make_learner as _make_learner,
+    stage_optimizer_params as _stage_optimizer_params,
+)
 from sagin_marl.rl.structured_train import close_structured_env_group, make_structured_driver_group
 from sagin_marl.utils.torch_compile_cache import report_torch_compile_cache
 

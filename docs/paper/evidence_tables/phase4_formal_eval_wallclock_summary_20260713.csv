@@ -1,0 +1,12 @@
+kind,method,checkpoint,rows,episodes_total,wall_clock_sec_sum,wall_clock_min_sum,wall_clock_sec_mean_per_row,status_files
+fixed,cluster_center_queue_aware,fixed,3,192,17.0,0.2833333333333333,5.666666666666667,status_gpu1.csv
+fixed,maxweight_lyapunov,fixed,3,192,17.0,0.2833333333333333,5.666666666666667,status_gpu1.csv
+fixed,observable_cluster_queue_aware,fixed,3,192,17.0,0.2833333333333333,5.666666666666667,status_gpu1.csv
+fixed,queue_aware_bw,fixed,3,192,18.0,0.3,6.0,status_gpu1.csv
+fixed,static_uniform,fixed,3,192,17.0,0.2833333333333333,5.666666666666667,status_gpu1.csv
+learned,GlobalCritic,final,9,576,58.0,0.9666666666666667,6.444444444444445,status_gpu1.csv
+learned,GlobalCritic,selected,9,576,55.0,0.9166666666666666,6.111111111111111,status_gpu1.csv
+learned,MAPPO-like,final,9,576,7357.0,122.61666666666666,817.4444444444445,status_gpu0.csv;status_gpu1.csv
+learned,MAPPO-like,selected,9,576,7515.0,125.25,835.0,status_gpu0.csv;status_gpu1.csv
+learned,RelCritic,final,9,576,58.0,0.9666666666666667,6.444444444444445,status_gpu1.csv
+learned,RelCritic,selected,9,576,58.0,0.9666666666666667,6.444444444444445,status_gpu1.csv

@@ -13,6 +13,8 @@ from sagin_marl.env.structured_driver import StructuredBatchStepResult
 from sagin_marl.env.structured_sync_group import (
     GpuStructuredDriverGroup,
     GpuStructuredEnvGroup,
+    PythonStructuredDriverGroup,
+    PythonStructuredEnvGroup,
 )
 from sagin_marl.rl.structured_buffer import StructuredRolloutBuffer
 
@@ -323,9 +325,27 @@ def _looks_like_structured_driver_group(obj) -> bool:
     return all(hasattr(obj, name) for name in native_required)
 
 
+def _looks_like_structured_driver(obj) -> bool:
+    """Backward-compatible singular name used by legacy diagnostics."""
+    return _looks_like_structured_driver_group(obj)
+
+
+def _looks_like_python_structured_driver_group(obj) -> bool:
+    return bool(getattr(obj, "is_python_structured_driver_group", False))
+
+
+def _looks_like_any_structured_driver_group(obj) -> bool:
+    return _looks_like_structured_driver_group(obj) or _looks_like_python_structured_driver_group(obj)
+
+
 def as_structured_drivers(env_or_envs):
-    if _looks_like_structured_driver_group(env_or_envs):
+    if _looks_like_any_structured_driver_group(env_or_envs):
         return env_or_envs
+    if isinstance(env_or_envs, Sequence) and not isinstance(env_or_envs, (str, bytes, bytearray)):
+        drivers = list(env_or_envs)
+        required = ("begin_step", "run_accel_stage", "run_sat_stage", "execute_stage_bw_and_prepare_next_accel")
+        if drivers and all(all(hasattr(driver, name) for name in required) for driver in drivers):
+            return drivers
     raise RuntimeError(
         "legacy per-env structured driver adaptation has been removed; "
         "pass a native structured batch driver group instead."
@@ -348,6 +368,8 @@ def make_structured_env_group(
     prefer_native = env_backend in {"native", "gpu", "auto"}
     group_cfg = copy.copy(cfg)
     setattr(group_cfg, "_structured_kernel_runtime_cache", {})
+    if env_backend in {"python", "cpu", "mac", "legacy"} or env_tensor_backend == "cpu":
+        return PythonStructuredEnvGroup(group_cfg, num_envs=num_envs_i, tensor_device="cpu")
     if env_tensor_backend in {"cuda", "auto"} and prefer_native:
         return GpuStructuredEnvGroup(group_cfg, num_envs=num_envs_i)
     backend_l = str(backend).lower()
@@ -376,6 +398,8 @@ def make_structured_driver_group(
     prefer_native = env_backend in {"native", "gpu", "auto"}
     group_cfg = copy.copy(cfg)
     setattr(group_cfg, "_structured_kernel_runtime_cache", {})
+    if env_backend in {"python", "cpu", "mac", "legacy"} or env_tensor_backend == "cpu":
+        return PythonStructuredDriverGroup(group_cfg, num_envs=num_envs_i, tensor_device="cpu")
     if str(mode or "script").strip().lower() in {"train", "eval"} and backend_l == "subproc":
         backend_l = "sync"
     if env_tensor_backend in {"cuda", "auto"} and prefer_native:
@@ -413,7 +437,7 @@ def _close_one_structured_target(target) -> None:
 def close_structured_env_group(env_or_envs) -> None:
     if env_or_envs is None:
         return
-    if _looks_like_structured_driver_group(env_or_envs):
+    if _looks_like_any_structured_driver_group(env_or_envs):
         _close_one_structured_target(env_or_envs)
         return
     close_fn = getattr(env_or_envs, "close", None)
@@ -443,7 +467,7 @@ def run_structured_training(
         return []
     if rollout_env_steps <= 0:
         raise ValueError("rollout_env_steps must be positive")
-    structured_group = env if _looks_like_structured_driver_group(env) else None
+    structured_group = env if _looks_like_any_structured_driver_group(env) else None
     if structured_group is not None:
         num_envs = len(structured_group)
         initial_seeds = [None if reset_seed is None else int(reset_seed) + env_index for env_index in range(num_envs)]
@@ -451,7 +475,7 @@ def run_structured_training(
         drivers = structured_group
     else:
         drivers_or_group = as_structured_drivers(env)
-        if _looks_like_structured_driver_group(drivers_or_group):
+        if _looks_like_any_structured_driver_group(drivers_or_group):
             structured_group = drivers_or_group
             num_envs = len(structured_group)
             initial_seeds = [None if reset_seed is None else int(reset_seed) + env_index for env_index in range(num_envs)]
@@ -463,7 +487,7 @@ def run_structured_training(
             drivers = list(drivers_or_group)
             initial_seeds = [None if reset_seed is None else int(reset_seed) + env_index for env_index in range(num_envs)]
     bind_native_contract = getattr(learner, "bind_native_runtime_contract", None)
-    if callable(bind_native_contract):
+    if callable(bind_native_contract) and _looks_like_structured_driver_group(drivers):
         bind_native_contract(drivers)
     if bool(reset_on_start):
         reset_start = time.perf_counter()
@@ -502,7 +526,7 @@ def run_structured_training(
             trace_fn(f"run_structured_training:update_start local_update={update_local_idx + 1}")
         buffer = StructuredRolloutBuffer()
         begin_native_rollout = getattr(learner, "begin_native_rollout", None)
-        if callable(begin_native_rollout):
+        if callable(begin_native_rollout) and _looks_like_structured_driver_group(drivers):
             native_prepare_start = time.perf_counter()
             begin_native_rollout(
                 drivers,

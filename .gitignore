@@ -12,6 +12,8 @@ dist/
 .venv/
 venv/
 
+# thesis
+thesis.pdf
 
 # Test/coverage artifacts
 .pytest_cache/
@@ -31,6 +33,7 @@ htmlcov/
 .idea/
 
 # OS files
+.DS_Store
 Thumbs.db
 Desktop.ini
 

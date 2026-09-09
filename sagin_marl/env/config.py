@@ -446,6 +446,24 @@ class SaginConfig:
     baseline_lyapunov_sat_switch_bias: float = 0.0
     baseline_lyapunov_sat_abs_se_weight: float = 0.0
     baseline_lyapunov_sat_doppler_penalty: float = 0.0
+    topology_dpp_accel_num_candidates: int = 9
+    topology_dpp_accel_step_scale: float = 0.6
+    topology_dpp_gu_max_select: int = 6
+    topology_dpp_access_weight: float = 1.0
+    topology_dpp_backhaul_weight: float = 1.0
+    topology_dpp_mobility_weight: float = 0.75
+    topology_dpp_accel_cost: float = 0.08
+    topology_dpp_smoothness: float = 0.05
+    topology_dpp_accel_safety_weight: float = 4.0
+    topology_dpp_accel_role_weight: float = 0.35
+    topology_dpp_dist_penalty: float = 0.10
+    topology_dpp_bw_temp: float = 0.55
+    topology_dpp_bw_floor: float = 0.01
+    topology_dpp_sat_queue_gap_weight: float = 1.0
+    topology_dpp_sat_candidate_topm: int = 4
+    topology_dpp_sat_enum_max_subsets: int = 64
+    topology_dpp_sat_subset_penalty: float = 0.02
+    topology_dpp_sat_contention_weight: float = 0.15
 
     # Reward shaping
     reward_mode: str = "dense"  # "controllable_flow" | "dense" | "throughput_only" | "weighted_workload_delta" | "relative_weighted_workload_delta" | "weighted_workload_level" | "positive_weighted_workload_level" | "sat_relay_processed" | "sat_backhaul_drop" | "gu_queue_level" | "system_queue_level" | "gu_service_queue"
@@ -562,6 +580,7 @@ class SaginConfig:
     input_norm_enabled: bool = True
     structured_actor_input_norm_enabled: bool = False
     structured_critic_input_norm_enabled: bool = False
+    structured_actor_backbone: str = "topology_aware"  # "topology_aware" | "flat_mlp"
     kl_coef: float = 0.0
     target_kl: float = 0.0
     kl_stop: bool = False
@@ -879,7 +898,7 @@ class SaginConfig:
     critic_compile_fullgraph: bool = True
     critic_value_head_hidden: int = 256
     critic_value_head_layers: int = 2
-    critic_value_mode: str = "relational"  # "relational" | "global_only" | "global_linear"
+    critic_value_mode: str = "relational"  # "relational" | "global_only" | "global_linear" | "flat_mlp"
     critic_stage_specific_paths_enabled: bool = False
     critic_sat_hidden: int = 0
     critic_sat_embed_dim: int = 0
@@ -909,6 +928,7 @@ class SaginConfig:
     checkpoint_eval_episode_seed_base: int | None = None
     checkpoint_eval_fixed_policy: str = "zero"  # "zero" | "queue_aware" | "queue_aware_bw" | "cluster_center_queue_aware" | "teacher_accel_queue_aware" | "stage2_exec_fixed_sat"
     checkpoint_eval_policy_mode: str = "deterministic"  # "deterministic" | "stochastic"
+    checkpoint_eval_min_stop_update: int = 0
     checkpoint_eval_sat_drop_early_stop_enabled: bool = True
     checkpoint_eval_sat_drop_worsen_delta: float = 5e-4
     checkpoint_eval_front_queue_rel_improve_tol: float = 0.05
@@ -1304,6 +1324,14 @@ def _finalize_config(cfg: SaginConfig) -> None:
         "service_floor_bits_per_step",
     )
     cfg.bw_weighted_workload_eps = float(cfg.service_floor_bits_per_step)
+    actor_backbone = str(getattr(cfg, "structured_actor_backbone", "topology_aware") or "topology_aware").strip().lower()
+    if actor_backbone in {"structured", "staged", "topology", "topology-aware", "topology_aware_staged"}:
+        actor_backbone = "topology_aware"
+    if actor_backbone in {"flat", "mappo_like", "mappo-like", "flat_actor"}:
+        actor_backbone = "flat_mlp"
+    if actor_backbone not in {"topology_aware", "flat_mlp"}:
+        raise ValueError("structured_actor_backbone must be one of {'topology_aware', 'flat_mlp'}.")
+    cfg.structured_actor_backbone = actor_backbone
     mode = str(getattr(cfg, "access_fading_mode", "ergodic_rician") or "ergodic_rician").strip().lower()
     if mode in {"none", "off", "disabled"}:
         mode = "large_scale"

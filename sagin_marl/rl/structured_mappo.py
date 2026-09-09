@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import copy
-from dataclasses import fields, is_dataclass
+from dataclasses import fields, is_dataclass, replace
 from itertools import product
 import math
 import time
@@ -20,7 +20,13 @@ from sagin_marl.env.structured_gpu_rollout_runtime import (
 )
 from sagin_marl.env.native_cuda import bindings as native_cuda
 
-from .baselines import queue_aware_bw_policy
+from .baselines import (
+    cluster_center_accel_policy,
+    observable_cluster_accel_policy,
+    queue_aware_bw_policy,
+    queue_aware_policy,
+    queue_aware_sat_policy,
+)
 from .distributions import squash_action
 from .structured_buffer import (
     StructuredBootstrapBatchView,
@@ -28,6 +34,7 @@ from .structured_buffer import (
     StructuredRolloutViews,
     StructuredStageTrainingBatch,
 )
+from .structured_types import LocalBwState
 from .native_actor_cuda import NativeActorCudaBinding, build_native_actor_cuda_binding
 
 def _explained_variance(pred: torch.Tensor, target: torch.Tensor) -> float:
@@ -398,6 +405,7 @@ def _normalize_exec_source(raw: str | None) -> str:
         "policy_single_uav_queue_aware",
         "queue_aware",
         "cluster_center_queue_aware",
+        "observable_cluster_queue_aware",
         "zero",
         "teacher",
         "uniform",
@@ -405,6 +413,10 @@ def _normalize_exec_source(raw: str | None) -> str:
         "link_priority",
         "demand_priority",
         "lyapunov",
+        "dpp_resource_bw",
+        "topology_dpp_accel",
+        "topology_dpp_bw",
+        "topology_dpp_sat",
     }
     if source not in allowed:
         raise ValueError(f"Unsupported structured exec source: {raw!r}")
@@ -420,7 +432,12 @@ _NATIVE_BASELINE_ACTION_SOURCES = {
     "demand_priority",
     "queue_aware",
     "cluster_center_queue_aware",
+    "observable_cluster_queue_aware",
     "lyapunov",
+    "dpp_resource_bw",
+    "topology_dpp_accel",
+    "topology_dpp_bw",
+    "topology_dpp_sat",
 }
 _NATIVE_LIVE_ACTION_SOURCES = _NATIVE_POLICY_ACTION_SOURCES | _NATIVE_BASELINE_ACTION_SOURCES | {"teacher"}
 _NATIVE_EXEC_SOURCES = _NATIVE_ZERO_ACTION_SOURCES | _NATIVE_LIVE_ACTION_SOURCES
@@ -428,6 +445,27 @@ _NATIVE_EXEC_SOURCES = _NATIVE_ZERO_ACTION_SOURCES | _NATIVE_LIVE_ACTION_SOURCES
 
 def _native_source_uses_live_action(source: str) -> bool:
     return str(source).strip().lower() in _NATIVE_LIVE_ACTION_SOURCES
+
+
+def validate_satellite_control_consistency(
+    cfg: Any | None,
+    *,
+    train_sat: bool,
+    exec_sat_source: str,
+    context: str,
+) -> None:
+    if cfg is None or not bool(getattr(cfg, "fixed_satellite_strategy", False)):
+        return
+    sat_source = _normalize_exec_source(exec_sat_source)
+    if not bool(train_sat) and sat_source != "policy":
+        return
+    raise ValueError(
+        f"{context}: fixed_satellite_strategy=true conflicts with learned satellite control "
+        f"(train_sat={bool(train_sat)}, exec_sat_source={sat_source!r}). "
+        "Set fixed_satellite_strategy=false for learned/policy satellite selection. "
+        "For a fixed nearest-satellite path, use train_sat=false with exec_sat_source='zero' "
+        "or an explicit non-policy heuristic source."
+    )
 
 
 def _native_exec_source_mode_code(source: object) -> int:
@@ -443,7 +481,12 @@ def _native_exec_source_mode_code(source: object) -> int:
         "demand_priority": native_cuda.SOURCE_DEMAND_PRIORITY,
         "queue_aware": native_cuda.SOURCE_QUEUE_AWARE,
         "cluster_center_queue_aware": native_cuda.SOURCE_CLUSTER_CENTER_QUEUE_AWARE,
+        "observable_cluster_queue_aware": native_cuda.SOURCE_OBSERVABLE_CLUSTER_QUEUE_AWARE,
         "lyapunov": native_cuda.SOURCE_LYAPUNOV,
+        "dpp_resource_bw": native_cuda.SOURCE_DPP_RESOURCE_BW,
+        "topology_dpp_accel": native_cuda.SOURCE_TOPOLOGY_DPP_ACCEL,
+        "topology_dpp_bw": native_cuda.SOURCE_TOPOLOGY_DPP_BW,
+        "topology_dpp_sat": native_cuda.SOURCE_TOPOLOGY_DPP_SAT,
     }
     if source_s not in table:
         raise RuntimeError(f"native rollout source {source_s!r} is not supported.")
@@ -519,9 +562,37 @@ def _current_obs_list(driver: Any) -> list[dict[str, np.ndarray]]:
     return [env._get_obs(i) for i in range(len(env.agents))]
 
 
+def _heuristic_accel(
+    obs_list: Sequence[dict[str, np.ndarray]],
+    cfg: Any,
+    heuristic_policy: str,
+    *,
+    centers: np.ndarray | None = None,
+    counts: np.ndarray | None = None,
+) -> np.ndarray:
+    """Backward-compatible heuristic helper used by legacy diagnostics."""
+    policy = str(heuristic_policy or "queue_aware").strip().lower()
+    if policy == "cluster_center_queue_aware":
+        return np.asarray(cluster_center_accel_policy(list(obs_list), cfg, centers, counts), dtype=np.float32)
+    if policy == "observable_cluster_queue_aware":
+        return np.asarray(observable_cluster_accel_policy(list(obs_list), cfg), dtype=np.float32)
+    if policy in {"queue_aware", "queue_aware_accel"}:
+        accel, _, _ = queue_aware_policy(list(obs_list), cfg)
+        return np.asarray(accel, dtype=np.float32)
+    raise ValueError(f"Unsupported accel heuristic policy: {heuristic_policy}")
+
+
+def _heuristic_sat(obs_list: Sequence[dict[str, np.ndarray]], cfg: Any, heuristic_policy: str) -> np.ndarray:
+    """Backward-compatible SAT heuristic helper used by legacy diagnostics."""
+    policy = str(heuristic_policy or "queue_aware").strip().lower()
+    if policy in {"queue_aware", "queue_aware_sat", "cluster_center_queue_aware", "observable_cluster_queue_aware"}:
+        return np.asarray(queue_aware_sat_policy(list(obs_list), cfg), dtype=np.float32)
+    raise ValueError(f"Unsupported SAT heuristic policy: {heuristic_policy}")
+
+
 def _heuristic_bw(obs_list: Sequence[dict[str, np.ndarray]], cfg: Any, heuristic_policy: str) -> np.ndarray:
     policy = str(heuristic_policy or "queue_aware").strip().lower()
-    if policy in {"queue_aware", "queue_aware_bw", "cluster_center_queue_aware"}:
+    if policy in {"queue_aware", "queue_aware_bw", "cluster_center_queue_aware", "observable_cluster_queue_aware"}:
         return np.asarray(queue_aware_bw_policy(list(obs_list), cfg), dtype=np.float32)
     raise ValueError(f"Unsupported BW heuristic policy: {heuristic_policy}")
 
@@ -708,7 +779,11 @@ class _StructuredMAPPOGpuActorBridge:
             raise RuntimeError("native BW source mode code does not match the bound action producer.")
 
         self._runtime_abi = self._runtime_native_abi(runtime)
-        needs_policy = any(source in _NATIVE_POLICY_ACTION_SOURCES for source in (accel_source, sat_source, bw_source))
+        flat_policy_actor = self.learner._flat_policy_actor_native_module_enabled()
+        needs_policy = any(
+            self.learner._native_policy_source_requires_cuda_binding(source)
+            for source in (accel_source, sat_source, bw_source)
+        )
         needs_teacher = any(source == "teacher" for source in (accel_source, sat_source, bw_source))
         self._policy_actor_binding = self.learner._require_native_actor_policy_binding() if needs_policy else None
         self._teacher_actor_binding = self.learner._require_native_actor_teacher_binding() if needs_teacher else None
@@ -719,14 +794,26 @@ class _StructuredMAPPOGpuActorBridge:
             self._teacher_deterministic_override = None
 
         if accel_source == "policy":
-            self.write_accel_action = self._write_accel_action_policy  # type: ignore[method-assign]
+            self.write_accel_action = (
+                self._write_accel_action_policy_module
+                if flat_policy_actor
+                else self._write_accel_action_policy
+            )  # type: ignore[method-assign]
         elif accel_source == "zero":
             self.write_accel_action = self._write_accel_action_zero  # type: ignore[method-assign]
         elif accel_source == "queue_aware":
             self.write_accel_action = self._write_accel_action_queue_aware  # type: ignore[method-assign]
         elif accel_source == "cluster_center_queue_aware":
             self.write_accel_action = self._write_accel_action_cluster_center_queue_aware  # type: ignore[method-assign]
-        elif accel_source in {"uniform", "random", "link_priority", "demand_priority", "lyapunov"}:
+        elif accel_source in {
+            "uniform",
+            "random",
+            "link_priority",
+            "demand_priority",
+            "lyapunov",
+            "topology_dpp_accel",
+            "observable_cluster_queue_aware",
+        }:
             self.write_accel_action = self._write_accel_action_baseline  # type: ignore[method-assign]
         elif accel_source == "teacher":
             self.write_accel_action = self._write_accel_action_teacher  # type: ignore[method-assign]
@@ -734,12 +821,16 @@ class _StructuredMAPPOGpuActorBridge:
             raise RuntimeError(f"native main-kernel accel exec source {accel_source!r} is not tensor-native.")
 
         if sat_source == "policy":
-            self.write_sat_action = self._write_sat_action_policy  # type: ignore[method-assign]
+            self.write_sat_action = (
+                self._write_sat_action_policy_module
+                if flat_policy_actor
+                else self._write_sat_action_policy
+            )  # type: ignore[method-assign]
         elif sat_source == "zero":
             self.write_sat_action = self._write_sat_action_zero  # type: ignore[method-assign]
-        elif sat_source in {"queue_aware", "cluster_center_queue_aware"}:
+        elif sat_source in {"queue_aware", "cluster_center_queue_aware", "observable_cluster_queue_aware"}:
             self.write_sat_action = self._write_sat_action_queue_aware  # type: ignore[method-assign]
-        elif sat_source in {"uniform", "random", "link_priority", "demand_priority", "lyapunov"}:
+        elif sat_source in {"uniform", "random", "link_priority", "demand_priority", "lyapunov", "topology_dpp_sat"}:
             self.write_sat_action = self._write_sat_action_baseline  # type: ignore[method-assign]
         elif sat_source == "teacher":
             self.write_sat_action = self._write_sat_action_teacher  # type: ignore[method-assign]
@@ -747,14 +838,26 @@ class _StructuredMAPPOGpuActorBridge:
             raise RuntimeError(f"native main-kernel SAT exec source {sat_source!r} is not tensor-native.")
 
         if bw_source == "policy":
-            self.write_bw_action = self._write_bw_action_policy  # type: ignore[method-assign]
+            self.write_bw_action = (
+                self._write_bw_action_policy_module
+                if flat_policy_actor
+                else self._write_bw_action_policy
+            )  # type: ignore[method-assign]
         elif bw_source == "policy_single_uav_queue_aware":
             self.write_bw_action = self._write_bw_action_policy_single_uav_queue_aware  # type: ignore[method-assign]
         elif bw_source == "zero":
             self.write_bw_action = self._write_bw_action_zero  # type: ignore[method-assign]
-        elif bw_source in {"queue_aware", "cluster_center_queue_aware"}:
+        elif bw_source in {"queue_aware", "cluster_center_queue_aware", "observable_cluster_queue_aware"}:
             self.write_bw_action = self._write_bw_action_queue_aware  # type: ignore[method-assign]
-        elif bw_source in {"uniform", "random", "link_priority", "demand_priority", "lyapunov"}:
+        elif bw_source in {
+            "uniform",
+            "random",
+            "link_priority",
+            "demand_priority",
+            "lyapunov",
+            "dpp_resource_bw",
+            "topology_dpp_bw",
+        }:
             self.write_bw_action = self._write_bw_action_baseline  # type: ignore[method-assign]
         elif bw_source == "teacher":
             self.write_bw_action = self._write_bw_action_teacher  # type: ignore[method-assign]
@@ -804,6 +907,60 @@ class _StructuredMAPPOGpuActorBridge:
             deterministic=deterministic,
             rng_step=int(runtime.random.step),
         )
+        self.accel_action_batch = None
+        self.accel_logprob_batch = None
+
+    def _write_accel_action_policy_module(
+        self,
+        accel_obs: Any,
+        *,
+        runtime: Any,
+        num_envs: int,
+        deterministic: bool,
+    ) -> None:
+        self._write_accel_action_with_module(
+            self.learner.actor,
+            accel_obs,
+            runtime=runtime,
+            num_envs=num_envs,
+            deterministic=deterministic,
+        )
+
+    def _write_accel_action_with_module(
+        self,
+        actor_module: Any,
+        accel_obs: Any,
+        *,
+        runtime: Any,
+        num_envs: int,
+        deterministic: bool,
+    ) -> None:
+        self.num_agents = self._num_agents_from_accel_obs(accel_obs, num_envs)
+        self.accel_batch = accel_obs
+        main = runtime.main
+        with torch.no_grad():
+            out = actor_module.act_accel(accel_obs, deterministic=deterministic)
+            action = out.action.reshape(int(num_envs), int(self.num_agents), -1)
+            if not torch.is_tensor(getattr(main, "live_accel_action", None)):
+                raise RuntimeError("flat native accel policy requires live_accel_action buffer.")
+            main.live_accel_action.copy_(action.to(device=main.live_accel_action.device, dtype=main.live_accel_action.dtype))
+            latent_dst = getattr(main, "live_accel_latent_action", None)
+            if torch.is_tensor(latent_dst):
+                latent = out.latent_action if out.latent_action is not None else out.action
+                latent = latent.reshape(int(num_envs), int(self.num_agents), -1)
+                latent_dst.copy_(latent.to(device=latent_dst.device, dtype=latent_dst.dtype))
+            logprob_dst = getattr(main, "live_accel_old_logprob", None)
+            if torch.is_tensor(logprob_dst):
+                logprob = out.logprob.reshape(int(num_envs), int(self.num_agents))
+                if tuple(logprob_dst.shape) == tuple(logprob.shape):
+                    logprob_dst.copy_(logprob.to(device=logprob_dst.device, dtype=logprob_dst.dtype))
+                elif tuple(logprob_dst.shape) == (int(num_envs),):
+                    logprob_dst.copy_(logprob.sum(dim=1).to(device=logprob_dst.device, dtype=logprob_dst.dtype))
+                else:
+                    raise RuntimeError(
+                        "flat native accel policy cannot write logprob shape "
+                        f"{tuple(logprob.shape)} into {tuple(logprob_dst.shape)}."
+                    )
         self.accel_action_batch = None
         self.accel_logprob_batch = None
 
@@ -947,6 +1104,95 @@ class _StructuredMAPPOGpuActorBridge:
             deterministic=deterministic,
             rng_step=int(runtime.random.step),
         )
+        self.sat_action_batch = None
+        self.sat_logprob_batch = None
+
+    def _write_sat_action_policy_module(
+        self,
+        sat_obs: Any,
+        *,
+        runtime: Any,
+        num_envs: int,
+        sat_max_select: int,
+        deterministic: bool,
+    ) -> None:
+        self._write_sat_action_with_module(
+            self.learner.actor,
+            sat_obs,
+            runtime=runtime,
+            num_envs=num_envs,
+            sat_max_select=sat_max_select,
+            deterministic=deterministic,
+        )
+
+    def _write_sat_action_with_module(
+        self,
+        actor_module: Any,
+        sat_obs: Any,
+        *,
+        runtime: Any,
+        num_envs: int,
+        sat_max_select: int,
+        deterministic: bool,
+    ) -> None:
+        del sat_max_select
+        if self.num_agents <= 0:
+            self.num_agents = self._num_agents_from_flat_obs_tensor(
+                getattr(sat_obs, "ego_features", None),
+                num_envs,
+            )
+        self.sat_batch = sat_obs
+        main = runtime.main
+        with torch.no_grad():
+            out = actor_module.act_sat(sat_obs, deterministic=deterministic)
+            sat_policy = getattr(actor_module, "sat_subset_policy", None)
+            if sat_policy is not None and hasattr(sat_policy, "_compute_logits") and hasattr(sat_policy, "_legal_subset_mask"):
+                logits = sat_policy._compute_logits(sat_obs)
+                legal_mask = sat_policy._legal_subset_mask(sat_obs, logits)
+                chosen = out.subset_index.reshape(-1).to(device=logits.device, dtype=torch.long)
+                row_ids = torch.arange(int(chosen.shape[0]), device=logits.device, dtype=torch.long)
+                chosen_in_range = (chosen >= 0) & (chosen < int(legal_mask.shape[1]))
+                chosen_safe = chosen.clamp(min=0, max=max(int(legal_mask.shape[1]) - 1, 0))
+                legal_count = legal_mask.sum(dim=-1)
+                illegal_with_fallback = (legal_count > 0) & (~chosen_in_range | ~legal_mask[row_ids, chosen_safe])
+                if bool(illegal_with_fallback.any().detach().cpu().item()):
+                    fallback = legal_mask.to(dtype=torch.long).argmax(dim=-1)
+                    fixed_chosen = torch.where(illegal_with_fallback, fallback, chosen_safe)
+                    out = sat_policy.evaluate_actions(sat_obs, fixed_chosen, compute_entropy=True)
+            subset_index = out.subset_index.reshape(int(num_envs), int(self.num_agents))
+            subset_dst = getattr(main, "live_sat_subset_index", None)
+            if not torch.is_tensor(subset_dst):
+                raise RuntimeError("flat native SAT policy requires live_sat_subset_index buffer.")
+            subset_dst.copy_(subset_index.to(device=subset_dst.device, dtype=subset_dst.dtype))
+
+            action_dst = getattr(main, "live_sat_action_indices", None)
+            if torch.is_tensor(action_dst):
+                selected = out.selected_sat_indices.reshape(int(num_envs), int(self.num_agents), -1)
+                selected_t = selected.to(device=action_dst.device, dtype=action_dst.dtype)
+                if tuple(selected_t.shape) == tuple(action_dst.shape):
+                    action_dst.copy_(selected_t)
+                else:
+                    action_dst.fill_(-1)
+                    keep = min(int(selected_t.shape[-1]), int(action_dst.shape[-1]))
+                    if keep > 0:
+                        action_dst[..., :keep].copy_(selected_t[..., :keep])
+
+            logprob = out.logprob.reshape(int(num_envs), int(self.num_agents))
+            logprob_dst = getattr(main, "live_sat_old_logprobs_per_agent", None)
+            if torch.is_tensor(logprob_dst):
+                if tuple(logprob_dst.shape) != tuple(logprob.shape):
+                    raise RuntimeError(
+                        "flat native SAT policy cannot write logprob shape "
+                        f"{tuple(logprob.shape)} into {tuple(logprob_dst.shape)}."
+                    )
+                logprob_dst.copy_(logprob.to(device=logprob_dst.device, dtype=logprob_dst.dtype))
+            entropy_dst = getattr(main, "live_sat_entropy_per_agent", None)
+            if torch.is_tensor(entropy_dst):
+                entropy = out.entropy.reshape(int(num_envs), int(self.num_agents))
+                if tuple(entropy_dst.shape) == tuple(entropy.shape):
+                    entropy_dst.copy_(entropy.to(device=entropy_dst.device, dtype=entropy_dst.dtype))
+                else:
+                    entropy_dst.zero_()
         self.sat_action_batch = None
         self.sat_logprob_batch = None
 
@@ -1163,6 +1409,22 @@ class _StructuredMAPPOGpuActorBridge:
         self.bw_action_batch = None
         self.bw_ref_action_batch = None
         self.bw_logprob_batch = None
+
+    def _write_bw_action_policy_module(
+        self,
+        bw_obs: Any,
+        *,
+        runtime: Any,
+        num_envs: int,
+        deterministic: bool,
+    ) -> None:
+        self._write_bw_action_with_module(
+            self.learner.actor,
+            bw_obs,
+            runtime=runtime,
+            num_envs=num_envs,
+            deterministic=deterministic,
+        )
 
     def _write_bw_action_policy_single_uav_queue_aware(
         self,
@@ -1795,6 +2057,21 @@ class StructuredMAPPO:
             0
             if cfg is None
             else max(int(getattr(cfg, "actor_update_microbatch_size", 1024) or 0), 0)
+        )
+        self.rollout_value_eval_microbatch_size = (
+            0
+            if cfg is None
+            else max(
+                int(
+                    getattr(
+                        cfg,
+                        "rollout_value_eval_microbatch_size",
+                        getattr(cfg, "actor_update_microbatch_size", 1024),
+                    )
+                    or 0
+                ),
+                0,
+            )
         )
         self.critic_loss_target_standardize = bool(
             False if cfg is None else getattr(cfg, "critic_loss_target_standardize", False)
@@ -2631,8 +2908,24 @@ class StructuredMAPPO:
         return bool(
             backend == "native"
             and tensor_backend == "cuda"
-            and any(self.exec_source_by_stage.get(stage_id) in _NATIVE_POLICY_ACTION_SOURCES for stage_id in (0, 1, 2))
+            and any(
+                self._native_policy_source_requires_cuda_binding(self.exec_source_by_stage.get(stage_id))
+                for stage_id in (0, 1, 2)
+            )
         )
+
+    def _flat_policy_actor_native_module_enabled(self) -> bool:
+        if self.cfg is None:
+            return False
+        return str(getattr(self.cfg, "structured_actor_backbone", "") or "").strip().lower() == "flat_mlp"
+
+    def _native_policy_source_requires_cuda_binding(self, source: Any) -> bool:
+        source_s = str(source or "")
+        if source_s not in _NATIVE_POLICY_ACTION_SOURCES:
+            return False
+        if source_s == "policy" and self._flat_policy_actor_native_module_enabled():
+            return False
+        return True
 
     def _native_rollout_teacher_actor_required(self) -> bool:
         if self.cfg is None or self.device.type != "cuda":
@@ -2910,9 +3203,36 @@ class StructuredMAPPO:
                     dtype=torch.long,
                     device=self.device,
                 )
-                stage_values = self._stage_value_eval_from_batch(stage_id, stage_batch.world_batch)
+                stage_values = self._stage_value_eval_microbatched_from_stage_batch(stage_id, stage_batch)
                 value_vector.index_copy_(0, stage_idx, stage_values.to(self.device, dtype=torch.float32))
         return value_vector
+
+    def _stage_value_eval_microbatched_from_stage_batch(
+        self,
+        stage_id: int,
+        stage_batch: Any,
+    ) -> torch.Tensor:
+        sample_count = int(getattr(stage_batch, "num_samples", 0) or 0)
+        if sample_count <= 0:
+            return torch.empty((0,), dtype=torch.float32, device=self.device)
+        micro_size = int(getattr(self, "rollout_value_eval_microbatch_size", 0) or 0)
+        if micro_size <= 0 or sample_count <= micro_size:
+            return self._stage_value_eval_from_batch(stage_id, stage_batch.world_batch)
+
+        values = torch.empty((sample_count,), dtype=torch.float32, device=self.device)
+        for start in range(0, sample_count, micro_size):
+            end = min(start + micro_size, sample_count)
+            rel_idx = torch.arange(start, end, dtype=torch.long, device=self.device)
+            world_batch_mb = _index_dataclass(stage_batch.world_batch, rel_idx)
+            if (end - start) == micro_size:
+                value_mb = self._stage_value_eval_from_batch(stage_id, world_batch_mb)
+            else:
+                # Strict torch.compile rejects the final shorter remainder batch
+                # after seeing the fixed-size microbatches. Eager eval keeps the
+                # same value semantics without triggering a shape recompile.
+                value_mb = self._evaluate_world_batch_for_stage_eager(stage_id, world_batch_mb)
+            values[start:end].copy_(value_mb.to(device=self.device, dtype=torch.float32).reshape(-1))
+        return values
 
     def _refresh_actor_old_logprobs_from_training_view(self, batch_view: Any) -> None:
         """Recompute PPO old log-probs with the PyTorch actor used for update.
@@ -5296,7 +5616,16 @@ class StructuredMAPPO:
         *,
         horizon: int,
         deterministic: bool = False,
-    ) -> list[StructuredBatchStepResult]:
+    ) -> list[Any]:
+        if not self._can_use_native_tensor_policy_rollout(drivers):
+            return [
+                self.collect_env_steps(
+                    drivers,
+                    buffer,
+                    deterministic=deterministic,
+                )
+                for _ in range(int(horizon))
+            ]
         structured_env_tensor_device = self._structured_env_tensor_device()
         if structured_env_tensor_device is None:
             raise RuntimeError("native tensor rollout executor requires a structured env tensor device.")
@@ -5308,6 +5637,225 @@ class StructuredMAPPO:
             buffer=buffer,
             deterministic=deterministic,
         )
+
+    @staticmethod
+    def _python_structured_driver_list(drivers: Any) -> list[Any]:
+        source = getattr(drivers, "drivers", None)
+        if source is None:
+            if isinstance(drivers, Sequence) and not isinstance(drivers, (str, bytes, bytearray)):
+                source = drivers
+            elif hasattr(drivers, "__len__") and hasattr(drivers, "__getitem__"):
+                source = [drivers[index] for index in range(int(len(drivers)))]
+            else:
+                source = [drivers]
+        driver_list = list(source)
+        required = (
+            "begin_step",
+            "build_local_accel_states",
+            "run_accel_stage",
+            "build_sat_stage_snapshot",
+            "decode_sat_subset_actions",
+            "run_sat_stage",
+            "build_bw_stage_snapshot",
+            "execute_stage_bw_and_prepare_next_accel",
+        )
+        if not driver_list or not all(all(hasattr(driver, name) for name in required) for driver in driver_list):
+            raise RuntimeError("Python structured rollout requires StructuredControlDriver-like objects.")
+        return driver_list
+
+    @staticmethod
+    def _env_batch_tensor(
+        value: Any,
+        *,
+        device: torch.device,
+        dtype: torch.dtype = torch.float32,
+    ) -> torch.Tensor | None:
+        if value is None:
+            return None
+        tensor = value if torch.is_tensor(value) else torch.as_tensor(value)
+        return tensor.to(device=device, dtype=dtype).unsqueeze(0)
+
+    @staticmethod
+    def _sat_local_with_row_subset_members(local_state: Any, row_count: int) -> Any:
+        members = getattr(local_state, "subset_members", None)
+        if not torch.is_tensor(members) or members.ndim != 2:
+            return local_state
+        expanded = members.unsqueeze(0).expand(max(int(row_count), 1), -1, -1).contiguous()
+        return replace(local_state, subset_members=expanded)
+
+    def _collect_env_steps_python_policy(
+        self,
+        drivers: Sequence[Any],
+        buffer: StructuredRolloutBuffer | None,
+        deterministic: bool = False,
+    ) -> list[Any]:
+        """Collect one structured env step through the portable Python driver.
+
+        This path intentionally mirrors the three policy stages used by the
+        native rollout, but executes one environment at a time.  It is a Mac/CPU
+        compatibility path for smoke tests and debugging.
+        """
+
+        driver_list = self._python_structured_driver_list(drivers)
+        if self.actor is None:
+            raise RuntimeError("Python structured rollout requires an actor.")
+        if self.critic is None:
+            raise RuntimeError("Python structured rollout requires a critic.")
+        results: list[Any] = []
+        for env_index, driver in enumerate(driver_list):
+            set_tensor_device = getattr(driver, "set_tensor_device", None)
+            if callable(set_tensor_device):
+                set_tensor_device(self.device)
+
+            accel_world = driver.begin_step()
+            accel_local = _collate_dataclass(driver.build_local_accel_states(accel_world), self.device)
+            accel_value = self._stage_value_eval_from_batch(0, accel_world).detach().reshape(1)
+            accel_out = self.actor.act_accel(accel_local, deterministic=deterministic)
+            num_agents = int(accel_out.action.shape[0])
+            accel_action = accel_out.action.detach()
+            accel_logprob_per_agent = accel_out.logprob.detach().reshape(1, num_agents)
+            accel_logprob = accel_logprob_per_agent.sum(dim=1)
+
+            sat_world = driver.run_accel_stage(accel_action.detach().cpu().numpy())
+            sat_stage_state = None
+            export_sat_stage_state = getattr(driver, "export_sat_stage_state", None)
+            if callable(export_sat_stage_state):
+                try:
+                    sat_stage_state = export_sat_stage_state()
+                except Exception:
+                    sat_stage_state = None
+            sat_snapshot = driver.build_sat_stage_snapshot(sat_world)
+            if sat_snapshot.local_state is None:
+                raise RuntimeError("Python structured rollout could not build SAT local state.")
+            sat_local = self._sat_local_with_row_subset_members(sat_snapshot.local_state, num_agents)
+            sat_value = self._stage_value_eval_from_batch(1, sat_world).detach().reshape(1)
+            sat_out = self.actor.act_sat(sat_local, deterministic=deterministic)
+            sat_logprob_per_agent = sat_out.logprob.detach().reshape(1, num_agents)
+            sat_logprob = sat_logprob_per_agent.sum(dim=1)
+            sat_subset_index = sat_out.subset_index.detach().to(dtype=torch.long)
+            sat_action = driver.decode_sat_subset_actions(
+                [],
+                sat_subset_index.detach().cpu().numpy().reshape(-1),
+            )
+
+            bw_world = driver.run_sat_stage(sat_action)
+            bw_stage_state = None
+            export_bw_stage_state = getattr(driver, "export_bw_stage_state", None)
+            if callable(export_bw_stage_state):
+                try:
+                    bw_stage_state = export_bw_stage_state()
+                except Exception:
+                    bw_stage_state = None
+            bw_snapshot = driver.build_bw_stage_snapshot(bw_world)
+            bw_local = LocalBwState(
+                ego_features=bw_snapshot.ego_features,
+                selected_sat_tokens=bw_snapshot.selected_sat_tokens,
+                selected_sat_mask=bw_snapshot.selected_sat_mask,
+                gu_tokens=bw_snapshot.gu_tokens,
+                gu_mask=bw_snapshot.gu_mask,
+                bw_valid_mask=bw_snapshot.bw_valid_mask,
+            )
+            bw_value = self._stage_value_eval_from_batch(2, bw_world).detach().reshape(1)
+            bw_out = self.actor.act_bw(bw_local, deterministic=deterministic)
+            bw_action = bw_out.action.detach()
+            bw_logprob_per_agent = bw_out.logprob.detach().reshape(1, num_agents)
+            bw_logprob = bw_logprob_per_agent.sum(dim=1)
+            bw_ref_action = bw_out.det_mean.detach()
+
+            step_result, next_world = driver.execute_stage_bw_and_prepare_next_accel(
+                bw_action.detach().cpu().numpy(),
+                bw_proxy_base_action=bw_ref_action.detach().cpu().numpy(),
+            )
+            results.append(step_result)
+
+            if buffer is None:
+                continue
+            reward = torch.as_tensor([float(getattr(step_result, "team_reward", 0.0))], dtype=torch.float32, device=self.device)
+            terminated = torch.as_tensor([bool(getattr(step_result, "terminated", False))], dtype=torch.bool, device=self.device)
+            truncated = torch.as_tensor([bool(getattr(step_result, "truncated", False))], dtype=torch.bool, device=self.device)
+            buffer.add_env_step_batch(
+                accel_world_batch=accel_world,
+                sat_world_batch=sat_world,
+                bw_world_batch=bw_world,
+                next_world_batch=next_world,
+                accel_local_batch=accel_local,
+                sat_local_batch=sat_local,
+                bw_local_batch=bw_local,
+                accel_actions=accel_action.reshape(1, num_agents, -1),
+                accel_latent_actions=(
+                    None
+                    if accel_out.latent_action is None
+                    else accel_out.latent_action.detach().reshape(1, num_agents, -1)
+                ),
+                sat_actions=sat_subset_index.reshape(1, num_agents),
+                bw_actions=bw_action.reshape(1, num_agents, -1),
+                accel_old_logprobs=accel_logprob,
+                sat_old_logprobs=sat_logprob,
+                sat_old_logprobs_per_agent=sat_logprob_per_agent,
+                bw_old_logprobs=bw_logprob,
+                bw_old_logprobs_per_agent=bw_logprob_per_agent,
+                accel_values=accel_value,
+                sat_values=sat_value,
+                bw_values=bw_value,
+                rewards=reward,
+                terminated=terminated,
+                truncated=truncated,
+                accel_danger_imitation_targets=self._env_batch_tensor(
+                    getattr(step_result, "danger_imitation_target", None),
+                    device=self.device,
+                ),
+                accel_danger_imitation_masks=self._env_batch_tensor(
+                    getattr(step_result, "danger_imitation_mask", None),
+                    device=self.device,
+                ),
+                sat_stage_states=[sat_stage_state],
+                bw_stage_states=[bw_stage_state],
+                bw_access_rewards=torch.as_tensor(
+                    [float(getattr(step_result, "bw_access_reward", 0.0))],
+                    dtype=torch.float32,
+                    device=self.device,
+                ),
+                bw_weighted_workload_delta_rewards=torch.as_tensor(
+                    [float(getattr(step_result, "bw_weighted_workload_delta_reward", 0.0))],
+                    dtype=torch.float32,
+                    device=self.device,
+                ),
+                bw_weighted_workload_level_rewards=torch.as_tensor(
+                    [float(getattr(step_result, "bw_weighted_workload_level_reward", 0.0))],
+                    dtype=torch.float32,
+                    device=self.device,
+                ),
+                bw_gu_queue_level_rewards=torch.as_tensor(
+                    [float(getattr(step_result, "bw_gu_queue_level_reward", 0.0))],
+                    dtype=torch.float32,
+                    device=self.device,
+                ),
+                bw_system_queue_level_rewards=torch.as_tensor(
+                    [float(getattr(step_result, "bw_system_queue_level_reward", 0.0))],
+                    dtype=torch.float32,
+                    device=self.device,
+                ),
+                bw_gu_service_queue_rewards=torch.as_tensor(
+                    [float(getattr(step_result, "bw_gu_service_queue_reward", 0.0))],
+                    dtype=torch.float32,
+                    device=self.device,
+                ),
+                bw_flow_proxy_scores=self._env_batch_tensor(
+                    getattr(step_result, "bw_flow_proxy_scores", None),
+                    device=self.device,
+                ),
+                bw_flow_proxy_masks=self._env_batch_tensor(
+                    getattr(step_result, "bw_flow_proxy_mask", None),
+                    device=self.device,
+                ),
+                bw_flow_proxy_deltas=self._env_batch_tensor(
+                    getattr(step_result, "bw_flow_proxy_deltas", None),
+                    device=self.device,
+                ),
+                bw_ref_actions=bw_ref_action.reshape(1, num_agents, -1),
+                env_indices=[int(env_index)],
+            )
+        return results
 
     @torch.no_grad()
     def collect_env_steps(
@@ -5322,6 +5870,14 @@ class StructuredMAPPO:
                 buffer,
                 deterministic=deterministic,
             )
+        try:
+            return self._collect_env_steps_python_policy(
+                drivers,
+                buffer,
+                deterministic=deterministic,
+            )
+        except RuntimeError:
+            raise
         raise RuntimeError(
             "StructuredMAPPO collect_env_steps requires the persistent native main-kernel rollout API; "
             "legacy stage-batch rollout has been removed."

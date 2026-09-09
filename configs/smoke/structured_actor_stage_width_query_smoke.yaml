@@ -1,0 +1,291 @@
+﻿# Current-schema 1-UAV/2-GU BW PPO check.
+# Derived from configs/tmp/structured_bw_sanity_1uav_2gu_t10_stronggap_currentenv_competition_ppo.yaml,
+# but removes legacy structured_bw_* actor fields that are no longer accepted by SaginConfig.
+seed: 42
+map_size: 1000.0
+tau0: 1.0
+T_steps: 10
+ref_lat_deg: 39.9042
+ref_lon_deg: 116.4074
+
+num_uav: 1
+num_gu: 2
+num_sat: 144
+walker_num_planes: 6
+sat_state_max: 9
+
+users_obs_max: 2
+sats_obs_max: 6
+visible_sats_max: 6
+visible_sats_min: null
+nbrs_obs_max: 1
+danger_nbr_enabled: false
+
+uav_height: 100.0
+sat_height: 500000.0
+theta_min_deg: 5.0
+v_max: 30.0
+a_max: 5.0
+d_safe: 20.0
+boundary_mode: reflect
+
+candidate_mode: assoc
+candidate_k: 2
+assoc_unfair_gu_threshold: 2
+
+uav_spawn_mode: gu_centroid
+uav_spawn_curriculum_enabled: false
+uav_safe_random_init_enabled: false
+uav_init_speed_frac: 0.0
+
+traffic_model: sticky_subset_hotspot
+task_arrival_rate: 8.0e6
+task_arrival_poisson: true
+traffic_level: 2
+traffic_level_nav_ratio: 0.08
+traffic_level_easy_ratio: 0.5
+traffic_level_hard_ratio: 1.0
+arrival_ramp_steps: 0
+arrival_ramp_start: 0.0
+arrival_ramp_use_global: false
+arrival_base_hetero: 0.0
+gu_init_num_clusters: 1
+gu_init_cluster_std: 320.0
+hotspot_num_subsets: 2
+hotspot_subset_size: 1
+hotspot_rho: 20.0
+hotspot_on_mean_steps: 20.0
+hotspot_off_mean_steps: 1.0
+arrival_mean_preserve: true
+
+queue_max_gu_steps: 24.0
+queue_max_uav_steps: 60.0
+queue_max_sat_steps: 60.0
+queue_ref_gu_per_step: 1.60e7
+queue_ref_uav_per_step: 1.60e7
+queue_ref_sat_per_step: 1.60e7
+queue_ref_sat_active_count: 1.0
+queue_init_frac: 0.0
+queue_init_uav_frac: 0.0
+queue_init_sat_frac: 0.0
+queue_init_gu_steps: 0.0
+queue_init_uav_steps: 0.0
+queue_init_sat_steps: 0.0
+
+gu_tx_power: 0.18
+uav_tx_power: 2.0
+uav_tx_gain: 1.0e3
+sat_rx_gain: 3.16227766e3
+resource_scale_enabled: false
+resource_scale_ref_num_uav: null
+resource_scale_ref_num_gu: null
+resource_scale_ref_task_arrival_rate: null
+resource_scale_sat_active_count: null
+resource_scale_ref_sat_active_count: null
+resource_scale_b_acc_multiplier: 1.0
+b_acc: 3.0e6
+b_backhaul_per_sat: 4.5e6
+sat_cpu_freq: 2.0e10
+noise_density: 4.0e-21
+carrier_freq: 3.0e10
+access_carrier_freq: 2.0e9
+backhaul_carrier_freq: 3.0e10
+access_noise_figure_db: 5.0
+backhaul_noise_figure_db: 3.0
+subcarrier_spacing: 1.2e5
+pathloss_mode: prob_los
+pl_threshold_db: 140.0
+atm_loss_enabled: true
+atm_loss_db: 0.8
+rain_loss_enabled: true
+rain_rate_001_mmph: 25.0
+rain_height_km: 5.0
+rain_exceedance_pct: 0.5
+rain_polarization_tilt_deg: 45.0
+rain_lat_deg: 39.9042
+
+doppler_observed: true
+doppler_atten_enabled: true
+doppler_enabled: true
+doppler_precomp_mode: residual_ppm
+doppler_residual_ppm: 0.1
+doppler_residual_ar_rho: 0.98
+doppler_residual_sigma_hz: 100.0
+nu_max: 4000.0
+energy_enabled: false
+fading_enabled: true
+access_fading_mode: ergodic_rician
+access_rician_k_db: 10.0
+access_ergodic_rician_quadrature_points: 16
+interference_enabled: true
+
+enable_bw_action: true
+fixed_satellite_strategy: false
+sat_select_mode: sample
+N_RF: 2
+sat_num_select: 2
+append_action_masks_to_obs: true
+obs_own_include_assoc_uav_cost: true
+obs_user_include_arrival_rate: true
+obs_user_include_recent_arrival: true
+obs_user_include_recent_service: true
+obs_user_include_queue_headroom: true
+obs_user_include_local_gu_service_cost: true
+obs_user_include_weighted_queue_cost: true
+obs_user_include_weighted_queue_cost_relative: true
+obs_sat_include_sat_cost: true
+arrival_ref_mode: expected_arrival
+
+avoidance_enabled: false
+eta_crash: 0.0
+
+reward_mode: weighted_workload_level
+reward_w_access: 0.5
+reward_w_relay: 0.0
+reward_w_pre_backlog: 0.08
+reward_w_pre_drop: 1.0
+reward_w_pre_growth: 0.0
+reward_stage1_assoc_centroid_enabled: false
+reward_stage3_sat_overlap_enabled: false
+aux_schedule_use_planned_total_updates: true
+
+input_norm_enabled: true
+actor_hidden: 256
+actor_set_embed_dim: 128
+buffer_size: 80
+gamma: 0.99
+gae_lambda: 0.95
+reward_norm_enabled: false
+reward_norm_clip: 5.0
+reward_tanh_enabled: false
+lr_decay_enabled: false
+actor_lr: 3.0e-4
+critic_lr: 3.0e-4
+clip_ratio: 0.2
+value_coef: 0.5
+entropy_coef: 0.0
+entropy_coef_bw: 0.0
+max_grad_norm: 0.5
+ppo_epochs: 1
+num_mini_batch: 1
+
+danger_imitation_enabled: false
+train_trace_enabled: false
+train_trace_rollout_interval: 0
+
+# Keep this config focused on train-time EV/value diagnostics.
+checkpoint_eval_enabled: false
+checkpoint_eval_interval_updates: 0
+checkpoint_eval_start_update: 0
+checkpoint_eval_episodes: 0
+checkpoint_eval_episode_seed_base: 42000
+checkpoint_eval_fixed_policy: queue_aware_bw
+checkpoint_eval_policy_mode: deterministic
+checkpoint_eval_sat_drop_early_stop_enabled: false
+checkpoint_eval_early_stop_enabled: false
+checkpoint_eval_reward_early_stop_enabled: false
+checkpoint_eval_reward_patience: 2
+checkpoint_eval_stop_on_early_stop: false
+checkpoint_eval_save_best_models: false
+checkpoint_eval_use_best_as_final: false
+
+update_direction_probe_enabled: false
+update_direction_probe_interval_updates: 0
+update_direction_probe_start_update: 1
+update_direction_probe_panel_episodes: 8
+update_direction_probe_panel_states: 16
+update_direction_probe_panel_seed: 35000
+update_direction_probe_k_steps: 10
+update_direction_probe_bw_sample_limit: 16
+update_direction_probe_actor_policy_mode: deterministic
+update_direction_probe_actor_policy_samples: 1
+update_direction_probe_true_mc_enabled: true
+update_direction_probe_true_mc_samples: 4
+update_direction_probe_branch_enabled: true
+update_direction_probe_branch_horizons: [2, 5, 10]
+update_direction_probe_branch_samples: 2
+update_direction_probe_branch_ref_mode: deterministic
+update_direction_probe_branch_follow_policy_mode: stochastic
+
+train_accel: true
+train_sat: true
+train_bw: true
+exec_accel_source: policy
+exec_sat_source: policy
+exec_bw_source: policy
+
+bw_train_target_mode: weighted_workload_level
+bw_return_mode: gae
+bw_actor_advantage_override_mode: gae
+bw_actor_branch_horizon: 30
+bw_actor_branch_samples: 1
+bw_actor_branch_ref_mode: deterministic
+bw_actor_branch_follow_policy_mode: stochastic
+bw_actor_branch_normalize: false
+bw_actor_branch_worker_fused_rollout_enabled: false
+bw_actor_branch_parallel_envs: 4
+bw_actor_branch_parallel_backend: sync
+bw_clean_per_user_enabled: false
+structured_step_bootstrap_stage: accel
+actor_advantage_normalize_enabled: false
+stagewise_advantage_norm_enabled: false
+
+# Current redesigned BW actor knobs.
+structured_bw_objective_norm: per_latent_dim
+bw_down_query_count: 2
+bw_competition_layers: 2
+bw_attention_heads: 4
+bw_tau_min: 0.5
+bw_tau_max: 2.0
+bw_kappa_min: 16.0
+bw_kappa_max: 64.0
+structured_bw_entropy_norm_mode: per_simplex_dim
+structured_bw_policy_update_mode: ppo
+structured_bw_per_uav_surrogate_enabled: false
+structured_bw_per_slot_surrogate_enabled: false
+bw_slot_advantage_weight: 1.0
+bw_marginal_teacher_sample_enabled: false
+bw_marginal_teacher_sample_weight: 1.0
+bw_flow_proxy_base_action_mode: executed
+bw_slot_advantage_base_mode: sample
+bw_flow_proxy_aux_enabled: false
+bw_flow_proxy_aux_coef: 0.0
+bw_flow_proxy_aux_delta: 0.02
+
+# Current SAT actor knobs. SAT is executed by fixed strategy here, but the module
+# is still built by the structured trainer.
+sat_competition_layers: 2
+sat_attention_heads: 4
+sat_action_select_k: 2
+per_uav_visible_sat_token_max: 6
+
+# Current structured critic knobs.
+critic_embed_dim: 128
+critic_edge_embed_dim: 128
+critic_global_embed_dim: 128
+critic_system_token_dim: 128
+critic_hidden: 256
+critic_message_layers: 2
+critic_value_head_hidden: 256
+critic_value_mode: global_linear
+critic_global_linear_fit_decay: 0.90
+critic_global_linear_fit_recompute_advantages: true
+critic_global_feature_enabled: false
+critic_popart_enabled: false
+critic_warmup_before_actor_epochs: 0
+critic_loss_target_standardize: false
+critic_loss_running_standardize: false
+critic_replay_bank_enabled: false
+accel_hidden: 384
+accel_embed_dim: 192
+sat_hidden: 256
+sat_embed_dim: 128
+bw_hidden: 320
+bw_embed_dim: 160
+accel_gu_query_count: 6
+accel_peer_query_count: 3
+accel_sat_query_count: 4
+accel_attention_heads: 4
+
+
+

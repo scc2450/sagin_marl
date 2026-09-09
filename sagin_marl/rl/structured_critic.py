@@ -1056,6 +1056,9 @@ class StructuredCritic(nn.Module):
         sat_message_mlp_layers: int | None = None,
         sat_value_head_hidden_dim: int | None = None,
         sat_value_head_layers: int | None = None,
+        flat_num_uav: int | None = None,
+        flat_num_gu: int | None = None,
+        flat_num_sat: int | None = None,
     ):
         super().__init__()
         expected = {
@@ -1091,8 +1094,10 @@ class StructuredCritic(nn.Module):
             value_mode_l = "global_only"
         if value_mode_l in {"global_linear", "global-linear", "linear_global", "linear-global"}:
             value_mode_l = "global_linear"
-        if value_mode_l not in {"relational", "global_only", "global_linear"}:
-            raise ValueError("critic_value_mode must be one of {'relational', 'global_only', 'global_linear'}.")
+        if value_mode_l in {"flat", "flat_mlp", "flat-mlp", "flat_global", "flat-global", "shared_mlp", "shared-mlp"}:
+            value_mode_l = "flat_mlp"
+        if value_mode_l not in {"relational", "global_only", "global_linear", "flat_mlp"}:
+            raise ValueError("critic_value_mode must be one of {'relational', 'global_only', 'global_linear', 'flat_mlp'}.")
         self.value_mode = value_mode_l
         del global_feature_enabled
         if self.value_mode == "global_linear" and bool(popart_enabled):
@@ -1103,6 +1108,37 @@ class StructuredCritic(nn.Module):
         self.stage_specific_paths_enabled = bool(stage_specific_paths_enabled)
         self.sat_path_enabled = self.stage_specific_paths_enabled and self.value_mode == "relational"
         use_input_norm = bool(input_norm_enabled)
+        self.flat_num_uav = int(flat_num_uav or 0)
+        self.flat_num_gu = int(flat_num_gu or 0)
+        self.flat_num_sat = int(flat_num_sat or 0)
+        if self.value_mode == "flat_mlp":
+            if self.flat_num_uav <= 0 or self.flat_num_gu < 0 or self.flat_num_sat <= 0:
+                raise ValueError(
+                    "critic_value_mode='flat_mlp' requires flat_num_uav > 0, "
+                    "flat_num_gu >= 0, and flat_num_sat > 0."
+                )
+            flat_input_dim = (
+                self.flat_num_uav * int(uav_dim)
+                + self.flat_num_gu * int(gu_dim)
+                + self.flat_num_sat * int(sat_dim)
+                + self.flat_num_sat
+                + self.flat_num_uav * self.flat_num_gu * int(uav_gu_edge_dim)
+                + self.flat_num_uav * self.flat_num_sat * int(uav_sat_edge_dim)
+                + self.flat_num_uav * self.flat_num_uav * int(uav_uav_edge_dim)
+                + schema.CRITIC_GLOBAL_SCALAR_DIM
+                + self.flat_num_gu
+                + self.flat_num_sat
+                + self.flat_num_uav * self.flat_num_gu
+                + self.flat_num_uav * self.flat_num_sat
+                + self.flat_num_uav * self.flat_num_uav
+            )
+            self.flat_input_norm = _make_input_norm(flat_input_dim, use_input_norm)
+            self.flat_context_encoder = _make_mlp(
+                flat_input_dim,
+                hidden_dim,
+                self.system_token_dim,
+                num_layers=self.encoder_mlp_layers,
+            )
 
         self.uav_input_norm = _make_input_norm(uav_dim, use_input_norm)
         self.gu_input_norm = _make_input_norm(gu_dim, use_input_norm)
@@ -1534,6 +1570,8 @@ class StructuredCritic(nn.Module):
         global_embed = self.global_scalar_encoder(self.global_input_norm(world_state.global_scalars))
         if self.value_mode == "global_only":
             return global_embed
+        if self.value_mode == "flat_mlp":
+            return self.flat_context_encoder(self.flat_input_norm(self._flat_world_features(world_state)))
 
         gu_mask = world_state.gu_mask.to(dtype=torch.bool)
         sat_mask = world_state.sat_mask.to(dtype=torch.bool)
@@ -1570,6 +1608,49 @@ class StructuredCritic(nn.Module):
                 global_embed,
             )
         return system_token
+
+    def _flat_world_features(self, world_state: StructuredWorldState) -> torch.Tensor:
+        batch_size = int(world_state.global_scalars.shape[0])
+
+        def _expect_shape(value: torch.Tensor, tail: tuple[int, ...], name: str) -> torch.Tensor:
+            if tuple(value.shape[1:]) != tuple(tail):
+                raise ValueError(
+                    f"flat_mlp critic expected {name} shape [B, {tail}], got {tuple(value.shape)}."
+                )
+            return value
+
+        def _flat(value: torch.Tensor, tail: tuple[int, ...], name: str) -> torch.Tensor:
+            tensor = _expect_shape(value, tail, name).to(dtype=world_state.global_scalars.dtype)
+            return tensor.reshape(batch_size, -1)
+
+        features = [
+            _flat(world_state.uav_nodes, (self.flat_num_uav, schema.CRITIC_UAV_NODE_DIM), "uav_nodes"),
+            _flat(world_state.gu_nodes, (self.flat_num_gu, schema.CRITIC_GU_NODE_DIM), "gu_nodes"),
+            _flat(world_state.sat_nodes, (self.flat_num_sat, schema.CRITIC_SAT_NODE_DIM), "sat_nodes"),
+            _flat(world_state.sat_ids.unsqueeze(-1), (self.flat_num_sat, 1), "sat_ids"),
+            _flat(
+                world_state.uav_gu_edges,
+                (self.flat_num_uav, self.flat_num_gu, schema.CRITIC_UAV_GU_EDGE_DIM),
+                "uav_gu_edges",
+            ),
+            _flat(
+                world_state.uav_sat_edges,
+                (self.flat_num_uav, self.flat_num_sat, schema.CRITIC_UAV_SAT_EDGE_DIM),
+                "uav_sat_edges",
+            ),
+            _flat(
+                world_state.uav_uav_edges,
+                (self.flat_num_uav, self.flat_num_uav, schema.CRITIC_UAV_UAV_EDGE_DIM),
+                "uav_uav_edges",
+            ),
+            _flat(world_state.global_scalars, (schema.CRITIC_GLOBAL_SCALAR_DIM,), "global_scalars"),
+            _flat(world_state.gu_mask, (self.flat_num_gu,), "gu_mask"),
+            _flat(world_state.sat_mask, (self.flat_num_sat,), "sat_mask"),
+            _flat(world_state.uav_gu_mask, (self.flat_num_uav, self.flat_num_gu), "uav_gu_mask"),
+            _flat(world_state.uav_sat_mask, (self.flat_num_uav, self.flat_num_sat), "uav_sat_mask"),
+            _flat(world_state.uav_uav_mask, (self.flat_num_uav, self.flat_num_uav), "uav_uav_mask"),
+        ]
+        return torch.cat(features, dim=-1)
 
     def _global_linear_value(self, world_state: StructuredWorldState, stage_idx: int) -> torch.Tensor:
         features = world_state.global_scalars

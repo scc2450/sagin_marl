@@ -8,7 +8,15 @@ from sagin_marl.rl import structured_accel_actor_schema as accel_schema
 from sagin_marl.rl import structured_bw_actor_schema as bw_schema
 from sagin_marl.rl import structured_critic_schema as critic_schema
 from sagin_marl.rl import structured_sat_actor_schema as sat_schema
-from sagin_marl.rl.structured_actor import AccelPolicy, BwPolicy, SatSubsetPolicy, StructuredActor
+from sagin_marl.rl.structured_actor import (
+    AccelPolicy,
+    BwPolicy,
+    FlatAccelPolicy,
+    FlatBwPolicy,
+    FlatSatSubsetPolicy,
+    SatSubsetPolicy,
+    StructuredActor,
+)
 from sagin_marl.rl.structured_critic import StructuredCritic
 
 
@@ -77,70 +85,122 @@ def build_structured_modules_from_config(
     critic_value_head_layers = int(getattr(cfg, "critic_value_head_layers", 2) or 2)
     shape = native_module_shape_spec_from_config(cfg)
 
-    accel_policy = AccelPolicy(
-        ego_dim=accel_schema.ACCEL_EGO_DIM,
-        cell_dim=accel_schema.ACCEL_CELL_DIM,
-        gu_token_dim=accel_schema.ACCEL_GU_TOKEN_DIM,
-        peer_token_dim=accel_schema.ACCEL_PEER_TOKEN_DIM,
-        sat_token_dim=accel_schema.ACCEL_SAT_TOKEN_DIM,
-        gu_query_count=int(getattr(cfg, "accel_gu_query_count", accel_schema.ACCEL_GU_QUERY_COUNT)),
-        peer_query_count=int(getattr(cfg, "accel_peer_query_count", accel_schema.ACCEL_PEER_QUERY_COUNT)),
-        sat_query_count=int(getattr(cfg, "accel_sat_query_count", accel_schema.ACCEL_SAT_QUERY_COUNT)),
-        hidden_dim=accel_hidden,
-        embed_dim=accel_embed,
-        encoder_mlp_layers=accel_encoder_layers,
-        context_mlp_layers=accel_context_layers,
-        head_mlp_layers=accel_head_layers,
-        interaction_layers=int(getattr(cfg, "accel_interaction_layers", 0) or 0),
-        attention_heads=int(getattr(cfg, "accel_attention_heads", 4) or 4),
-        action_scale=1.0,
-        input_norm_enabled=use_actor_input_norm,
-    )
+    actor_backbone = str(getattr(cfg, "structured_actor_backbone", "topology_aware") or "topology_aware").strip().lower()
+    if actor_backbone == "flat_mlp":
+        accel_policy = FlatAccelPolicy(
+            ego_dim=accel_schema.ACCEL_EGO_DIM,
+            cell_dim=accel_schema.ACCEL_CELL_DIM,
+            gu_token_dim=accel_schema.ACCEL_GU_TOKEN_DIM,
+            peer_token_dim=accel_schema.ACCEL_PEER_TOKEN_DIM,
+            sat_token_dim=accel_schema.ACCEL_SAT_TOKEN_DIM,
+            gu_token_count=int(getattr(cfg, "users_obs_max")),
+            peer_token_count=max(int(getattr(cfg, "num_uav")) - 1, 0),
+            sat_token_count=int(shape.accel_sat_width),
+            hidden_dim=accel_hidden,
+            context_mlp_layers=accel_context_layers,
+            head_mlp_layers=accel_head_layers,
+            action_scale=1.0,
+            input_norm_enabled=use_actor_input_norm,
+        )
+    else:
+        accel_policy = AccelPolicy(
+            ego_dim=accel_schema.ACCEL_EGO_DIM,
+            cell_dim=accel_schema.ACCEL_CELL_DIM,
+            gu_token_dim=accel_schema.ACCEL_GU_TOKEN_DIM,
+            peer_token_dim=accel_schema.ACCEL_PEER_TOKEN_DIM,
+            sat_token_dim=accel_schema.ACCEL_SAT_TOKEN_DIM,
+            gu_query_count=int(getattr(cfg, "accel_gu_query_count", accel_schema.ACCEL_GU_QUERY_COUNT)),
+            peer_query_count=int(getattr(cfg, "accel_peer_query_count", accel_schema.ACCEL_PEER_QUERY_COUNT)),
+            sat_query_count=int(getattr(cfg, "accel_sat_query_count", accel_schema.ACCEL_SAT_QUERY_COUNT)),
+            hidden_dim=accel_hidden,
+            embed_dim=accel_embed,
+            encoder_mlp_layers=accel_encoder_layers,
+            context_mlp_layers=accel_context_layers,
+            head_mlp_layers=accel_head_layers,
+            interaction_layers=int(getattr(cfg, "accel_interaction_layers", 0) or 0),
+            attention_heads=int(getattr(cfg, "accel_attention_heads", 4) or 4),
+            action_scale=1.0,
+            input_norm_enabled=use_actor_input_norm,
+        )
     accel_log_std_init = float(getattr(cfg, "accel_log_std_init", 0.0) or 0.0)
     accel_policy.log_std.data.fill_(accel_log_std_init)
     accel_policy.log_std.requires_grad_(bool(getattr(cfg, "accel_log_std_trainable", True)))
-    sat_policy = SatSubsetPolicy(
-        ego_dim=sat_schema.SAT_EGO_DIM,
-        demand_dim=sat_schema.SAT_DEMAND_DIM,
-        role_dim=sat_schema.SAT_ROLE_DIM,
-        sat_token_dim=sat_schema.SAT_TOKEN_DIM,
-        hidden_dim=sat_hidden,
-        embed_dim=sat_embed,
-        encoder_mlp_layers=sat_encoder_layers,
-        context_mlp_layers=sat_context_layers,
-        head_mlp_layers=sat_head_layers,
-        sat_competition_layers=int(getattr(cfg, "sat_competition_layers", 2) or 2),
-        sat_attention_heads=int(getattr(cfg, "sat_attention_heads", 4) or 4),
-        sat_action_select_k=int(getattr(cfg, "sat_action_select_k", shape.sat_num_select)),
-        per_uav_visible_sat_token_max=int(getattr(cfg, "per_uav_visible_sat_token_max", shape.visible_sats_max)),
-        input_norm_enabled=use_actor_input_norm,
-    )
-    bw_policy = BwPolicy(
-        ego_dim=bw_schema.BW_EGO_DIM,
-        sat_token_dim=bw_schema.BW_SAT_TOKEN_DIM,
-        gu_token_dim=bw_schema.BW_GU_TOKEN_DIM,
-        hidden_dim=bw_hidden,
-        embed_dim=bw_embed,
-        down_query_count=int(getattr(cfg, "bw_down_query_count", 2) or 2),
-        num_competition_layers=int(getattr(cfg, "bw_competition_layers", 2) or 2),
-        num_heads=int(getattr(cfg, "bw_attention_heads", 4) or 4),
-        encoder_mlp_layers=bw_encoder_layers,
-        context_mlp_layers=bw_context_layers,
-        head_mlp_layers=bw_head_layers,
-        tau_min=float(getattr(cfg, "bw_tau_min", 0.5) or 0.5),
-        tau_max=float(getattr(cfg, "bw_tau_max", 2.0) or 2.0),
-        kappa_min=float(getattr(cfg, "bw_kappa_min", 0.5) or 0.5),
-        kappa_max=float(getattr(cfg, "bw_kappa_max", 32.0) or 32.0),
-        fixed_tau=getattr(cfg, "bw_fixed_tau", None),
-        fixed_kappa=getattr(cfg, "bw_fixed_kappa", None),
-        native_dirichlet_diagnostic_mode=str(
-            getattr(cfg, "bw_native_dirichlet_diagnostic_mode", "current") or "current"
-        ),
-        manual_competition_attention_enabled=bool(
-            getattr(cfg, "bw_manual_competition_attention_enabled", False)
-        ),
-        input_norm_enabled=use_actor_input_norm,
-    )
+    if actor_backbone == "flat_mlp":
+        sat_policy = FlatSatSubsetPolicy(
+            ego_dim=sat_schema.SAT_EGO_DIM,
+            demand_dim=sat_schema.SAT_DEMAND_DIM,
+            role_dim=sat_schema.SAT_ROLE_DIM,
+            sat_token_dim=sat_schema.SAT_TOKEN_DIM,
+            hidden_dim=sat_hidden,
+            context_mlp_layers=sat_context_layers,
+            head_mlp_layers=sat_head_layers,
+            sat_action_select_k=int(getattr(cfg, "sat_action_select_k", shape.sat_num_select)),
+            per_uav_visible_sat_token_max=int(getattr(cfg, "per_uav_visible_sat_token_max", shape.visible_sats_max)),
+            input_norm_enabled=use_actor_input_norm,
+        )
+        bw_policy = FlatBwPolicy(
+            ego_dim=bw_schema.BW_EGO_DIM,
+            sat_token_dim=bw_schema.BW_SAT_TOKEN_DIM,
+            gu_token_dim=bw_schema.BW_GU_TOKEN_DIM,
+            selected_sat_token_count=int(shape.sat_num_select),
+            gu_token_count=int(shape.bw_action_dim),
+            hidden_dim=bw_hidden,
+            context_mlp_layers=bw_context_layers,
+            head_mlp_layers=bw_head_layers,
+            tau_min=float(getattr(cfg, "bw_tau_min", 0.5) or 0.5),
+            tau_max=float(getattr(cfg, "bw_tau_max", 2.0) or 2.0),
+            kappa_min=float(getattr(cfg, "bw_kappa_min", 0.5) or 0.5),
+            kappa_max=float(getattr(cfg, "bw_kappa_max", 32.0) or 32.0),
+            fixed_tau=getattr(cfg, "bw_fixed_tau", None),
+            fixed_kappa=getattr(cfg, "bw_fixed_kappa", None),
+            native_dirichlet_diagnostic_mode=str(
+                getattr(cfg, "bw_native_dirichlet_diagnostic_mode", "current") or "current"
+            ),
+            input_norm_enabled=use_actor_input_norm,
+        )
+    else:
+        sat_policy = SatSubsetPolicy(
+            ego_dim=sat_schema.SAT_EGO_DIM,
+            demand_dim=sat_schema.SAT_DEMAND_DIM,
+            role_dim=sat_schema.SAT_ROLE_DIM,
+            sat_token_dim=sat_schema.SAT_TOKEN_DIM,
+            hidden_dim=sat_hidden,
+            embed_dim=sat_embed,
+            encoder_mlp_layers=sat_encoder_layers,
+            context_mlp_layers=sat_context_layers,
+            head_mlp_layers=sat_head_layers,
+            sat_competition_layers=int(getattr(cfg, "sat_competition_layers", 2) or 2),
+            sat_attention_heads=int(getattr(cfg, "sat_attention_heads", 4) or 4),
+            sat_action_select_k=int(getattr(cfg, "sat_action_select_k", shape.sat_num_select)),
+            per_uav_visible_sat_token_max=int(getattr(cfg, "per_uav_visible_sat_token_max", shape.visible_sats_max)),
+            input_norm_enabled=use_actor_input_norm,
+        )
+        bw_policy = BwPolicy(
+            ego_dim=bw_schema.BW_EGO_DIM,
+            sat_token_dim=bw_schema.BW_SAT_TOKEN_DIM,
+            gu_token_dim=bw_schema.BW_GU_TOKEN_DIM,
+            hidden_dim=bw_hidden,
+            embed_dim=bw_embed,
+            down_query_count=int(getattr(cfg, "bw_down_query_count", 2) or 2),
+            num_competition_layers=int(getattr(cfg, "bw_competition_layers", 2) or 2),
+            num_heads=int(getattr(cfg, "bw_attention_heads", 4) or 4),
+            encoder_mlp_layers=bw_encoder_layers,
+            context_mlp_layers=bw_context_layers,
+            head_mlp_layers=bw_head_layers,
+            tau_min=float(getattr(cfg, "bw_tau_min", 0.5) or 0.5),
+            tau_max=float(getattr(cfg, "bw_tau_max", 2.0) or 2.0),
+            kappa_min=float(getattr(cfg, "bw_kappa_min", 0.5) or 0.5),
+            kappa_max=float(getattr(cfg, "bw_kappa_max", 32.0) or 32.0),
+            fixed_tau=getattr(cfg, "bw_fixed_tau", None),
+            fixed_kappa=getattr(cfg, "bw_fixed_kappa", None),
+            native_dirichlet_diagnostic_mode=str(
+                getattr(cfg, "bw_native_dirichlet_diagnostic_mode", "current") or "current"
+            ),
+            manual_competition_attention_enabled=bool(
+                getattr(cfg, "bw_manual_competition_attention_enabled", False)
+            ),
+            input_norm_enabled=use_actor_input_norm,
+        )
     actor = StructuredActor(
         accel_policy=accel_policy,
         sat_subset_policy=sat_policy,
@@ -179,6 +239,9 @@ def build_structured_modules_from_config(
             sat_message_mlp_layers=int(getattr(cfg, "critic_sat_message_mlp_layers", 0) or critic_message_mlp_layers),
             sat_value_head_hidden_dim=int(getattr(cfg, "critic_sat_value_head_hidden", 0) or getattr(cfg, "critic_value_head_hidden", critic_schema.CRITIC_VALUE_HEAD_HIDDEN)),
             sat_value_head_layers=int(getattr(cfg, "critic_sat_value_head_layers", 0) or critic_value_head_layers),
+            flat_num_uav=int(getattr(cfg, "num_uav")),
+            flat_num_gu=int(getattr(cfg, "num_gu")),
+            flat_num_sat=min(int(getattr(cfg, "num_sat")), int(shape.visible_sats_max) * int(getattr(cfg, "num_uav"))),
             bw_local_ego_dim=bw_schema.BW_EGO_DIM,
             bw_local_sat_node_dim=bw_schema.BW_SAT_TOKEN_DIM,
             bw_local_sat_edge_dim=0,

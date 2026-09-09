@@ -7,6 +7,7 @@ import re
 import shutil
 import subprocess
 import sys
+import time
 from typing import Sequence
 
 import torch
@@ -14,7 +15,13 @@ from torch.utils.cpp_extension import load
 
 
 _EXTENSION = None
-_CACHE_ROOT = Path(os.environ.get("SAGIN_MARL_NATIVE_CUDA_CACHE", r"D:\sagin_marl_native_cuda_cache"))
+_EXTENSION_NAME = "sagin_marl_native_cuda_live"
+_DEFAULT_CACHE_ROOT = (
+    Path(r"D:\sagin_marl_native_cuda_cache")
+    if os.name == "nt"
+    else Path(os.environ.get("XDG_CACHE_HOME", str(Path.home() / ".cache"))) / "sagin_marl_native_cuda_cache"
+)
+_CACHE_ROOT = Path(os.environ.get("SAGIN_MARL_NATIVE_CUDA_CACHE", str(_DEFAULT_CACHE_ROOT)))
 _NINJA_READY = False
 _MSVC_READY = False
 _MSVC_VERSION_READY = False
@@ -28,6 +35,11 @@ SOURCE_DEMAND_PRIORITY = 5
 SOURCE_QUEUE_AWARE = 6
 SOURCE_CLUSTER_CENTER_QUEUE_AWARE = 7
 SOURCE_LYAPUNOV = 8
+SOURCE_DPP_RESOURCE_BW = 9
+SOURCE_TOPOLOGY_DPP_BW = 9
+SOURCE_TOPOLOGY_DPP_SAT = 10
+SOURCE_TOPOLOGY_DPP_ACCEL = 11
+SOURCE_OBSERVABLE_CLUSTER_QUEUE_AWARE = 12
 
 FLOW_BASE_EXECUTED = 0
 FLOW_BASE_DETERMINISTIC = 1
@@ -218,6 +230,65 @@ def _ensure_ninja_on_path() -> None:
     _NINJA_READY = True
 
 
+def _native_cuda_build_process_running() -> bool:
+    if os.name == "nt" or not shutil.which("pgrep"):
+        return False
+    patterns = ("nvcc", "ninja", _EXTENSION_NAME)
+    for pattern in patterns:
+        result = subprocess.run(["pgrep", "-af", pattern], check=False, capture_output=True, text=True)
+        if result.returncode not in (0, 1):
+            continue
+        for line in result.stdout.splitlines():
+            if "pgrep -af" in line:
+                continue
+            return True
+    return False
+
+
+def _stale_lock_timeout_seconds() -> float:
+    raw_value = os.environ.get("SAGIN_MARL_NATIVE_CUDA_STALE_LOCK_SECS", "600")
+    try:
+        return float(raw_value)
+    except ValueError as exc:
+        raise RuntimeError("SAGIN_MARL_NATIVE_CUDA_STALE_LOCK_SECS must be a number of seconds.") from exc
+
+
+def _quarantine_stale_extension_lock(build_dir: Path) -> None:
+    if os.name == "nt":
+        return
+    lock_path = build_dir / "lock"
+    try:
+        stat_result = lock_path.stat()
+    except FileNotFoundError:
+        return
+    stale_after = _stale_lock_timeout_seconds()
+    if stale_after <= 0:
+        return
+    lock_age = time.time() - stat_result.st_mtime
+    if lock_age < stale_after or _native_cuda_build_process_running():
+        return
+    timestamp = time.strftime("%Y%m%d_%H%M%S", time.localtime())
+    quarantine_path = lock_path.with_name(f"lock.stale_{timestamp}")
+    try:
+        lock_path.rename(quarantine_path)
+    except FileNotFoundError:
+        return
+    except OSError as exc:
+        print(f"[native_cuda] Could not quarantine stale extension lock {lock_path}: {exc}", file=sys.stderr)
+        return
+    print(
+        f"[native_cuda] Quarantined stale extension lock {lock_path} -> {quarantine_path} "
+        f"(age={lock_age:.1f}s).",
+        file=sys.stderr,
+    )
+
+
+def _configure_native_cuda_build_jobs() -> None:
+    max_jobs = os.environ.get("SAGIN_MARL_NATIVE_CUDA_MAX_JOBS", "1")
+    if max_jobs:
+        os.environ.setdefault("MAX_JOBS", max_jobs)
+
+
 def _validate_msvc_version_and_skip_broken_torch_decoder() -> None:
     global _MSVC_VERSION_READY
     if os.name != "nt":
@@ -287,6 +358,8 @@ def _load_extension():
     torch_extensions_dir = _CACHE_ROOT / "torch_extensions"
     torch_extensions_dir.mkdir(parents=True, exist_ok=True)
     os.environ.setdefault("TORCH_EXTENSIONS_DIR", str(torch_extensions_dir))
+    _configure_native_cuda_build_jobs()
+    _quarantine_stale_extension_lock(torch_extensions_dir / _EXTENSION_NAME)
     extra_include_paths, extra_library_paths = _ascii_torch_paths()
     build_sources: list[str] = []
     for name in ("kernels.cpp", "kernels.cu", "actor_kernels.cu"):
@@ -300,7 +373,7 @@ def _load_extension():
         extra_cuda_cflags.append("-allow-unsupported-compiler")
     extra_ldflags = [f"/LIBPATH:{path}" for path in extra_library_paths] if os.name == "nt" else [f"-L{path}" for path in extra_library_paths]
     _EXTENSION = load(
-        name="sagin_marl_native_cuda_live",
+        name=_EXTENSION_NAME,
         sources=build_sources,
         extra_cflags=["/O2"] if os.name == "nt" else ["-O3"],
         extra_cuda_cflags=extra_cuda_cflags,

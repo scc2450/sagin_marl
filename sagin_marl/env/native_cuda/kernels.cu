@@ -32,6 +32,11 @@ constexpr int kSourceDemandPriority = 5;
 constexpr int kSourceQueueAware = 6;
 constexpr int kSourceClusterCenterQueueAware = 7;
 constexpr int kSourceLyapunov = 8;
+constexpr int kSourceTopologyDppBw = 9;
+constexpr int kSourceDppResourceBw = kSourceTopologyDppBw;  // Legacy alias.
+constexpr int kSourceTopologyDppSat = 10;
+constexpr int kSourceTopologyDppAccel = 11;
+constexpr int kSourceObservableClusterQueueAware = 12;
 
 enum FinishProfileSegment : int {
   kFinishProfArrivalAndFlowProxy = 0,
@@ -180,6 +185,8 @@ enum IntParamIndex : int {
   kParamHistorySnapshotsEnabled = 90,
   kParamAccessBwDecisionInterval = 91,
   kParamSatDecisionInterval = 92,
+  kParamTopologyDppGuMaxSelect = 93,
+  kParamTopologyDppAccelNumCandidates = 94,
 };
 
 enum AccelEgoField : int {
@@ -567,6 +574,20 @@ enum FloatParamIndex : int {
   kFpBaselineLyapunovSatSwitchBias = 199,
   kFpBaselineLyapunovSatAbsSeWeight = 200,
   kFpBaselineLyapunovSatDopplerPenalty = 201,
+  kFpTopologyDppBwTemp = 202,
+  kFpTopologyDppBwFloor = 203,
+  kFpTopologyDppDistPenalty = 204,
+  kFpTopologyDppSatQueueGapWeight = 205,
+  kFpTopologyDppSatSubsetPenalty = 206,
+  kFpTopologyDppSatContentionWeight = 207,
+  kFpTopologyDppAccelStepScale = 208,
+  kFpTopologyDppAccessWeight = 209,
+  kFpTopologyDppBackhaulWeight = 210,
+  kFpTopologyDppMobilityWeight = 211,
+  kFpTopologyDppAccelCost = 212,
+  kFpTopologyDppSmoothness = 213,
+  kFpTopologyDppAccelSafetyWeight = 214,
+  kFpTopologyDppAccelRoleWeight = 215,
 };
 
 enum FloatTensorIndex : int {
@@ -910,6 +931,7 @@ struct PackedAbi {
 
 __constant__ PackedAbi cBranchSourceAbi;
 __constant__ PackedAbi cBranchTargetAbi;
+__constant__ PackedAbi cLiveAbi;
 
 __host__ PackedAbi pack_abi(
     const TensorVec& float_tensors,
@@ -955,6 +977,10 @@ __host__ PackedAbi pack_abi(
   return out;
 }
 
+void copy_live_abi_to_symbol(const PackedAbi& abi, cudaStream_t stream) {
+  C10_CUDA_CHECK(cudaMemcpyToSymbolAsync(cLiveAbi, &abi, sizeof(PackedAbi), 0, cudaMemcpyHostToDevice, stream));
+}
+
 void check_cuda_group(const TensorVec& tensors, at::ScalarType dtype, const char* group_name) {
   for (size_t idx = 0; idx < tensors.size(); ++idx) {
     const at::Tensor& tensor = tensors[idx];
@@ -993,7 +1019,7 @@ void check_launch_contract(
     throw std::runtime_error("native CUDA actor source mode scalars do not match the frozen ABI.");
   }
   for (int64_t mode : {accel_source_mode, sat_source_mode, bw_source_mode}) {
-    if (mode < kSourcePolicy || mode > kSourceLyapunov) {
+    if (mode < kSourcePolicy || mode > kSourceObservableClusterQueueAware) {
       throw std::runtime_error("native CUDA actor source mode is not supported.");
     }
   }
@@ -2591,7 +2617,7 @@ __device__ float native_safety_pair_margin_device(
   return r_next_proj - (d_required + c_next * c_next / (2.0f * dynamics_denominator(a_safe)));
 }
 
-__device__ void native_safety_project_env(PackedAbi a, int stage_slot, int e) {
+__device__ void native_safety_project_env(const PackedAbi& a, int stage_slot, int e) {
   const int ucount = static_cast<int>(ip(a, kParamNumUav));
   if (ucount <= 1) return;
   const float tau = dynamics_denominator(fp(a, kFpAccelTau0, fp(a, kFpTau0, 1.0f)));
@@ -7161,7 +7187,231 @@ __device__ float lyapunov_relay_gate(const PackedAbi& a, int stage_slot, int e, 
   return best > -1.0e30f ? 0.5f + 0.5f * best : 0.5f;
 }
 
-__global__ void baseline_accel_live_kernel(PackedAbi a, int64_t active_idx, int64_t source_mode64) {
+__device__ __forceinline__ void project_unit_action(float* ax, float* ay) {
+  const float norm = sqrtf((*ax) * (*ax) + (*ay) * (*ay));
+  if (norm > 1.0f) {
+    *ax /= norm;
+    *ay /= norm;
+  }
+}
+
+__device__ __forceinline__ void topology_dpp_accel_candidate_action(
+    int candidate,
+    int candidate_count,
+    float step,
+    float gain,
+    float* raw_x,
+    float* raw_y,
+    float* action_x,
+    float* action_y) {
+  float cx = 0.0f;
+  float cy = 0.0f;
+  if (candidate > 0 && candidate_count > 1 && step > 0.0f) {
+    const float theta = 6.28318530717958647692f
+        * static_cast<float>(candidate - 1)
+        / fmaxf(static_cast<float>(candidate_count - 1), 1.0f);
+    cx = cosf(theta) * step;
+    cy = sinf(theta) * step;
+  }
+  float ax = cx * gain;
+  float ay = cy * gain;
+  project_unit_action(&ax, &ay);
+  *raw_x = cx;
+  *raw_y = cy;
+  *action_x = ax;
+  *action_y = ay;
+}
+
+__device__ __forceinline__ float observable_cluster_token_weight(
+    const PackedAbi& a,
+    int accel_stage,
+    int e,
+    int u,
+    int g,
+    const float* tok,
+    float assoc_bonus) {
+  const float pressure = fmaxf(
+      tok[kAccelGuQueueSteps] + tok[kAccelGuExpectedArrivalSteps] - tok[kAccelGuLastOutflowSteps],
+      0.0f) + fmaxf(tok[kAccelGuLastDropSteps], 0.0f);
+  const float se = fmaxf(lyapunov_eta_for_accel_slot(a, e, u, g, tok, accel_stage), 0.0f);
+  float weight = fmaxf(pressure, 1.0e-3f) * (0.5f + se);
+  if (assoc_bonus > 0.0f) {
+    weight *= 1.0f + assoc_bonus * clampf_device(tok[kAccelGuPreOwnerIsEgo], 0.0f, 1.0f);
+  }
+  return fmaxf(weight, 0.0f);
+}
+
+__global__ void observable_cluster_accel_live_kernel(int64_t active_idx) {
+  const PackedAbi& a = cLiveAbi;
+  const int e = blockIdx.x;
+  const int u = blockIdx.y;
+  if (e >= ip(a, kParamNumEnvs)) return;
+  const int ucount = static_cast<int>(ip(a, kParamNumUav));
+  if (u >= ucount) return;
+  const int live_f = active_idx == 0 ? kFLiveAccelObs0 : kFLiveAccelObs1;
+  const int live_b = active_idx == 0 ? kBLiveAccelObs0 : kBLiveAccelObs1;
+  const int accel_stage = active_idx == 0 ? 0 : 1;
+  const int gu = static_cast<int>(ip(a, kParamNumGu));
+  const int row = row_local(a, e, u);
+  const int center_limit = min(min(max(ucount, 1), max(gu, 0)), kSourceBlockMaxThreads);
+  const float assoc_bonus = fmaxf(fp(a, kFpBaselineAssocBonus, 0.3f), 0.0f);
+  const float gain = fmaxf(fp(a, kFpBaselineAccelGain, 2.0f), 0.0f);
+  __shared__ float scratch_a[kSourceBlockMaxThreads];
+  __shared__ float scratch_b[kSourceBlockMaxThreads];
+  __shared__ float scratch_c[kSourceBlockMaxThreads];
+  __shared__ int scratch_i[kSourceBlockMaxThreads];
+  __shared__ int selected[kSourceBlockMaxThreads];
+
+  if (threadIdx.x == 0) {
+    for (int r = 0; r < center_limit; ++r) selected[r] = -1;
+  }
+  __syncthreads();
+
+  for (int rank = 0; rank < center_limit; ++rank) {
+    float local_best_score = -3.402823466e38f;
+    int local_best_g = -1;
+    for (int g = threadIdx.x; g < gu; g += blockDim.x) {
+      const int mask_idx = row * gu + g;
+      if (!a.b[live_b + 0][mask_idx]) continue;
+      bool used = false;
+      for (int r = 0; r < rank; ++r) used = used || selected[r] == g;
+      if (used) continue;
+      const float* tok = a.f[live_f + 2] + static_cast<int64_t>(mask_idx) * kAccelGuTokenDim;
+      const float weight = observable_cluster_token_weight(a, accel_stage, e, u, g, tok, assoc_bonus);
+      float diversity = 1.0f;
+      if (rank > 0) {
+        float best_d2 = 3.402823466e38f;
+        for (int r = 0; r < rank; ++r) {
+          const int sg = selected[r];
+          if (sg < 0) continue;
+          const float* stok = a.f[live_f + 2] + static_cast<int64_t>(row * gu + sg) * kAccelGuTokenDim;
+          const float dx = tok[kAccelGuRelX] - stok[kAccelGuRelX];
+          const float dy = tok[kAccelGuRelY] - stok[kAccelGuRelY];
+          best_d2 = fminf(best_d2, dx * dx + dy * dy);
+        }
+        diversity = 0.25f + sqrtf(fmaxf(best_d2, 0.0f));
+      }
+      const float score = weight * diversity;
+      if (score > local_best_score || (score == local_best_score && (local_best_g < 0 || g < local_best_g))) {
+        local_best_score = score;
+        local_best_g = g;
+      }
+    }
+    float best_score = -3.402823466e38f;
+    int best_g = -1;
+    block_argmax_min_index(local_best_score, local_best_g, scratch_a, scratch_i, &best_score, &best_g);
+    if (threadIdx.x == 0) selected[rank] = best_g;
+    __syncthreads();
+    if (selected[rank] < 0) break;
+  }
+
+  int selected_count = 0;
+  for (int r = 0; r < center_limit; ++r) {
+    if (selected[r] >= 0) ++selected_count;
+  }
+  int target_rank = -1;
+  if (selected_count > 0) {
+    float best_d2 = 3.402823466e38f;
+    for (int r = 0; r < selected_count; ++r) {
+      const int sg = selected[r];
+      const float* stok = a.f[live_f + 2] + static_cast<int64_t>(row * gu + sg) * kAccelGuTokenDim;
+      const float d2 = stok[kAccelGuRelX] * stok[kAccelGuRelX] + stok[kAccelGuRelY] * stok[kAccelGuRelY];
+      if (d2 < best_d2 || (d2 == best_d2 && r < target_rank)) {
+        best_d2 = d2;
+        target_rank = r;
+      }
+    }
+  }
+
+  float local_cluster_w = 0.0f;
+  float local_cluster_x = 0.0f;
+  float local_cluster_y = 0.0f;
+  if (target_rank >= 0) {
+    for (int g = threadIdx.x; g < gu; g += blockDim.x) {
+      const int mask_idx = row * gu + g;
+      if (!a.b[live_b + 0][mask_idx]) continue;
+      const float* tok = a.f[live_f + 2] + static_cast<int64_t>(mask_idx) * kAccelGuTokenDim;
+      int nearest_rank = 0;
+      float nearest_d2 = 3.402823466e38f;
+      for (int r = 0; r < selected_count; ++r) {
+        const int sg = selected[r];
+        const float* stok = a.f[live_f + 2] + static_cast<int64_t>(row * gu + sg) * kAccelGuTokenDim;
+        const float dx = tok[kAccelGuRelX] - stok[kAccelGuRelX];
+        const float dy = tok[kAccelGuRelY] - stok[kAccelGuRelY];
+        const float d2 = dx * dx + dy * dy;
+        if (d2 < nearest_d2 || (d2 == nearest_d2 && r < nearest_rank)) {
+          nearest_d2 = d2;
+          nearest_rank = r;
+        }
+      }
+      if (nearest_rank != target_rank) continue;
+      const float weight = observable_cluster_token_weight(a, accel_stage, e, u, g, tok, assoc_bonus);
+      local_cluster_w += weight;
+      local_cluster_x += tok[kAccelGuRelX] * weight;
+      local_cluster_y += tok[kAccelGuRelY] * weight;
+    }
+  }
+
+  const float cluster_w = block_sum_float(local_cluster_w, scratch_a);
+  const float cluster_x = block_sum_float(local_cluster_x, scratch_b);
+  const float cluster_y = block_sum_float(local_cluster_y, scratch_c);
+  float ax = 0.0f;
+  float ay = 0.0f;
+  if (cluster_w > kNormDenomEps) {
+    ax = cluster_x / cluster_w * gain;
+    ay = cluster_y / cluster_w * gain;
+  } else if (target_rank >= 0) {
+    const int target_g = selected[target_rank];
+    const float* target_tok = a.f[live_f + 2] + static_cast<int64_t>(row * gu + target_g) * kAccelGuTokenDim;
+    ax = target_tok[kAccelGuRelX] * gain;
+    ay = target_tok[kAccelGuRelY] * gain;
+  }
+
+  const int nbr_width = max(ucount - 1, 0);
+  const float repulse_gain = fp(a, kFpBaselineRepulseGain, 0.0f);
+  const float repulse_radius = fp(a, kFpDSafe, 0.0f) * fp(a, kFpBaselineRepulseRadiusFactor, 1.5f);
+  float local_rx = 0.0f;
+  float local_ry = 0.0f;
+  if (repulse_gain > 0.0f && repulse_radius > 0.0f && nbr_width > 0) {
+    const float map_size = positive_config_scale(fp(a, kFpMapSize, 1.0f));
+    for (int n = threadIdx.x; n < nbr_width; n += blockDim.x) {
+      const int nidx = row * nbr_width + n;
+      if (!a.b[live_b + 1][nidx]) continue;
+      const float* peer = a.f[live_f + 3] + static_cast<int64_t>(nidx) * kAccelPeerTokenDim;
+      const float relx = peer[kAccelPeerRelX];
+      const float rely = peer[kAccelPeerRelY];
+      const float dist_norm = sqrtf(relx * relx + rely * rely);
+      const float dist = dist_norm * map_size;
+      if (!(dist > kDynamicsDenomEps && dist < repulse_radius)) continue;
+      const float strength = (1.0f / dynamics_denominator(dist) - 1.0f / repulse_radius);
+      local_rx += (relx / geometry_denominator(dist_norm)) * strength;
+      local_ry += (rely / geometry_denominator(dist_norm)) * strength;
+    }
+  }
+  const float rx = block_sum_float(local_rx, scratch_a);
+  const float ry = block_sum_float(local_ry, scratch_b);
+  if (repulse_gain > 0.0f && repulse_radius > 0.0f && nbr_width > 0) {
+    ax += repulse_gain * rx;
+    ay += repulse_gain * ry;
+  }
+
+  if (threadIdx.x == 0) {
+    ax += baseline_energy_term_component(a, live_f, row, 0);
+    ay += baseline_energy_term_component(a, live_f, row, 1);
+    project_unit_action(&ax, &ay);
+    a.f[kFLiveAccelAction][(e * ucount + u) * 2 + 0] = ax;
+    a.f[kFLiveAccelAction][(e * ucount + u) * 2 + 1] = ay;
+    if (has_f(a, kFLiveAccelLatentAction)) {
+      a.f[kFLiveAccelLatentAction][(e * ucount + u) * 2 + 0] = 0.0f;
+      a.f[kFLiveAccelLatentAction][(e * ucount + u) * 2 + 1] = 0.0f;
+    }
+    if (has_f(a, kFLiveAccelOldLogprob)) a.f[kFLiveAccelOldLogprob][e * ucount + u] = 0.0f;
+    if (e == 0 && u == 0 && has_i(a, kIMarker)) a.i[kIMarker][0] = 22;
+  }
+}
+
+__global__ void baseline_accel_live_kernel(int64_t active_idx, int64_t source_mode64) {
+  const PackedAbi& a = cLiveAbi;
   const int e = blockIdx.x;
   const int u = blockIdx.y;
   if (e >= ip(a, kParamNumEnvs)) return;
@@ -7176,11 +7426,181 @@ __global__ void baseline_accel_live_kernel(PackedAbi a, int64_t active_idx, int6
   __shared__ float scratch_a[kSourceBlockMaxThreads];
   __shared__ float scratch_b[kSourceBlockMaxThreads];
   __shared__ float scratch_c[kSourceBlockMaxThreads];
+  __shared__ int scratch_i[kSourceBlockMaxThreads];
   float local_sum_w = 0.0f;
   float local_vx = 0.0f;
   float local_vy = 0.0f;
 
-  if (mode == kSourceLyapunov) {
+  if (mode == kSourceTopologyDppAccel) {
+    const int candidate_count = min(max(static_cast<int>(ip(a, kParamTopologyDppAccelNumCandidates, 9)), 1), kSourceBlockMaxThreads);
+    const float step = clampf_device(fp(a, kFpTopologyDppAccelStepScale, 0.6f), 0.0f, 1.0f);
+    const float gain = fmaxf(fp(a, kFpBaselineAccelGain, 2.0f), 0.0f);
+    const float access_w = fmaxf(fp(a, kFpTopologyDppAccessWeight, 1.0f), 0.0f);
+    const float backhaul_w = fmaxf(fp(a, kFpTopologyDppBackhaulWeight, 1.0f), 0.0f);
+    const float mobility_w = fmaxf(fp(a, kFpTopologyDppMobilityWeight, 0.75f), 0.0f);
+    const float accel_cost = fmaxf(fp(a, kFpTopologyDppAccelCost, 0.08f), 0.0f);
+    const float smooth_w = fmaxf(fp(a, kFpTopologyDppSmoothness, 0.05f), 0.0f);
+    const float safety_w = fmaxf(fp(a, kFpTopologyDppAccelSafetyWeight, 4.0f), 0.0f);
+    const float role_w = fmaxf(fp(a, kFpTopologyDppAccelRoleWeight, 0.35f), 0.0f);
+    const float dist_penalty = fmaxf(fp(a, kFpTopologyDppDistPenalty, 0.1f), 0.0f);
+    const float assoc_bonus = fmaxf(fp(a, kFpBaselineAssocBonus, 0.3f), 0.0f);
+    const float map_size = positive_config_scale(fp(a, kFpMapSize, 1.0f));
+    const float tau = fmaxf(fp(a, kFpTau0, 1.0f), 0.0f);
+    const float amax = positive_config_scale(fp(a, kFpAccelAMax, 1.0f));
+    const float vmax = positive_config_scale(fp(a, kFpVMax, 1.0f));
+    const float* ego = a.f[live_f + 0] + static_cast<int64_t>(row) * kAccelEgoDim;
+    float role_x = ego[kAccelEgoX] - 0.5f;
+    float role_y = ego[kAccelEgoY] - 0.5f;
+    float role_norm = sqrtf(role_x * role_x + role_y * role_y);
+    if (role_norm <= 1.0e-3f && ucount > 0) {
+      const float theta = 6.28318530717958647692f * static_cast<float>(u) / fmaxf(static_cast<float>(ucount), 1.0f);
+      role_x = cosf(theta);
+      role_y = sinf(theta);
+      role_norm = 1.0f;
+    }
+    if (role_norm > kNormDenomEps) {
+      role_x /= role_norm;
+      role_y /= role_norm;
+    }
+    const int cand = threadIdx.x;
+    float local_score = -3.402823466e38f;
+    int local_candidate = -1;
+    if (cand < candidate_count) {
+      float raw_x = 0.0f, raw_y = 0.0f, ax = 0.0f, ay = 0.0f;
+      topology_dpp_accel_candidate_action(cand, candidate_count, step, gain, &raw_x, &raw_y, &ax, &ay);
+      const float velx = ego[kAccelEgoVx] * vmax;
+      const float vely = ego[kAccelEgoVy] * vmax;
+      const float delta_x = (velx * tau + 0.5f * ax * amax * tau * tau) / map_size;
+      const float delta_y = (vely * tau + 0.5f * ay * amax * tau * tau) / map_size;
+      float access_term = 0.0f;
+      float pressure_sum = 0.0f;
+      float target_x = 0.0f;
+      float target_y = 0.0f;
+      for (int g = 0; g < gu; ++g) {
+        const int mask_idx = row * gu + g;
+        if (!a.b[live_b + 0][mask_idx]) continue;
+        const float* tok = a.f[live_f + 2] + static_cast<int64_t>(mask_idx) * kAccelGuTokenDim;
+        const float relx = tok[kAccelGuRelX] - delta_x;
+        const float rely = tok[kAccelGuRelY] - delta_y;
+        const float dist = sqrtf(relx * relx + rely * rely);
+        const float eta_obs = lyapunov_eta_for_accel_slot(a, e, u, g, tok, accel_stage);
+        const float range_norm = clampf_device(dist / 0.5f, 0.0f, 1.0f);
+        const float eta_new = clampf_device(0.8f * (1.0f - 0.9f * range_norm) + 0.1f, 0.1f, 1.0f);
+        const float eta_blend = fmaxf(0.4f * eta_obs + 0.6f * eta_new, 0.0f);
+        const float demand = lyapunov_queue_from_accel_token(tok);
+        const float rate_proxy = clampf_device(0.5f + eta_blend, 0.0f, 2.0f);
+        const float prev_assoc = clampf_device(tok[kAccelGuPreOwnerIsEgo], 0.0f, 1.0f);
+        const float service_pressure = demand * rate_proxy * (1.0f + assoc_bonus * prev_assoc);
+        const float slot_score = service_pressure - dist_penalty * dist;
+        access_term += fmaxf(slot_score, 0.0f) * rate_proxy;
+        pressure_sum += service_pressure;
+        target_x += relx * service_pressure;
+        target_y += rely * service_pressure;
+      }
+      float mobility_term = 0.0f;
+      if (pressure_sum > kNormDenomEps) {
+        float desired_x = target_x / pressure_sum * gain;
+        float desired_y = target_y / pressure_sum * gain;
+        project_unit_action(&desired_x, &desired_y);
+        mobility_term = ax * desired_x + ay * desired_y;
+      }
+      float safety_penalty = 0.0f;
+      const int nbr_width = max(ucount - 1, 0);
+      const float d_safe_norm = fp(a, kFpDSafe, 0.0f) / map_size;
+      const float d_alert_norm = fmaxf(fp(a, kFpAvoidanceAlertFactor, 1.5f) * d_safe_norm, d_safe_norm);
+      if (d_alert_norm > kDynamicsDenomEps && nbr_width > 0) {
+        for (int n = 0; n < nbr_width; ++n) {
+          const int nidx = row * nbr_width + n;
+          if (!a.b[live_b + 1][nidx]) continue;
+          const float* peer = a.f[live_f + 3] + static_cast<int64_t>(nidx) * kAccelPeerTokenDim;
+          const float pred_x = peer[kAccelPeerRelX] + delta_x;
+          const float pred_y = peer[kAccelPeerRelY] + delta_y;
+          const float pred_dist = sqrtf(pred_x * pred_x + pred_y * pred_y);
+          const float alert_risk = fmaxf(d_alert_norm - pred_dist, 0.0f) / d_alert_norm;
+          const float unsafe_risk = d_safe_norm > kDynamicsDenomEps
+              ? fmaxf(d_safe_norm - pred_dist, 0.0f) / d_safe_norm
+              : 0.0f;
+          const float closing = fmaxf(peer[kAccelPeerClosingSpeed], 0.0f);
+          safety_penalty += alert_risk * alert_risk * (1.0f + closing) + 4.0f * unsafe_risk * unsafe_risk;
+        }
+      }
+      float backhaul_term = 0.0f;
+      const int sat_width = max(static_cast<int>(ip(a, kParamAccelSatWidth, ip(a, kParamSatsObsMax, 0))), 0);
+      const float own_q = lyapunov_steps_from_log1p(ego[kAccelEgoUavQueueSteps]);
+      for (int s = 0; s < sat_width; ++s) {
+        const float* st = a.f[live_f + 4] + (static_cast<int64_t>(row) * sat_width + s) * kAccelSatTokenDim;
+        if (st[kAccelSatVisibleFlag] <= 0.5f || st[kAccelSatValidFlag] <= 0.5f) continue;
+        const float sat_q = lyapunov_steps_from_log1p(st[kAccelSatQueueSteps]);
+        const float gap = fmaxf(own_q - sat_q, 0.0f);
+        const float se = fmaxf(st[kAccelSatBackhaulSeRef], 0.0f);
+        const float load = fmaxf(st[kAccelSatLastSelectedLoadFrac], 0.0f);
+        const float doppler_margin = 1.0f - clampf_device(st[kAccelSatDopplerAbsRatio], 0.0f, 1.0f);
+        float se_abs = 0.0f, queue_unused = 0.0f, relay = 0.0f;
+        lyapunov_sat_profile_from_values(se, sat_q, load, doppler_margin, &se_abs, &queue_unused, &relay);
+        const float sx = st[kAccelSatRelX];
+        const float sy = st[kAccelSatRelY];
+        const float sat_xy_norm = sqrtf(sx * sx + sy * sy);
+        const float align = sat_xy_norm > kNormDenomEps
+            ? clampf_device(1.0f + 0.25f * (ax * sx + ay * sy) / sat_xy_norm, 0.75f, 1.25f)
+            : 1.0f;
+        backhaul_term += gap * relay * align;
+      }
+      const float last_x = ego[kAccelEgoLastExecAccelX];
+      const float last_y = ego[kAccelEgoLastExecAccelY];
+      const float reg =
+          accel_cost * (raw_x * raw_x + raw_y * raw_y)
+          + smooth_w * ((ax - last_x) * (ax - last_x) + (ay - last_y) * (ay - last_y));
+      const float role_term = pressure_sum * (ax * role_x + ay * role_y);
+      local_score =
+          access_w * access_term
+          + backhaul_w * backhaul_term
+          + mobility_w * mobility_term
+          + role_w * role_term
+          - reg
+          - safety_w * safety_penalty * (1.0f + pressure_sum);
+      local_candidate = cand;
+    }
+    float best_score = -3.402823466e38f;
+    int best_candidate = -1;
+    block_argmax_min_index(local_score, local_candidate, scratch_a, scratch_i, &best_score, &best_candidate);
+    if (threadIdx.x == 0) {
+      float raw_x = 0.0f, raw_y = 0.0f, ax = 0.0f, ay = 0.0f;
+      topology_dpp_accel_candidate_action(max(best_candidate, 0), candidate_count, step, gain, &raw_x, &raw_y, &ax, &ay);
+      const int nbr_width = max(ucount - 1, 0);
+      const float repulse_gain = fp(a, kFpBaselineRepulseGain, 0.0f);
+      const float repulse_radius = fp(a, kFpDSafe, 0.0f) * fp(a, kFpBaselineRepulseRadiusFactor, 1.5f);
+      float rx = 0.0f;
+      float ry = 0.0f;
+      if (repulse_gain > 0.0f && repulse_radius > 0.0f && nbr_width > 0) {
+        for (int n = 0; n < nbr_width; ++n) {
+          const int nidx = row * nbr_width + n;
+          if (!a.b[live_b + 1][nidx]) continue;
+          const float* peer = a.f[live_f + 3] + static_cast<int64_t>(nidx) * kAccelPeerTokenDim;
+          const float relx = peer[kAccelPeerRelX];
+          const float rely = peer[kAccelPeerRelY];
+          const float relvx = peer[kAccelPeerRelVx];
+          const float relvy = peer[kAccelPeerRelVy];
+          const float dist_norm = sqrtf(relx * relx + rely * rely);
+          const float dist = dist_norm * map_size;
+          if (!(dist > kDynamicsDenomEps && dist < repulse_radius)) continue;
+          const float dirx = relx / geometry_denominator(dist_norm);
+          const float diry = rely / geometry_denominator(dist_norm);
+          const float approach_speed = relvx * dirx + relvy * diry;
+          const float strength = (1.0f / dynamics_denominator(dist) - 1.0f / repulse_radius)
+              + (approach_speed < 0.0f ? -approach_speed : 0.0f);
+          rx += dirx * strength;
+          ry += diry * strength;
+        }
+        ax += repulse_gain * rx;
+        ay += repulse_gain * ry;
+      }
+      ax += baseline_energy_term_component(a, live_f, row, 0);
+      ay += baseline_energy_term_component(a, live_f, row, 1);
+      project_unit_action(&ax, &ay);
+      a.f[kFLiveAccelAction][(e * ucount + u) * 2 + 0] = ax;
+      a.f[kFLiveAccelAction][(e * ucount + u) * 2 + 1] = ay;
+    }
+  } else if (mode == kSourceLyapunov) {
     const float gain = fp(a, kFpBaselineAccelGain, 2.0f);
     const float urgency_alpha = fmaxf(fp(a, kFpBaselineLyapunovUrgencyAlpha, 1.0f), 0.0f);
     const int t_now = state_int_for_env(a, kIStateT, e, 0);
@@ -7323,7 +7743,8 @@ __global__ void baseline_accel_live_kernel(PackedAbi a, int64_t active_idx, int6
   }
 }
 
-__global__ void queue_aware_accel_live_kernel(PackedAbi a, int64_t active_idx) {
+__global__ void queue_aware_accel_live_kernel(int64_t active_idx) {
+  const PackedAbi& a = cLiveAbi;
   const int e = blockIdx.x;
   const int u = blockIdx.y;
   if (e >= ip(a, kParamNumEnvs)) return;
@@ -7406,7 +7827,8 @@ __global__ void queue_aware_accel_live_kernel(PackedAbi a, int64_t active_idx) {
   }
 }
 
-__global__ void queue_aware_bw_live_kernel(PackedAbi a) {
+__global__ void queue_aware_bw_live_kernel() {
+  const PackedAbi& a = cLiveAbi;
   const int e = blockIdx.x;
   const int u = blockIdx.y;
   if (e >= ip(a, kParamNumEnvs)) return;
@@ -7479,7 +7901,78 @@ __global__ void queue_aware_bw_live_kernel(PackedAbi a) {
   }
 }
 
-__global__ void baseline_bw_live_kernel(PackedAbi a, int64_t source_mode64) {
+__device__ bool dpp_resource_bw_slot_valid(const PackedAbi& a, int row, int g) {
+  const int idx = row * static_cast<int>(ip(a, kParamNumGu)) + g;
+  return a.b[kBLiveBwObs + 1][idx] && a.b[kBLiveBwObs + 2][idx];
+}
+
+__device__ float dpp_resource_bw_slot_score(
+    const PackedAbi& a,
+    int e,
+    int u,
+    int g,
+    int row,
+    int bw_stage,
+    bool has_stage_gain,
+    bool has_prev_assoc,
+    float access_noise_ref) {
+  const int ucount = static_cast<int>(ip(a, kParamNumUav));
+  const int gu = static_cast<int>(ip(a, kParamNumGu));
+  const int idx = row * gu + g;
+  const float* tok = a.f[kFLiveBwObs + 2] + static_cast<int64_t>(idx) * kBwGuTokenDim;
+  const float q = fmaxf(tok[kBwGuQueueSteps], 0.0f);
+  const float expected = fmaxf(tok[kBwGuExpectedArrivalSteps], 0.0f);
+  float eta = fmaxf(tok[kBwGuAccessRateFullBwRefSteps], 0.0f);
+  if (has_stage_gain) {
+    const float gain = a.f[stage_f(bw_stage, kSfAccessGainMatrix)][(e * gu + g) * ucount + u];
+    eta = fmaxf(accel_access_se_from_gain(a, gain, access_noise_ref), 0.0f);
+  }
+  const float assoc_bonus = fp(a, kFpBaselineAssocBonus, 0.3f);
+  const float prev_assoc =
+      has_prev_assoc && a.l[stage_l(bw_stage, kSlPrevAssociation)][e * gu + g] == u ? 1.0f : 0.0f;
+  const float demand_pressure = q + expected;
+  const float rate_proxy = clampf_device(0.5f + eta, 0.0f, 2.0f);
+  float score = demand_pressure * rate_proxy * (1.0f + assoc_bonus * prev_assoc);
+  if (has_f(a, stage_f(bw_stage, kSfGuPos)) && has_f(a, stage_f(bw_stage, kSfUavPos))) {
+    const float gx = a.f[stage_f(bw_stage, kSfGuPos)][(e * gu + g) * 2 + 0];
+    const float gy = a.f[stage_f(bw_stage, kSfGuPos)][(e * gu + g) * 2 + 1];
+    const float ux = a.f[stage_f(bw_stage, kSfUavPos)][(e * ucount + u) * 2 + 0];
+    const float uy = a.f[stage_f(bw_stage, kSfUavPos)][(e * ucount + u) * 2 + 1];
+    const float dist = sqrtf((gx - ux) * (gx - ux) + (gy - uy) * (gy - uy));
+    score -= fmaxf(fp(a, kFpTopologyDppDistPenalty, 0.1f), 0.0f)
+        * dist
+        / positive_config_scale(fp(a, kFpMapSize, 1.0f));
+  }
+  return score;
+}
+
+__device__ bool dpp_resource_bw_slot_selected(
+    const PackedAbi& a,
+    int e,
+    int u,
+    int g,
+    int row,
+    int bw_stage,
+    bool has_stage_gain,
+    bool has_prev_assoc,
+    float access_noise_ref,
+    float my_score) {
+  const int gu = static_cast<int>(ip(a, kParamNumGu));
+  const int topk = max(1, min(static_cast<int>(ip(a, kParamTopologyDppGuMaxSelect, 6)), gu));
+  int better = 0;
+  for (int other = 0; other < gu; ++other) {
+    if (other == g || !dpp_resource_bw_slot_valid(a, row, other)) continue;
+    const float other_score =
+        dpp_resource_bw_slot_score(a, e, u, other, row, bw_stage, has_stage_gain, has_prev_assoc, access_noise_ref);
+    if (other_score > my_score || (other_score == my_score && other < g)) {
+      ++better;
+    }
+  }
+  return better < topk;
+}
+
+__global__ void baseline_bw_live_kernel(int64_t source_mode64) {
+  const PackedAbi& a = cLiveAbi;
   const int e = blockIdx.x;
   const int u = blockIdx.y;
   if (e >= ip(a, kParamNumEnvs)) return;
@@ -7491,6 +7984,7 @@ __global__ void baseline_bw_live_kernel(PackedAbi a, int64_t source_mode64) {
   constexpr int bw_stage = 3;
   constexpr int sat_stage = 2;
   const bool has_stage_gain = has_f(a, stage_f(bw_stage, kSfAccessGainMatrix));
+  const bool has_prev_assoc = has_l(a, stage_l(bw_stage, kSlPrevAssociation));
   const float access_noise_ref = accel_access_noise_ref(a);
   const float relay_gate = mode == kSourceLyapunov
       ? lyapunov_relay_gate(a, sat_stage, e, u, row, sat_visible_width(a))
@@ -7501,6 +7995,7 @@ __global__ void baseline_bw_live_kernel(PackedAbi a, int64_t source_mode64) {
   float local_sum = 0.0f;
   float local_max = -3.402823466e38f;
   int local_valid = 0;
+  int local_selected = 0;
   for (int g = threadIdx.x; g < gu; g += blockDim.x) {
     const int idx = row * gu + g;
     const bool valid = a.b[kBLiveBwObs + 1][idx] && a.b[kBLiveBwObs + 2][idx];
@@ -7526,13 +8021,47 @@ __global__ void baseline_bw_live_kernel(PackedAbi a, int64_t source_mode64) {
       const float urgency = fmaxf(q, 0.0f);
       const float service_gain = relay_gate * (0.5f + eta);
       score = source_clip_positive(fmaxf(fp(a, kFpBaselineLyapunovV, 2.0f), 0.0f) * urgency * service_gain);
+    } else if (mode == kSourceDppResourceBw) {
+      const float dpp_score =
+          dpp_resource_bw_slot_score(a, e, u, g, row, bw_stage, has_stage_gain, has_prev_assoc, access_noise_ref);
+      const bool selected = dpp_resource_bw_slot_selected(
+          a, e, u, g, row, bw_stage, has_stage_gain, has_prev_assoc, access_noise_ref, dpp_score);
+      if (selected) {
+        const float temp = fmaxf(fp(a, kFpTopologyDppBwTemp, 0.55f), 1.0e-3f);
+        score = fmaxf(fp(a, kFpBaselineLyapunovV, 2.0f), 0.0f) * dpp_score / temp;
+        local_max = fmaxf(local_max, score);
+        ++local_selected;
+      } else {
+        score = 0.0f;
+      }
     }
-    local_sum += fmaxf(score, 0.0f);
+    if (mode != kSourceDppResourceBw) {
+      local_sum += fmaxf(score, 0.0f);
+    }
   }
   const int valid_count = block_sum_int(local_valid, int_scratch);
+  const int selected_count = block_sum_int(local_selected, int_scratch);
   float denom = 0.0f;
   float max_score = -3.402823466e38f;
-  if (mode == kSourceLyapunov) {
+  if (mode == kSourceDppResourceBw) {
+    max_score = block_max_float(local_max, float_scratch);
+    float local_exp_sum = 0.0f;
+    if (max_score > -3.0e38f) {
+      for (int g = threadIdx.x; g < gu; g += blockDim.x) {
+        if (!dpp_resource_bw_slot_valid(a, row, g)) continue;
+        const float dpp_score =
+            dpp_resource_bw_slot_score(a, e, u, g, row, bw_stage, has_stage_gain, has_prev_assoc, access_noise_ref);
+        if (!dpp_resource_bw_slot_selected(
+                a, e, u, g, row, bw_stage, has_stage_gain, has_prev_assoc, access_noise_ref, dpp_score)) {
+          continue;
+        }
+        const float temp = fmaxf(fp(a, kFpTopologyDppBwTemp, 0.55f), 1.0e-3f);
+        const float logit = fmaxf(fp(a, kFpBaselineLyapunovV, 2.0f), 0.0f) * dpp_score / temp;
+        local_exp_sum += expf(logit - max_score);
+      }
+    }
+    denom = block_sum_float(local_exp_sum, float_scratch);
+  } else if (mode == kSourceLyapunov) {
     denom = block_sum_float(local_sum, float_scratch);
   } else {
     denom = block_sum_float(local_sum, float_scratch);
@@ -7551,7 +8080,22 @@ __global__ void baseline_bw_live_kernel(PackedAbi a, int64_t source_mode64) {
     }
     float value = 0.0f;
     if (valid && ip(a, kParamEnableBwAction)) {
-      if (mode == kSourceLyapunov) {
+      if (mode == kSourceDppResourceBw) {
+        const float dpp_score =
+            dpp_resource_bw_slot_score(a, e, u, g, row, bw_stage, has_stage_gain, has_prev_assoc, access_noise_ref);
+        const bool selected = dpp_resource_bw_slot_selected(
+            a, e, u, g, row, bw_stage, has_stage_gain, has_prev_assoc, access_noise_ref, dpp_score);
+        if (selected && selected_count > 0) {
+          const float temp = fmaxf(fp(a, kFpTopologyDppBwTemp, 0.55f), 1.0e-3f);
+          const float logit = fmaxf(fp(a, kFpBaselineLyapunovV, 2.0f), 0.0f) * dpp_score / temp;
+          value = denom > kNormDenomEps ? expf(logit - max_score) / denom : 1.0f / static_cast<float>(selected_count);
+          float floor = clampf_device(fp(a, kFpTopologyDppBwFloor, 0.01f), 0.0f, 0.2f);
+          floor = fminf(floor, 0.99f / fmaxf(static_cast<float>(selected_count), 1.0f));
+          if (floor > 0.0f) {
+            value = (1.0f - floor * static_cast<float>(selected_count)) * value + floor;
+          }
+        }
+      } else if (mode == kSourceLyapunov) {
         eta = lyapunov_eta_for_bw_slot(a, e, u, g, tok, bw_stage);
         const float urgency = fmaxf(q, 0.0f);
         const float service_gain = relay_gate * (0.5f + eta);
@@ -7649,9 +8193,21 @@ __device__ float normalize_masked_value(float value, float min_v, float max_v) {
   return (span > kNormDenomEps) ? (value - min_v) / span : 0.0f;
 }
 
-__device__ float queue_aware_sat_score(const PackedAbi& a, int stage_slot, int e, int u, int row, int slot, int width, float se_min, float se_max, float q_min, float q_max, float load_min, float load_max, float bw_min, float bw_max) {
-  float se = 0.0f, q = 0.0f, load = 0.0f, bw = 0.0f, stay = 0.0f;
-  queue_aware_sat_values(a, stage_slot, e, u, row, slot, width, &se, &q, &load, &bw, &stay);
+__device__ float queue_aware_sat_score_from_values(
+    const PackedAbi& a,
+    float se,
+    float q,
+    float load,
+    float bw,
+    float stay,
+    float se_min,
+    float se_max,
+    float q_min,
+    float q_max,
+    float load_min,
+    float load_max,
+    float bw_min,
+    float bw_max) {
   const float logit_scale = fmaxf(fp(a, kFpSatLogitScale, 1.0e9f), 0.0f);
   const float score =
       fp(a, kFpBaselineSatSeWeight, 1.0f) * normalize_masked_value(se, se_min, se_max)
@@ -7660,6 +8216,26 @@ __device__ float queue_aware_sat_score(const PackedAbi& a, int stage_slot, int e
       + fp(a, kFpBaselineSatBwReward, 0.75f) * normalize_masked_value(bw, bw_min, bw_max)
       + fp(a, kFpBaselineSatStayBonus, 0.25f) * stay;
   return clampf_device(score, -logit_scale, logit_scale);
+}
+
+__device__ float queue_aware_sat_score(const PackedAbi& a, int stage_slot, int e, int u, int row, int slot, int width, float se_min, float se_max, float q_min, float q_max, float load_min, float load_max, float bw_min, float bw_max) {
+  float se = 0.0f, q = 0.0f, load = 0.0f, bw = 0.0f, stay = 0.0f;
+  queue_aware_sat_values(a, stage_slot, e, u, row, slot, width, &se, &q, &load, &bw, &stay);
+  return queue_aware_sat_score_from_values(
+      a,
+      se,
+      q,
+      load,
+      bw,
+      stay,
+      se_min,
+      se_max,
+      q_min,
+      q_max,
+      load_min,
+      load_max,
+      bw_min,
+      bw_max);
 }
 
 __device__ float baseline_sat_slot_score(
@@ -7698,6 +8274,31 @@ __device__ float baseline_sat_slot_score(
     lyapunov_sat_profile_from_values(se, sat_queue_steps, observed_load, doppler_margin, &se_abs, &queue_unused, &relay_support);
     return drift_w * (uav_pressure_steps - sat_queue_steps) * relay_support;
   }
+  if (source_mode == kSourceTopologyDppSat) {
+    const int idx = (row * width + slot) * 26;
+    const float sat_queue_steps = lyapunov_steps_from_log1p(a.f[kFLiveSatObs + 3][idx + 0]);
+    const float gap = fmaxf(uav_pressure_steps - sat_queue_steps, 0.0f);
+    const float backhaul_proxy =
+        0.5f * normalize_masked_value(se, se_min, se_max)
+        + 0.5f * normalize_masked_value(bw, bw_min, bw_max);
+    const float gap_w = fmaxf(fp(a, kFpTopologyDppSatQueueGapWeight, 1.0f), 0.0f);
+    return queue_aware_sat_score_from_values(
+        a,
+        se,
+        q,
+        load,
+        bw,
+        stay,
+        se_min,
+        se_max,
+        q_min,
+        q_max,
+        load_min,
+        load_max,
+        bw_min,
+        bw_max)
+        + gap_w * gap * backhaul_proxy;
+  }
   return queue_aware_sat_score(
       a,
       stage_slot,
@@ -7716,7 +8317,8 @@ __device__ float baseline_sat_slot_score(
       bw_max);
 }
 
-__global__ void baseline_sat_live_kernel(PackedAbi a, int64_t source_mode64) {
+__global__ void baseline_sat_live_kernel(int64_t source_mode64) {
+  const PackedAbi& a = cLiveAbi;
   const int e = blockIdx.x;
   const int u = blockIdx.y;
   if (e >= ip(a, kParamNumEnvs)) return;
@@ -7765,13 +8367,16 @@ __global__ void baseline_sat_live_kernel(PackedAbi a, int64_t source_mode64) {
   const float bw_max = block_max_float(local_bw_max, float_scratch);
   constexpr int kLyapunovSatEgoDim = 13;
   const float* sat_ego = a.f[kFLiveSatObs + 0] + static_cast<int64_t>(row) * kLyapunovSatEgoDim;
-  const float uav_pressure_steps = mode == kSourceLyapunov ? lyapunov_steps_from_log1p(sat_ego[0]) : 0.0f;
+  const bool needs_uav_pressure = mode == kSourceLyapunov || mode == kSourceTopologyDppSat;
+  const float uav_pressure_steps = needs_uav_pressure ? lyapunov_steps_from_log1p(sat_ego[0]) : 0.0f;
   const int target_size = min(max(select_k, 0), valid_count);
   float local_best_sum = -3.402823466e38f;
   int local_best_subset = -1;
   for (int subset = threadIdx.x; subset < subset_count; subset += blockDim.x) {
     int size = 0;
     float score_sum = 0.0f;
+    float backhaul_term = 0.0f;
+    float contention_penalty = 0.0f;
     bool valid_subset = true;
     for (int k = 0; k < select_k; ++k) {
       const int slot = static_cast<int>(a.l[kLMainSatSubsetMembersBase][subset * select_k + k]);
@@ -7799,10 +8404,28 @@ __global__ void baseline_sat_live_kernel(PackedAbi a, int64_t source_mode64) {
           bw_min,
           bw_max,
           uav_pressure_steps);
+      if (mode == kSourceTopologyDppSat) {
+        float se = 0.0f, q = 0.0f, load = 0.0f, bw = 0.0f, stay = 0.0f;
+        queue_aware_sat_values(a, sat_stage, e, u, row, slot, width, &se, &q, &load, &bw, &stay);
+        const int idx = (row * width + slot) * 26;
+        const float sat_queue_steps = lyapunov_steps_from_log1p(a.f[kFLiveSatObs + 3][idx + 0]);
+        const float gap = fmaxf(uav_pressure_steps - sat_queue_steps, 0.0f);
+        const float proxy =
+            0.5f * normalize_masked_value(se, se_min, se_max)
+            + 0.5f * normalize_masked_value(bw, bw_min, bw_max);
+        backhaul_term += gap * proxy;
+        contention_penalty += fmaxf(1.0f - bw, 0.0f);
+      }
     }
     if (!valid_subset || size != target_size) continue;
     if (mode == kSourceUniform || mode == kSourceRandom) {
       score_sum = source_hash01(a, e, u, subset, mode == kSourceUniform ? 501 : 503);
+    } else if (mode == kSourceTopologyDppSat) {
+      const float subset_penalty = fmaxf(fp(a, kFpTopologyDppSatSubsetPenalty, 0.02f), 0.0f);
+      const float contention_w = fmaxf(fp(a, kFpTopologyDppSatContentionWeight, 0.15f), 0.0f);
+      score_sum += backhaul_term;
+      score_sum -= subset_penalty * static_cast<float>(size * size);
+      score_sum -= contention_w * contention_penalty;
     }
     if (score_sum > local_best_sum || (score_sum == local_best_sum && (local_best_subset < 0 || subset < local_best_subset))) {
       local_best_sum = score_sum;
@@ -7820,7 +8443,8 @@ __global__ void baseline_sat_live_kernel(PackedAbi a, int64_t source_mode64) {
   }
 }
 
-__global__ void queue_aware_sat_live_kernel(PackedAbi a) {
+__global__ void queue_aware_sat_live_kernel() {
+  const PackedAbi& a = cLiveAbi;
   const int e = blockIdx.x;
   const int u = blockIdx.y;
   if (e >= ip(a, kParamNumEnvs)) return;
@@ -7953,7 +8577,8 @@ __global__ void queue_aware_sat_live_kernel(PackedAbi a) {
   }
 }
 
-__global__ void cluster_center_accel_live_kernel(PackedAbi a, int64_t active_idx) {
+__global__ void cluster_center_accel_live_kernel(int64_t active_idx) {
+  const PackedAbi& a = cLiveAbi;
   const int e = blockIdx.x;
   if (e >= ip(a, kParamNumEnvs)) return;
   const int ucount = static_cast<int>(ip(a, kParamNumUav));
@@ -8285,7 +8910,8 @@ __device__ int sat_macro_start_slot_for_env(const PackedAbi& a, int slot, int e)
   return macro_start_slot_for_env(a, slot, e, interval);
 }
 
-__global__ void apply_bw_macro_live_kernel(PackedAbi a, int64_t slot64, int64_t bw_source_mode) {
+__global__ void apply_bw_macro_live_kernel(int64_t slot64, int64_t bw_source_mode) {
+  const PackedAbi& a = cLiveAbi;
   const int e = static_cast<int>(blockIdx.x);
   const int ecount = static_cast<int>(ip(a, kParamNumEnvs));
   if (e >= ecount) return;
@@ -8571,7 +9197,8 @@ __global__ void prepare_branch_replay_from_history_kernel(
   }
 }
 
-__global__ void prepare_initial_accel_live_kernel(PackedAbi a, int64_t slot64, int64_t active_idx) {
+__global__ void prepare_initial_accel_live_kernel(int64_t slot64, int64_t active_idx) {
+  const PackedAbi& a = cLiveAbi;
   const int e = blockIdx.x;
   if (e >= ip(a, kParamNumEnvs)) return;
   const int slot = static_cast<int>(slot64);
@@ -8605,7 +9232,8 @@ __global__ void prepare_initial_accel_live_kernel(PackedAbi a, int64_t slot64, i
   if (threadIdx.x == 0 && has_i(a, kIMarker)) a.i[kIMarker][0] = 1;
 }
 
-__global__ void accel_to_sat_live_kernel(PackedAbi a, int64_t slot, int64_t active_idx, int64_t accel_source_mode) {
+__global__ void accel_to_sat_live_kernel(int64_t slot, int64_t active_idx, int64_t accel_source_mode) {
+  const PackedAbi& a = cLiveAbi;
   const int e = blockIdx.x;
   if (e >= ip(a, kParamNumEnvs)) return;
   const int ucount = static_cast<int>(ip(a, kParamNumUav));
@@ -8713,7 +9341,8 @@ __global__ void accel_to_sat_live_kernel(PackedAbi a, int64_t slot, int64_t acti
   (void)slot;
 }
 
-__global__ void sat_to_bw_live_kernel(PackedAbi a, int64_t slot, int64_t sat_source_mode) {
+__global__ void sat_to_bw_live_kernel(int64_t slot, int64_t sat_source_mode) {
+  const PackedAbi& a = cLiveAbi;
   const int e = blockIdx.x;
   if (e >= ip(a, kParamNumEnvs)) return;
   const int ucount = static_cast<int>(ip(a, kParamNumUav));
@@ -8858,7 +9487,6 @@ __global__ void sat_to_bw_live_kernel(PackedAbi a, int64_t slot, int64_t sat_sou
 }
 
 __global__ void finish_commit_prepare_live_kernel(
-    PackedAbi a,
     int64_t slot64,
     int64_t active_idx,
     bool rollout_tail,
@@ -8867,6 +9495,7 @@ __global__ void finish_commit_prepare_live_kernel(
     int64_t bw_source_mode,
     float* finish_profile_out,
     int finish_profile_stride) {
+  const PackedAbi& a = cLiveAbi;
   const int e = blockIdx.x;
   if (e >= ip(a, kParamNumEnvs)) return;
   const int slot = static_cast<int>(slot64);
@@ -9899,33 +10528,38 @@ void launch_phase(
     return;
   }
   cudaStream_t stream = at::cuda::getCurrentCUDAStream();
+  copy_live_abi_to_symbol(abi, stream);
   dim3 grid(static_cast<unsigned int>(num_envs));
   dim3 block(128);
   const int num_uav = static_cast<int>(int_params[kParamNumUav]);
   dim3 source_row_grid(static_cast<unsigned int>(num_envs), static_cast<unsigned int>(num_uav > 0 ? num_uav : 1));
   dim3 source_block(kSourceBlockMaxThreads);
   if (phase == 1) {
-    prepare_initial_accel_live_kernel<<<grid, block, 0, stream>>>(abi, slot, active_idx);
+    prepare_initial_accel_live_kernel<<<grid, block, 0, stream>>>(slot, active_idx);
   } else if (phase == 2) {
-    accel_to_sat_live_kernel<<<grid, block, 0, stream>>>(abi, slot, active_idx, accel_source_mode);
+    accel_to_sat_live_kernel<<<grid, block, 0, stream>>>(slot, active_idx, accel_source_mode);
   } else if (phase == 15) {
-    baseline_accel_live_kernel<<<source_row_grid, source_block, 0, stream>>>(abi, active_idx, accel_source_mode);
+    if (accel_source_mode == kSourceObservableClusterQueueAware) {
+      observable_cluster_accel_live_kernel<<<source_row_grid, source_block, 0, stream>>>(active_idx);
+    } else {
+      baseline_accel_live_kernel<<<source_row_grid, source_block, 0, stream>>>(active_idx, accel_source_mode);
+    }
   } else if (phase == 11) {
-    queue_aware_accel_live_kernel<<<source_row_grid, source_block, 0, stream>>>(abi, active_idx);
+    queue_aware_accel_live_kernel<<<source_row_grid, source_block, 0, stream>>>(active_idx);
   } else if (phase == 12) {
-    cluster_center_accel_live_kernel<<<grid, source_block, 0, stream>>>(abi, active_idx);
+    cluster_center_accel_live_kernel<<<grid, source_block, 0, stream>>>(active_idx);
   } else if (phase == 16) {
-    baseline_sat_live_kernel<<<source_row_grid, source_block, 0, stream>>>(abi, sat_source_mode);
+    baseline_sat_live_kernel<<<source_row_grid, source_block, 0, stream>>>(sat_source_mode);
   } else if (phase == 13) {
-    queue_aware_sat_live_kernel<<<source_row_grid, source_block, 0, stream>>>(abi);
+    queue_aware_sat_live_kernel<<<source_row_grid, source_block, 0, stream>>>();
   } else if (phase == 17) {
-    baseline_bw_live_kernel<<<source_row_grid, source_block, 0, stream>>>(abi, bw_source_mode);
+    baseline_bw_live_kernel<<<source_row_grid, source_block, 0, stream>>>(bw_source_mode);
   } else if (phase == 14) {
-    queue_aware_bw_live_kernel<<<source_row_grid, source_block, 0, stream>>>(abi);
+    queue_aware_bw_live_kernel<<<source_row_grid, source_block, 0, stream>>>();
   } else if (phase == 3) {
-    sat_to_bw_live_kernel<<<grid, block, 0, stream>>>(abi, slot, sat_source_mode);
+    sat_to_bw_live_kernel<<<grid, block, 0, stream>>>(slot, sat_source_mode);
   } else if (phase == 5) {
-    apply_bw_macro_live_kernel<<<grid, block, 0, stream>>>(abi, slot, bw_source_mode);
+    apply_bw_macro_live_kernel<<<grid, block, 0, stream>>>(slot, bw_source_mode);
   } else if (phase == 4) {
     const int num_sat = static_cast<int>(int_params[kParamNumSat]);
     const int num_gu = static_cast<int>(int_params[kParamNumGu]);
@@ -9942,7 +10576,6 @@ void launch_phase(
             (num_gu > 0 ? num_gu : 0)) *
         sizeof(float);
     finish_commit_prepare_live_kernel<<<grid, block, finish_shared_bytes, stream>>>(
-        abi,
         slot,
         active_idx,
         rollout_tail,

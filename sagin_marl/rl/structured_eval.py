@@ -22,10 +22,13 @@ from sagin_marl.rl.baselines import (
     feasible_uniform_sat_policy,
     link_priority_policy,
     lyapunov_queue_aware_policy_step,
+    observable_cluster_queue_aware_policy,
     queue_aware_bw_policy,
     queue_aware_policy,
     random_feasible_policy,
     static_uniform_policy,
+    topology_dpp_policy,
+    topology_dpp_policy_step,
     uniform_bw_policy,
     zero_accel_policy,
 )
@@ -36,6 +39,7 @@ from sagin_marl.rl.structured_mappo import (
     _normalize_exec_source,
     _sat_action_select_k_from_cfg,
     _sat_mask_to_ids,
+    validate_satellite_control_consistency,
 )
 from sagin_marl.rl.structured_parallel_eval import (
     _refresh_stage_obs_cache,
@@ -305,6 +309,7 @@ def update_structured_checkpoint_eval_state(
 
 
 def _baseline_actions(baseline: str, obs_list, cfg, env):
+    baseline = str(baseline).strip().lower()
     num_agents = len(env.agents)
     rng = getattr(env, "rng", None)
     if baseline == "zero":
@@ -333,6 +338,16 @@ def _baseline_actions(baseline: str, obs_list, cfg, env):
         centers = getattr(env, "gu_cluster_centers", None)
         counts = getattr(env, "gu_cluster_counts", None)
         return cluster_center_queue_aware_policy(obs_list, cfg, centers, counts)
+    if baseline == "observable_cluster_queue_aware":
+        return observable_cluster_queue_aware_policy(obs_list, cfg)
+    if baseline == "topology_dpp":
+        return topology_dpp_policy(obs_list, cfg)
+    if baseline in {"dpp_resource_hybrid", "topology_dpp_resource"}:
+        centers = getattr(env, "gu_cluster_centers", None)
+        counts = getattr(env, "gu_cluster_counts", None)
+        accel_actions, _queue_bw, _queue_sat = cluster_center_queue_aware_policy(obs_list, cfg, centers, counts)
+        _dpp_accel, bw_logits, sat_logits = topology_dpp_policy(obs_list, cfg)
+        return accel_actions, bw_logits, sat_logits
     raise ValueError(f"Unsupported structured baseline policy: {baseline}")
 
 
@@ -1191,7 +1206,15 @@ class _NativeActionTraceReplayBridge:
                 bw_source_mode=bw_mode,
             )
             return
-        if source in {"uniform", "random", "link_priority", "demand_priority", "lyapunov"}:
+        if source in {
+            "uniform",
+            "random",
+            "link_priority",
+            "demand_priority",
+            "lyapunov",
+            "topology_dpp_accel",
+            "observable_cluster_queue_aware",
+        }:
             native_cuda.baseline_accel_live(
                 self._runtime_native_abi(runtime),
                 active_idx=int(runtime.main.accel_active_idx),
@@ -1224,7 +1247,7 @@ class _NativeActionTraceReplayBridge:
         source = self.exec_sources[1]
         if source == "zero":
             return
-        if source in {"queue_aware", "cluster_center_queue_aware"}:
+        if source in {"queue_aware", "cluster_center_queue_aware", "observable_cluster_queue_aware"}:
             accel_mode, sat_mode, bw_mode = self._source_mode_codes(runtime)
             native_cuda.queue_aware_sat_live(
                 self._runtime_native_abi(runtime),
@@ -1233,7 +1256,7 @@ class _NativeActionTraceReplayBridge:
                 bw_source_mode=bw_mode,
             )
             return
-        if source in {"uniform", "random", "link_priority", "demand_priority", "lyapunov"}:
+        if source in {"uniform", "random", "link_priority", "demand_priority", "lyapunov", "topology_dpp_sat"}:
             accel_mode, sat_mode, bw_mode = self._source_mode_codes(runtime)
             native_cuda.baseline_sat_live(
                 self._runtime_native_abi(runtime),
@@ -1282,7 +1305,7 @@ class _NativeActionTraceReplayBridge:
         if source == "zero":
             self._write_bw_link_transition_override(runtime)
             return
-        if source in {"queue_aware", "cluster_center_queue_aware"}:
+        if source in {"queue_aware", "cluster_center_queue_aware", "observable_cluster_queue_aware"}:
             accel_mode, sat_mode, bw_mode = self._source_mode_codes(runtime)
             native_cuda.queue_aware_bw_live(
                 self._runtime_native_abi(runtime),
@@ -1292,7 +1315,15 @@ class _NativeActionTraceReplayBridge:
             )
             self._write_bw_link_transition_override(runtime)
             return
-        if source in {"uniform", "random", "link_priority", "demand_priority", "lyapunov"}:
+        if source in {
+            "uniform",
+            "random",
+            "link_priority",
+            "demand_priority",
+            "lyapunov",
+            "dpp_resource_bw",
+            "topology_dpp_bw",
+        }:
             accel_mode, sat_mode, bw_mode = self._source_mode_codes(runtime)
             native_cuda.baseline_bw_live(
                 self._runtime_native_abi(runtime),
@@ -1743,12 +1774,38 @@ def _run_structured_baseline_step_with_actions(
     exec_sources: Sequence[str] | None = None,
 ):
     source_modes = _acceptance_source_modes(exec_sources)
-    if baseline == "lyapunov":
+    baseline_key = str(baseline).strip().lower()
+    if baseline_key == "lyapunov":
         accel_actions, bw_logits, sat_logits, baseline_state = lyapunov_queue_aware_policy_step(
             obs_list,
             cfg,
             state=baseline_state,
             compute_accel=True,
+            compute_bw=False,
+            compute_sat=False,
+            update_pressure=True,
+            update_service=False,
+        )
+    elif baseline_key == "topology_dpp":
+        accel_actions, bw_logits, sat_logits, baseline_state = topology_dpp_policy_step(
+            obs_list,
+            cfg,
+            state=baseline_state,
+            compute_accel=True,
+            compute_bw=False,
+            compute_sat=False,
+            update_pressure=True,
+            update_service=False,
+        )
+    elif baseline_key in {"dpp_resource_hybrid", "topology_dpp_resource"}:
+        centers = getattr(driver.env, "gu_cluster_centers", None)
+        counts = getattr(driver.env, "gu_cluster_counts", None)
+        accel_actions, _queue_bw, _queue_sat = cluster_center_queue_aware_policy(obs_list, cfg, centers, counts)
+        _dpp_accel, bw_logits, sat_logits, baseline_state = topology_dpp_policy_step(
+            obs_list,
+            cfg,
+            state=baseline_state,
+            compute_accel=False,
             compute_bw=False,
             compute_sat=False,
             update_pressure=True,
@@ -1844,11 +1901,36 @@ def _run_structured_baseline_step_with_actions(
 
     driver.begin_step()
     driver.run_accel_stage(accel_actions, access_gain_override=access_gain_tape)
-    baseline_key = str(baseline).strip().lower()
     if baseline_key == "lyapunov":
         _refresh_stage_obs_cache(driver)
         stage_obs_list = current_obs_many([driver], indices=[0])[0]
         _stage_accel, policy_bw_logits, policy_sat_logits, baseline_state = lyapunov_queue_aware_policy_step(
+            stage_obs_list,
+            cfg,
+            state=baseline_state,
+            compute_accel=False,
+            compute_bw=True,
+            compute_sat=True,
+            update_pressure=False,
+            update_service=True,
+        )
+    elif baseline_key == "topology_dpp":
+        _refresh_stage_obs_cache(driver)
+        stage_obs_list = current_obs_many([driver], indices=[0])[0]
+        _stage_accel, policy_bw_logits, policy_sat_logits, baseline_state = topology_dpp_policy_step(
+            stage_obs_list,
+            cfg,
+            state=baseline_state,
+            compute_accel=False,
+            compute_bw=True,
+            compute_sat=True,
+            update_pressure=False,
+            update_service=True,
+        )
+    elif baseline_key in {"dpp_resource_hybrid", "topology_dpp_resource"}:
+        _refresh_stage_obs_cache(driver)
+        stage_obs_list = current_obs_many([driver], indices=[0])[0]
+        _stage_accel, policy_bw_logits, policy_sat_logits, baseline_state = topology_dpp_policy_step(
             stage_obs_list,
             cfg,
             state=baseline_state,
@@ -2437,31 +2519,73 @@ def _compare_expected_step_payloads_from_history(
                 )
 
 
+_FIXED_POLICY_EXEC_SOURCE_MAP: dict[str, tuple[str, str, str]] = {
+    "zero": ("zero", "zero", "zero"),
+    "static_uniform": ("zero", "uniform", "uniform"),
+    "static": ("zero", "uniform", "uniform"),
+    "uniform": ("zero", "uniform", "uniform"),
+    "random": ("random", "random", "random"),
+    "random_feasible": ("random", "random", "random"),
+    "link_priority": ("zero", "link_priority", "link_priority"),
+    "demand_priority": ("zero", "demand_priority", "demand_priority"),
+    # `lyapunov` is kept as a compatibility alias. The clearer current name is
+    # `maxweight_lyapunov`, because the implementation is a stage-wise
+    # MaxWeight/Lyapunov queue-pressure controller rather than the archived
+    # topology-enumerating DPP prototype.
+    "lyapunov": ("lyapunov", "lyapunov", "lyapunov"),
+    "maxweight_lyapunov": ("lyapunov", "lyapunov", "lyapunov"),
+    "lyapunov_maxweight": ("lyapunov", "lyapunov", "lyapunov"),
+    "queue_aware_bw": ("zero", "zero", "queue_aware"),
+    "queue_aware": ("queue_aware", "queue_aware", "queue_aware"),
+    "cluster_center_queue_aware": (
+        "cluster_center_queue_aware",
+        "queue_aware",
+        "queue_aware",
+    ),
+    "observable_cluster_queue_aware": (
+        "observable_cluster_queue_aware",
+        "queue_aware",
+        "queue_aware",
+    ),
+    # Lightweight DPP/MaxWeight ablations built from existing native source
+    # modes. These isolate which decision layer carries the non-learning
+    # controller's gains before adding a heavier topology-enumerating DPP.
+    "dpp_no_mobility": ("zero", "lyapunov", "lyapunov"),
+    "dpp_equal_bw": ("lyapunov", "lyapunov", "uniform"),
+    "dpp_greedy_sat": ("lyapunov", "queue_aware", "lyapunov"),
+    "dpp_resource_bw": ("zero", "zero", "topology_dpp_bw"),
+    "topology_dpp_bw": ("zero", "zero", "topology_dpp_bw"),
+    "dpp_resource_hybrid_native": (
+        "cluster_center_queue_aware",
+        "queue_aware",
+        "topology_dpp_bw",
+    ),
+    "topology_dpp_resource_native": (
+        "cluster_center_queue_aware",
+        "queue_aware",
+        "topology_dpp_bw",
+    ),
+    "topology_dpp_native_bw_sat_cached": (
+        "cluster_center_queue_aware",
+        "topology_dpp_sat",
+        "topology_dpp_bw",
+    ),
+    "full_topology_dpp_joint": (
+        "topology_dpp_accel",
+        "topology_dpp_sat",
+        "topology_dpp_bw",
+    ),
+    "topology_dpp_joint_native": (
+        "topology_dpp_accel",
+        "topology_dpp_sat",
+        "topology_dpp_bw",
+    ),
+}
+
+
 def _fixed_policy_exec_sources(baseline_policy: str) -> tuple[str, str, str] | None:
     baseline = str(baseline_policy).strip().lower()
-    if baseline == "zero":
-        return "zero", "zero", "zero"
-    if baseline in {"static_uniform", "static", "uniform"}:
-        return "zero", "uniform", "uniform"
-    if baseline in {"random", "random_feasible"}:
-        return "random", "random", "random"
-    if baseline == "link_priority":
-        return "zero", "link_priority", "link_priority"
-    if baseline == "demand_priority":
-        return "zero", "demand_priority", "demand_priority"
-    if baseline == "lyapunov":
-        return "lyapunov", "lyapunov", "lyapunov"
-    if baseline == "queue_aware_bw":
-        return "zero", "zero", "queue_aware"
-    if baseline == "queue_aware":
-        return "queue_aware", "queue_aware", "queue_aware"
-    if baseline == "cluster_center_queue_aware":
-        return (
-            "cluster_center_queue_aware",
-            "queue_aware",
-            "queue_aware",
-        )
-    return None
+    return _FIXED_POLICY_EXEC_SOURCE_MAP.get(baseline)
 
 
 def _acceptance_source_modes(exec_sources: Sequence[str] | None) -> tuple[str, str, str]:
@@ -2474,12 +2598,17 @@ def _acceptance_source_modes(exec_sources: Sequence[str] | None) -> tuple[str, s
         "zero",
         "queue_aware",
         "cluster_center_queue_aware",
+        "observable_cluster_queue_aware",
         "teacher",
         "uniform",
         "random",
         "link_priority",
         "demand_priority",
         "lyapunov",
+        "dpp_resource_bw",
+        "topology_dpp_accel",
+        "topology_dpp_bw",
+        "topology_dpp_sat",
     }
     modes: list[str] = []
     for source in exec_sources:
@@ -2504,7 +2633,12 @@ def _native_acceptance_source_mode_code(source: str) -> int:
         "demand_priority": native_cuda.SOURCE_DEMAND_PRIORITY,
         "queue_aware": native_cuda.SOURCE_QUEUE_AWARE,
         "cluster_center_queue_aware": native_cuda.SOURCE_CLUSTER_CENTER_QUEUE_AWARE,
+        "observable_cluster_queue_aware": native_cuda.SOURCE_OBSERVABLE_CLUSTER_QUEUE_AWARE,
         "lyapunov": native_cuda.SOURCE_LYAPUNOV,
+        "dpp_resource_bw": native_cuda.SOURCE_DPP_RESOURCE_BW,
+        "topology_dpp_accel": native_cuda.SOURCE_TOPOLOGY_DPP_ACCEL,
+        "topology_dpp_bw": native_cuda.SOURCE_TOPOLOGY_DPP_BW,
+        "topology_dpp_sat": native_cuda.SOURCE_TOPOLOGY_DPP_SAT,
     }
     if source_s not in table:
         raise RuntimeError(f"native replay source {source_s!r} is not supported.")
@@ -2933,6 +3067,21 @@ def _evaluate_structured_actor_exec_sources_internal(
     collect_step_traces: bool = False,
 ) -> Tuple[Dict[str, float], List[Dict[str, float]], List[List[Dict[str, float]]] | None]:
     active_slots = max(min(int(num_envs), int(episodes)), 1)
+    resolved_accel_source = _normalize_exec_source(
+        getattr(cfg, "exec_accel_source", "policy") if exec_accel_source is None else exec_accel_source
+    )
+    resolved_sat_source = _normalize_exec_source(
+        getattr(cfg, "exec_sat_source", "policy") if exec_sat_source is None else exec_sat_source
+    )
+    resolved_bw_source = _normalize_exec_source(
+        getattr(cfg, "exec_bw_source", "policy") if exec_bw_source is None else exec_bw_source
+    )
+    validate_satellite_control_consistency(
+        cfg,
+        train_sat=resolved_sat_source == "policy",
+        exec_sat_source=resolved_sat_source,
+        context="evaluate_structured_actor_exec_sources",
+    )
     env_group = make_structured_env_group(cfg, num_envs=active_slots, backend=vec_backend, mode="eval")
     drivers = env_group if looks_like_driver_group(env_group) else _as_driver_list(env_group)
     actor.eval()
@@ -2952,27 +3101,12 @@ def _evaluate_structured_actor_exec_sources_internal(
         device=device,
         target_mode="step_level",
         cfg=cfg,
-        train_accel=_normalize_exec_source(
-            getattr(cfg, "exec_accel_source", "policy") if exec_accel_source is None else exec_accel_source
-        )
-        == "policy",
-        train_sat=_normalize_exec_source(
-            getattr(cfg, "exec_sat_source", "policy") if exec_sat_source is None else exec_sat_source
-        )
-        == "policy",
-        train_bw=_normalize_exec_source(
-            getattr(cfg, "exec_bw_source", "policy") if exec_bw_source is None else exec_bw_source
-        )
-        == "policy",
-        exec_accel_source=_normalize_exec_source(
-            getattr(cfg, "exec_accel_source", "policy") if exec_accel_source is None else exec_accel_source
-        ),
-        exec_sat_source=_normalize_exec_source(
-            getattr(cfg, "exec_sat_source", "policy") if exec_sat_source is None else exec_sat_source
-        ),
-        exec_bw_source=_normalize_exec_source(
-            getattr(cfg, "exec_bw_source", "policy") if exec_bw_source is None else exec_bw_source
-        ),
+        train_accel=resolved_accel_source == "policy",
+        train_sat=resolved_sat_source == "policy",
+        train_bw=resolved_bw_source == "policy",
+        exec_accel_source=resolved_accel_source,
+        exec_sat_source=resolved_sat_source,
+        exec_bw_source=resolved_bw_source,
     )
     rows: List[Dict[str, float]] = []
     episode_traces: Dict[int, List[Dict[str, float]]] = {}
@@ -3300,10 +3434,8 @@ def _evaluate_structured_baseline_policy_with_traces(
                 if initial_stage_tape is None:
                     raise RuntimeError("native random tape group must publish an initial main-kernel accel stage fields.")
                 _apply_reference_accel_cache_from_native_stage_batch(driver, initial_stage_tape, cfg)
-            elif seed is None:
-                driver.env.reset()
             else:
-                driver.env.reset(seed=int(seed))
+                reset_many(drivers, [None if seed is None else int(seed)])
             clear_step = getattr(driver, "_clear_step", None)
             if callable(clear_step):
                 clear_step()

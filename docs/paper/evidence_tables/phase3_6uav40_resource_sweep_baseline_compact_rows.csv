@@ -1,0 +1,8 @@
+multiplier,best_processed_baseline,best_processed,best_drop_baseline,best_drop,best_dsys_baseline,best_dsys,any_strict_like_3u20,any_serviceable
+1.0,cluster_center_queue_aware,0.6210136520403255,cluster_center_queue_aware,0.3086695049794432,cluster_center_queue_aware,21.161325115110913,0,0
+1.5,cluster_center_queue_aware,0.719274013743522,cluster_center_queue_aware,0.21138641315660275,maxweight_lyapunov,16.925972797033214,0,0
+2.0,cluster_center_queue_aware,0.7782278585741458,cluster_center_queue_aware,0.15907201139451826,observable_cluster_queue_aware,13.522676209006642,0,0
+3.0,cluster_center_queue_aware,0.836344509252888,cluster_center_queue_aware,0.11920564235548713,maxweight_lyapunov,9.451296956367928,0,0
+4.0,maxweight_lyapunov,0.8759635830898551,cluster_center_queue_aware,0.08855176664036968,maxweight_lyapunov,6.675536478300963,0,1
+6.0,maxweight_lyapunov,0.9308337060805726,maxweight_lyapunov,0.0511267763854427,maxweight_lyapunov,4.256084511035598,1,1
+8.0,maxweight_lyapunov,0.9538924142208919,maxweight_lyapunov,0.032637583210103335,maxweight_lyapunov,2.9993117788578316,1,1
