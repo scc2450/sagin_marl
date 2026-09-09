@@ -1,32 +1,62 @@
-# Run Artifact Roots Before Branch Consolidation
+# Run Artifact Roots After Main Consolidation
 
 Updated: 2026-09-09
 
-This file records ignored `runs/` artifact roots that must remain reachable while
-the historical branches are gradually consolidated into
-`erik/phase4-learning-ablation-baseline`. Raw run directories are intentionally
-not tracked by Git.
+This file records ignored `runs/` artifact roots that must remain reachable
+after the historical development branches were consolidated into `main`. Raw run
+directories are intentionally not tracked by Git.
 
 ## Current Code State
 
-The consolidation center is `erik/phase4-learning-ablation-baseline`.
-As of this note, the branch has absorbed the two remaining
-`phase2-bw-degradation` diagnostic commits:
+The code, configurations, paper evidence tables, paper figure sources, and
+documentation reorganization have been squashed onto `main` at:
+
+```text
+b56b586 Consolidate STARS implementation, evaluation, and paper assets
+```
+
+The previous `erik/phase4-learning-ablation-baseline` branch was the temporary
+consolidation center. It absorbed the two remaining `phase2-bw-degradation`
+diagnostic commits:
 
 - `8626db6` (`Add BW actor geometry diagnostics`)
 - `ca29d6f` (`Add BW policy direction diagnostics`)
 
-`codex/phase3-scenario-generalization`, `codex/paper-submission-workspace`, and
-`origin/mac-python-rollout` have no commits that are unique relative to this
-phase4 branch. The historical `lyapunov-dpp` branch previously had one unique
-commit, `d771119` (`添加DPP策略，搜索最佳候选动作，更新配置和环境回调以实现链路质量重算`).
-Current phase4 already contains the maintained `topology_dpp` and
-`dpp_resource_hybrid` Python baselines, plus native staged sources including
-`topology_dpp_accel`, `topology_dpp_sat`, and `topology_dpp_bw`. After this
-audit, `lyapunov-dpp` was removed from local macOS, GitHub `origin`, and the
-Friday repositories without creating an archive tag; treat `d771119` only as a
-superseded historical reference unless a specific old interface must be
-recovered.
+`codex/phase3-scenario-generalization` has no commits that are unique relative
+to the temporary phase4 consolidation branch, and its tracked phase3 configs,
+scripts, and evidence tables are present in `main` through the squash commit.
+Because `main` received the work through a squash rather than a topology merge,
+`git branch --merged main` is not a reliable test for these retired branches.
+After this audit, the GitHub `origin/codex/phase3-scenario-generalization`
+branch and Friday's local `codex/phase3-scenario-generalization` branch were
+removed. The ignored phase3 run artifacts remain under Friday's main worktree
+and are recorded below.
+
+`codex/paper-submission-workspace` and `origin/mac-python-rollout` were already
+removed earlier after being covered by the consolidation branch. The historical
+`lyapunov-dpp` branch previously had one unique commit, `d771119`
+(`添加DPP策略，搜索最佳候选动作，更新配置和环境回调以实现链路质量重算`). Current
+`main` contains the maintained `topology_dpp` and `dpp_resource_hybrid` Python
+baselines, plus native staged sources including `topology_dpp_accel`,
+`topology_dpp_sat`, and `topology_dpp_bw`. After this audit, `lyapunov-dpp` was
+removed from local macOS, GitHub `origin`, and the Friday repositories without
+creating an archive tag; treat `d771119` only as a superseded historical
+reference unless a specific old interface must be recovered.
+
+## Friday Worktrees
+
+As of the current pass, Friday has four SAGIN-MARL worktrees:
+
+| Path | Git state | Run root | Handling |
+| --- | --- | --- | --- |
+| `/home/sgy/workspace/sagin_marl` | `main` at `b56b586` | `runs/` present, about 32G | Keep as the default code worktree and broad evidence store. |
+| `/home/sgy/workspace/sagin_marl_phase2_bw_degradation` | `phase2-bw-degradation` at `ca29d6f` | `runs/` present, about 2.1G | Keep until phase2 diagnostic artifacts are indexed or migrated. |
+| `/home/sgy/workspace/sagin_marl_phase4_learning_ablation` | `erik/phase4-learning-ablation-baseline` at `3cc75de` | `runs/` present, about 63G | Keep as the main raw source for formal paper experiments. |
+| `/home/sgy/workspace/sagin_marl_repro_940ffb7` | detached `940ffb7` | no `runs/` root observed | Can be removed later if old-checkpoint reproduction is no longer needed. |
+
+Counting at the worktree artifact-root level, there are three run roots with
+maintenance value on Friday: the main broad evidence store, the phase2
+diagnostic store, and the phase4 formal paper-evidence store.
 
 ## Remote Stash Audit
 
@@ -61,6 +91,27 @@ been dropped because dropping it is a destructive cleanup action.
 | friday | `/home/sgy/workspace/sagin_marl_phase2_bw_degradation/runs` | 2.1G | Phase2 BW direction/magnitude diagnostics and reruns tied to the two merged diagnostic commits. | Keep until the phase2 worktree is retired and useful reports are indexed. |
 | friday | `/home/sgy/workspace/sagin_marl_phase4_learning_ablation/runs` | 63G | Phase4 formal training, selected held-out evaluation, parameter sweeps, convergence/stability runs, collision smoke runs. | Keep; do not delete when the phase4 branch is merged. |
 | friday | `/home/sgy/workspace/sagin_marl_repro_940ffb7` | 17M | Detached old-code repro checkout; no `runs/` root observed. | Can be removed later if no longer needed for old-checkpoint reproduction. |
+
+## Phase3 Subtree To Preserve
+
+The phase3 branch has been retired, but its raw artifacts remain useful for
+robustness and scale-transfer discussion. The main phase3 subtree is:
+
+```text
+/home/sgy/workspace/sagin_marl/runs/phase3
+```
+
+A direct depth-2 inventory currently shows 25 phase3 experiment directories.
+The most important evidence families are:
+
+- `zero_shot/`: same-scale zero-shot evaluations against checkpoints and baselines.
+- `scale_transfer/`: nearby scale-transfer and boundary-robustness runs.
+- `main_6uav80gu/`: 6-UAV/80-GU high-load stress runs and return-target checks.
+- `diagnostics/`: 6-UAV load/resource sweeps and 6-UAV/40-GU capacity diagnostics.
+
+The `smoke/` and `failed/` subtrees are retained only for troubleshooting and
+claim-boundary reconstruction; they should not be used as positive paper
+evidence without rechecking the exact run context.
 
 ## Phase4 Subtree To Preserve
 
