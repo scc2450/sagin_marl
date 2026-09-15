@@ -324,14 +324,46 @@ evaluation seeds, checkpoints, and the original remote run directories.
 Do not add raw episode dumps, checkpoints, or full run directories here unless
 they have been intentionally reduced into paper-facing evidence tables.
 
-### Current B/C Implementation Supersedes Historical Screens
+### Current B/C Evaluation (Corrected Geometry)
 
-B and C now share corrected ego-minus-peer geometry in their base scoring.
-C additionally uses the corrected short-horizon risk handling described above.
-The public names remain `distributed_queue_b` and `distributed_queue_c`; no
-legacy implementation switch or B2/C3 algorithm is retained. Earlier ABC and
-C2 screening tables above are INVALID for current-method comparison because
-their overlap geometry was wrong. Retained raw runs and tables are historical
-bug evidence only, not paper evidence. The frozen-B plan and B2/C3 naming above
-are superseded. Rerun both methods before quoting current performance; Git
-history provides the old implementation without maintaining it in runtime code.
+B and C share corrected ego-minus-peer geometry in their base scoring. C adds
+the short-horizon risk handler. Names remain `distributed_queue_b/c`; no legacy
+implementation switch is retained. Earlier ABC/C2 tables above are invalid for
+current-method comparison and remain bug history only. The frozen-B plan and
+B2/C3 naming are superseded.
+
+Execution commit `295043e`, clean Friday worktree verified against GitHub before
+execution; GPU0 free at preflight. Existing native CUDA virtual environment,
+3 UAV / 100 GU / 22 clusters, total arrival 40 Mbit/s, bandwidth 2/4 MHz,
+T=250, BW K=5 / SAT K=1. Two batches, seed bases 971000 and 972000, each
+8 episodes and 8 environments. Eight cases / 64 episodes completed successfully.
+These are development-screening seeds, not independent formal held-out evidence.
+No training or checkpoint evaluation is involved.
+
+| Setting | Policy | Processed % | Drop % | Complete / 16 | Collision / 16 | Fixed-horizon delivery % | D_sys |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| 40/2 | B | 75.96 | 18.64 | 16 | 0 | 75.96 | 16.98 |
+| 40/2 | C | 75.01 | 19.50 | 16 | 0 | 75.01 | 17.61 |
+| 40/4 | B | 85.40 | 2.93 | 12 | 4 | 71.00 | 8.03 |
+| 40/4 | C | 93.83 | 3.78 | 16 | 0 | 93.83 | 6.15 |
+
+Fixed-horizon delivery = sum(sat_processed_sum)/(episodes * 40e6 * 250),
+using nominal full-horizon arrival and retaining failed episodes without
+extrapolation. Processed/drop/D_sys/backlog retain evaluator actual-length
+averaging; early termination makes these unsuitable as the sole ranking basis.
+Mean episode length at 40/4 is 191.375 for B versus 250 for C. B collision
+episodes terminate at steps 9/11 (batch971000) and 30/12 (batch972000).
+Its smaller drop/backlog cannot be treated as better queue management.
+
+At 40/4 C exceeds B in both batches, with zero observed collisions and a pooled
+22.83 percentage point improvement in fixed-horizon delivery. At 40/2 neither
+collides; B has 0.96 points higher processed rate pooled. Batch972000 at 40/2
+has exactly equal reported B/C metrics. C is therefore a promising 40/4 candidate,
+not universally superior and not proven collision-free. Formal validation needs
+new seeds; these seeds have already informed controller development.
+
+Compact evidence: `evidence_tables/distributed_queue_bc_corrected_20260915.json`.
+Raw runs on Friday:
+`/home/sgy/workspace/sagin_marl_moreGUs/runs/experiments/distributed_queue_bc_corrected_20260915`.
+Manifest, per-case status, resolved config, logs and episode CSVs are retained.
+Local pull was not retried; Friday/GitHub evidence is authoritative for this run.
