@@ -122,3 +122,15 @@ def test_near_screen_accounts_for_peer_acceleration():
     assert not diag["candidate_allowed"][:, 16].any()
     robust = diag["robust_first_clearance"]
     assert torch.all(robust[diag["candidate_allowed"]] >= cfg.d_safe)
+
+
+def test_peer_clearance_uses_ego_minus_peer_contract():
+    cfg, obs = fixture()
+    obs.peer_mask[:, 0] = True
+    # Own velocity +10, peer velocity -10, peer 70 m to the right.
+    obs.ego_features[:, 2] = 10 / cfg.v_max
+    obs.peer_tokens[:, 0, 0] = -70 / cfg.map_size
+    obs.peer_tokens[:, 0, 2] = 20 / cfg.v_max
+    _, diag = distributed_queue_action(obs, cfg, "b", DQSettings(horizon_steps=1))
+    torch.testing.assert_close(diag["candidate_clearance"][:, 16],
+                               torch.full((2,), 50.0), atol=1e-4, rtol=0)

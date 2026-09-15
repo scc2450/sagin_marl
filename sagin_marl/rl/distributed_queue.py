@@ -101,11 +101,9 @@ def distributed_queue_action(obs, cfg, variant="c", settings=DQSettings()):
     clearance = torch.full_like(distance, float("inf"))
     boundary_ok = torch.ones_like(distance, dtype=torch.bool)
     trajectories = []
-    # Frozen B reference: legacy overlap/clearance uses the opposite peer sign.
-    # C safety decodes ego-minus-peer correctly in _risk_adjustment; do not
-    # interpret candidate_clearance below as its safety bound.
-    peer_pos = pos[:, None] + peer[..., :2] * map_size
-    peer_vel = vel[:, None] + peer[..., 2:4] * vmax
+    # Peer observations encode ego minus peer, for position and velocity.
+    peer_pos = pos[:, None] - peer[..., :2] * map_size
+    peer_vel = vel[:, None] - peer[..., 2:4] * vmax
     for step in range(settings.horizon_steps):
         old_p = p
         v = v + actions * (amax * dt)

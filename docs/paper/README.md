@@ -323,3 +323,15 @@ evaluation seeds, checkpoints, and the original remote run directories.
 
 Do not add raw episode dumps, checkpoints, or full run directories here unless
 they have been intentionally reduced into paper-facing evidence tables.
+
+### Current B/C Implementation Supersedes Historical Screens
+
+B and C now share corrected ego-minus-peer geometry in their base scoring.
+C additionally uses the corrected short-horizon risk handling described above.
+The public names remain `distributed_queue_b` and `distributed_queue_c`; no
+legacy implementation switch or B2/C3 algorithm is retained. Earlier ABC and
+C2 screening tables above are INVALID for current-method comparison because
+their overlap geometry was wrong. Retained raw runs and tables are historical
+bug evidence only, not paper evidence. The frozen-B plan and B2/C3 naming above
+are superseded. Rerun both methods before quoting current performance; Git
+history provides the old implementation without maintaining it in runtime code.
