@@ -109,6 +109,22 @@ copies or draft panels should be treated as local scratch artifacts.
   per-case logs/status and episode tables survive interruption. Only completed
   cases with matching run identity are reused. This is 216 screening episodes,
   not a saturated-capacity measurement or a training result.
+- Screening completed: 27/27 cases, zero process failures, 216 episodes at
+  `70e3ce2`; local and Friday targeted tests each passed 41/41. Friday Python
+  3.12.3 / PyTorch 2.10.0+cu128, RTX 4090 GPU0. Raw outputs are mirrored to
+  local `runs/experiments/more_gus_capacity_20260915`; compact evidence:
+  `evidence_tables/more_gus_capacity_20260915.json`.
+- Observable-demand rule processed/drop percentages at 40 Mbit/s were
+  76.51/16.84 (2 MHz), 90.31/3.55 (4 MHz), 96.05/0.58 (6 MHz).
+  At 30 Mbit/s + 4 MHz they were 96.50/0.43; at 50 Mbit/s + 4 MHz,
+  83.67/8.13. Thus keep 40/4 as a challenging provisional config; 40/6 is
+  the better candidate if more operating margin is desired. Do not silently
+  replace the config based on screening or claim long-horizon stability.
+- For 40/4 the observable-demand rule had zero UAV/satellite drop; all drop
+  was on the ground. Queue-aware BW alone had substantial UAV drop, so the
+  bottleneck depends on mobility/association and satellite choices. More access
+  bandwidth cannot substitute for end-to-end scheduling. No learned model was
+  used, and no new training has started.
 - Existing `cluster_center_queue_aware` selects at most `num_uav` clusters by
   static population, then assigns nearby UAVs. With 22 almost-equal clusters,
   tie ordering and persistent exclusion make it a limited reference.
