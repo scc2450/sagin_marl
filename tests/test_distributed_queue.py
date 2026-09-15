@@ -2,7 +2,7 @@ from types import SimpleNamespace
 import pytest
 import torch
 from sagin_marl.env.config import SaginConfig
-from sagin_marl.rl.distributed_queue import distributed_queue_action
+from sagin_marl.rl.distributed_queue import DQSettings, distributed_queue_action
 
 
 def fixture(device="cpu"):
@@ -54,9 +54,11 @@ def test_local_service_direction_changes_with_observation():
     cfg, obs = fixture()
     cfg.queue_max_gu = 1e8
     cfg.b_acc = 1e6
-    right, _ = distributed_queue_action(obs, cfg, "a")
+    # Isolate the service prediction from movement/switch regularization.
+    settings = DQSettings(movement_weight=0, switch_weight=0)
+    right, _ = distributed_queue_action(obs, cfg, "a", settings)
     obs.gu_tokens[..., 12] *= -1
-    left, _ = distributed_queue_action(obs, cfg, "a")
+    left, _ = distributed_queue_action(obs, cfg, "a", settings)
     assert (right[:, 0] > 0).all()
     assert (left[:, 0] < 0).all()
 
