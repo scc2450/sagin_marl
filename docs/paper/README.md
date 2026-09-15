@@ -407,3 +407,29 @@ python scripts/evaluation/evaluate_structured_fixed_policy.py \
   --access_bw_decision_interval 5 --sat_decision_interval 1 \
   --out NEW_RUN/episodes.csv --summary_out NEW_RUN/summary.json
 ```
+
+### C Reward Evaluation Through Dedicated Baseline Entry
+
+Execution commit `04826bb`, no algorithm/config changes. Dedicated
+`scripts/evaluation/evaluate_structured_fixed_policy.py --baseline distributed_queue_c`.
+40/4, 3 UAV / 100 GU / 22 clusters, T250, BW K5 / SAT K1, GPU0;
+seed bases 974000 and 975000, each 8 environments and 8 episodes.
+New screening seeds, not a complete formal baseline matrix.
+
+Pooled 16 episodes: mean cumulative episode reward **35.3617**, sample standard
+deviation **4.0622**, median **35.5779**, range **24.6304-41.6784**.
+This is mean(sum of step rewards within each episode), not per-step reward.
+The standard deviation is across evaluation episodes, not training seeds.
+Batch reward means: 974000=35.5333; 975000=35.1901.
+
+Processed 91.3439%, drop 5.5142%, pre-backlog 6.0783 steps, D_sys 7.6388.
+All 16 episodes complete 250 steps, collision 0/16; fixed-horizon delivery
+91.3439%. No collision-free guarantee follows from this sample.
+Do not compare this reward directly with the historical 3UAV/20GU learned runs
+or claim superiority without same-setting/same-seed comparators.
+
+Raw root: Friday
+`/home/sgy/workspace/sagin_marl_moreGUs/runs/experiments/distributed_queue_c_reward_20260915`.
+Resolved config, manifest with source/config identity and exact commands,
+status, logs, per-episode CSV and summaries are retained.
+Compact evidence: `evidence_tables/distributed_queue_c_reward_20260915.json`.
