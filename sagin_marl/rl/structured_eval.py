@@ -2520,6 +2520,9 @@ def _compare_expected_step_payloads_from_history(
 
 
 _FIXED_POLICY_EXEC_SOURCE_MAP: dict[str, tuple[str, str, str]] = {
+    "distributed_queue_a": ("distributed_queue_a", "queue_aware", "queue_aware"),
+    "distributed_queue_b": ("distributed_queue_b", "queue_aware", "queue_aware"),
+    "distributed_queue_c": ("distributed_queue_c", "queue_aware", "queue_aware"),
     "zero": ("zero", "zero", "zero"),
     "static_uniform": ("zero", "uniform", "uniform"),
     "static": ("zero", "uniform", "uniform"),

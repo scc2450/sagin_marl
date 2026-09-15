@@ -403,6 +403,9 @@ def _normalize_exec_source(raw: str | None) -> str:
     allowed = {
         "policy",
         "policy_single_uav_queue_aware",
+        "distributed_queue_a",
+        "distributed_queue_b",
+        "distributed_queue_c",
         "queue_aware",
         "cluster_center_queue_aware",
         "observable_cluster_queue_aware",
@@ -426,6 +429,9 @@ def _normalize_exec_source(raw: str | None) -> str:
 _NATIVE_ZERO_ACTION_SOURCES = {"zero"}
 _NATIVE_POLICY_ACTION_SOURCES = {"policy", "policy_single_uav_queue_aware"}
 _NATIVE_BASELINE_ACTION_SOURCES = {
+    "distributed_queue_a",
+    "distributed_queue_b",
+    "distributed_queue_c",
     "uniform",
     "random",
     "link_priority",
@@ -473,6 +479,9 @@ def _native_exec_source_mode_code(source: object) -> int:
     table = {
         "policy": native_cuda.SOURCE_POLICY,
         "policy_single_uav_queue_aware": native_cuda.SOURCE_POLICY,
+        "distributed_queue_a": native_cuda.SOURCE_POLICY,
+        "distributed_queue_b": native_cuda.SOURCE_POLICY,
+        "distributed_queue_c": native_cuda.SOURCE_POLICY,
         "teacher": native_cuda.SOURCE_POLICY,
         "zero": native_cuda.SOURCE_ZERO,
         "uniform": native_cuda.SOURCE_UNIFORM,
@@ -799,6 +808,8 @@ class _StructuredMAPPOGpuActorBridge:
                 if flat_policy_actor
                 else self._write_accel_action_policy
             )  # type: ignore[method-assign]
+        elif accel_source.startswith("distributed_queue_"):
+            self.write_accel_action = self._write_accel_action_distributed_queue
         elif accel_source == "zero":
             self.write_accel_action = self._write_accel_action_zero  # type: ignore[method-assign]
         elif accel_source == "queue_aware":
@@ -980,6 +991,20 @@ class _StructuredMAPPOGpuActorBridge:
     def _teacher_deterministic(self, fallback: bool) -> bool:
         override = self._teacher_deterministic_override
         return bool(fallback if override is None else override)
+
+    def _write_accel_action_distributed_queue(
+        self, accel_obs, *, runtime, num_envs, deterministic,
+    ) -> None:
+        from .distributed_queue import distributed_queue_action
+        self.num_agents = self._num_agents_from_accel_obs(accel_obs, num_envs)
+        action, _ = distributed_queue_action(
+            accel_obs, self.learner.cfg, self.source_by_stage[0][-1],
+        )
+        main = runtime.main
+        main.live_accel_action.copy_(action.reshape_as(main.live_accel_action))
+        main.live_accel_old_logprob.zero_()
+        if torch.is_tensor(main.live_accel_latent_action):
+            main.live_accel_latent_action.zero_()
 
     def _write_accel_action_queue_aware(
         self,

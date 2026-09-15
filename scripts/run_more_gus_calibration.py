@@ -19,6 +19,9 @@ def main():
     parser.add_argument("--episodes", type=int, default=8)
     parser.add_argument("--seed_base", type=int, default=970000)
     parser.add_argument("--timeout", type=int, default=1200)
+    parser.add_argument("--loads", type=int, nargs="+", default=[30, 40, 50])
+    parser.add_argument("--bandwidths", type=int, nargs="+", default=[2, 4, 6])
+    parser.add_argument("--policies", nargs="+", default=["queue_aware_bw", "cluster_center_queue_aware", "observable_cluster_queue_aware"])
     args = parser.parse_args()
     repo = Path(__file__).resolve().parents[1]
     root = Path(args.run_dir).resolve()
@@ -27,7 +30,8 @@ def main():
     digest = hashlib.sha256(base.read_bytes()).hexdigest()
     commit = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=repo, text=True).strip()
     identity = dict(commit=commit, config_sha256=digest, episodes=args.episodes,
-                    seed_base=args.seed_base, cuda_visible_devices=os.getenv("CUDA_VISIBLE_DEVICES"))
+                    seed_base=args.seed_base, cuda_visible_devices=os.getenv("CUDA_VISIBLE_DEVICES"),
+                    loads=args.loads, bandwidths=args.bandwidths, policies=args.policies)
     manifest = root / "manifest.json"
     if manifest.exists() and json.loads(manifest.read_text())["identity"] != identity:
         raise RuntimeError("Run identity changed; use a new run directory.")
@@ -40,14 +44,14 @@ def main():
             protocol="native CUDA; K_bw=5; K_sat=1; common episode seeds",
         ), indent=2))
     results = []
-    for load in (30, 40, 50):
-        for bandwidth in (2, 4, 6):
+    for load in args.loads:
+        for bandwidth in args.bandwidths:
             cfg = yaml.safe_load(base.read_text())
             cfg["task_arrival_rate"] = load * 1e6 / cfg["num_gu"]
             cfg["b_acc"] = bandwidth * 1e6
             config_path = root / f"load{load}_bw{bandwidth}.yaml"
             config_path.write_text(yaml.safe_dump(cfg, sort_keys=False))
-            for policy in ("queue_aware_bw", "cluster_center_queue_aware", "observable_cluster_queue_aware"):
+            for policy in args.policies:
                 label = f"load{load}_bw{bandwidth}_{policy}"
                 out = root / label
                 out.mkdir(exist_ok=True)
