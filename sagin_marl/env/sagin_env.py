@@ -2120,6 +2120,7 @@ class SaginParallelEnv(ParallelEnv):
             center_min_dist=center_min_dist,
             rng=self.rng,
             return_metadata=True,
+            balanced=bool(cfg.gu_init_cluster_balanced),
         )
         self.uav_pos = self._sample_uav_positions()
         self.uav_vel = self._sample_uav_initial_velocities()

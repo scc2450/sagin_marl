@@ -16195,7 +16195,13 @@ class StructuredBatchEnvCore:
             best_t = torch.argmax(min_dist_t, dim=0)
             selected_t = torch.where(valid_t.any(), first_valid_t, best_t)
             centers = candidates.index_select(0, selected_t.reshape(1)).squeeze(0)
-        cluster_ids = torch.randint(num_clusters, (num_gu,), generator=generator, device=device, dtype=torch.long)
+        if bool(cfg.gu_init_cluster_balanced):
+            # Randomize which centers receive the extra users without changing GU count.
+            cluster_order = torch.randperm(num_clusters, generator=generator, device=device)
+            cluster_ids = cluster_order[torch.arange(num_gu, device=device) % num_clusters]
+            cluster_ids = cluster_ids[torch.randperm(num_gu, generator=generator, device=device)]
+        else:
+            cluster_ids = torch.randint(num_clusters, (num_gu,), generator=generator, device=device, dtype=torch.long)
         offsets = torch.randn((num_gu, 2), generator=generator, device=device, dtype=torch.float32).mul_(cluster_std)
         gu_pos = centers.index_select(0, cluster_ids).add_(offsets).clamp_(0.0, map_size)
         counts = torch.bincount(cluster_ids, minlength=num_clusters).to(dtype=torch.int32)
@@ -16496,6 +16502,7 @@ class StructuredBatchEnvCore:
                 center_min_dist=center_min_dist,
                 rng=rng,
                 return_metadata=True,
+                balanced=bool(cfg.gu_init_cluster_balanced),
             )
             uav_pos = _sample_uav_positions_native(
                 cfg,

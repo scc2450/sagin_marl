@@ -11,6 +11,7 @@ def thomas_cluster_process(
     center_min_dist: float = 0.0,
     rng: np.random.Generator | None = None,
     return_metadata: bool = False,
+    balanced: bool = False,
 ) -> np.ndarray | tuple[np.ndarray, np.ndarray, np.ndarray]:
     rng = rng or np.random.default_rng()
     num_clusters = max(1, int(num_clusters))
@@ -36,7 +37,13 @@ def thomas_cluster_process(
                 break
         centers = best_centers if best_centers is not None else rng.uniform(low, high, size=(num_clusters, 2)).astype(np.float32)
     # Allocate points per cluster
-    counts = rng.multinomial(num_points, [1 / num_clusters] * num_clusters).astype(np.int32)
+    if balanced:
+        counts = np.full(num_clusters, num_points // num_clusters, dtype=np.int32)
+        remainder = num_points % num_clusters
+        if remainder:
+            counts[rng.permutation(num_clusters)[:remainder]] += 1
+    else:
+        counts = rng.multinomial(num_points, [1 / num_clusters] * num_clusters).astype(np.int32)
     points = []
     for c, n in zip(centers, counts):
         if n == 0:

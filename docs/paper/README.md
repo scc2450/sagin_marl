@@ -47,6 +47,81 @@ copies or draft panels should be treated as local scratch artifacts.
 
 ## Evidence Policy
 
+### 100 GU Expansion (2026-09-15)
+
+- Branch: `erik/moreGUs`, based on clean `main` at `8bcb81c` after fetching origin.
+- Exploratory config: `configs/experiments/more_gus/structured_joint_mcgae_3uav100gu_22clusters_t250.yaml`.
+- Initial scenario: 3 UAV, 100 GU, 22 balanced spatial clusters (12 with 5 users,
+  10 with 4), 1500 m map, 250 steps. Cluster std is provisionally 40 m and
+  requested center separation 150 m. Separation is best-effort in the existing
+  sampler, not a guaranteed minimum; Gaussian clusters can overlap.
+- `gu_init_cluster_balanced` is opt-in in both NumPy and native Torch reset
+  samplers. Legacy configs retain their random cluster populations.
+- Current main normalizes observation/candidate width to cover all GU; this
+  config explicitly uses 100 slots. Train from scratch without loading the old
+  checkpoint; native CUDA rollout/train/eval acceptance is required.
+- Capacity-calibration starting point (not a validated stable operating point):
+  per-GU arrival `4e5`, total 40 Mbit/s at `tau0=1`; access pool 4 MHz per UAV;
+  backhaul remains 10 MHz per satellite, CPU remains 50 GHz per satellite
+  with 1000 cycles/bit (50 Mbit/s compute ceiling per used satellite).
+  Resource auto-scaling stays disabled. Bandwidth is not throughput: radio
+  capacity depends on geometry, interference, allocations and visible links.
+  Required bandwidth-weighted access efficiency is 40/(3*4)=3.33 bit/s/Hz;
+  the former 2 MHz requires 6.67. These are requirements, not measured rates.
+- Hotspot size stays 10; provisional rho is reduced from 20 to 4. For a
+  10-member active subset, mean preservation gives hot/cold rates of
+  1.231/0.308 Mbit/s per GU, with 30.77% of total traffic in the hot subset.
+  Actual subsets may be smaller because construction uses association groups;
+  report realized sizes/rates. At rho=20 and the same 40 Mbit/s total, each
+  hot GU would receive 2.759 Mbit/s. Spatial clusters and traffic subsets are
+  separate concepts; a traffic subset is not necessarily one spatial cluster.
+- Retain queue references at 40 Mbit/step and caps at 24/60/60 reference steps:
+  per-GU cap is 9.6 Mbit, per-UAV cap 800 Mbit, per-satellite cap 800 Mbit
+  under the configured 3-active-satellite reference. A hot GU with no service
+  fills in about 7.8 s at rho=4 (3.48 s at rho=20); average-rate fill time is
+  24 s. Do not increase buffers simply to hide insufficient service capacity.
+- Calibration grid before training: total arrival 30/40/50 Mbit/s crossed with
+  access pools 2/4/6 MHz, keeping the other settings fixed. Use identical
+  episode seeds and include a demand-aware mobility heuristic, not just the
+  static top-3-cluster reference. Record arrivals, GU service, UAV relay,
+  satellite processing, drops and backlog growth per layer, including tail GU
+  waiting times. Use saturated service probes to estimate capacity; throughput
+  in an empty/lightly loaded system is demand-limited and is not capacity.
+- Aim provisionally for offered load around 75-90% of measured sustainable
+  end-to-end service, with a competent heuristic processing at least 90% and
+  dropping at most 5% over finite episodes; inspect tail backlog slopes and
+  longer episodes as well. These are calibration goals, not stability proofs.
+  If access blocks flow, adjust access bandwidth/load first; adjust backhaul
+  or CPU only if their own queues demonstrate a bottleneck. Freeze the setting
+  before comparing learned methods; apply the same resources/traffic to all.
+- Current implementation follows Phase4. Inherited advantage-mode, credit-gate
+  and importance-sampling fields remain inert; do not tune them or claim their
+  mechanisms. Three known legacy macro tests remain a deferred cleanup item;
+  other failures require separate investigation. Do not restore the old algorithm.
+- Screening campaign: `more_gus_capacity_20260915`, independent Friday worktree
+  `/home/sgy/workspace/sagin_marl_moreGUs`, run root
+  `runs/experiments/more_gus_capacity_20260915`. Launcher:
+  `scripts/run_more_gus_calibration.py --run_dir <root>` with GPU0.
+  Nine load/bandwidth pairs, three rules (queue-aware BW, static cluster centers,
+  observable demand centers), eight episodes each; shared seed base 970000,
+  BW interval 5 and SAT interval 1. Keep queue references fixed across the grid.
+  Manifest records exact commit/environment, resolved YAMLs capture each pair,
+  per-case logs/status and episode tables survive interruption. Only completed
+  cases with matching run identity are reused. This is 216 screening episodes,
+  not a saturated-capacity measurement or a training result.
+- Existing `cluster_center_queue_aware` selects at most `num_uav` clusters by
+  static population, then assigns nearby UAVs. With 22 almost-equal clusters,
+  tie ordering and persistent exclusion make it a limited reference.
+- Baseline discussion: first assess `observable_cluster_queue_aware`, which
+  estimates UAV-count service centers from observed GU positions/queues.
+  Verify its native execution and information sharing before claiming parity
+  with the Python implementation. A subsequent candidate is queue-weighted
+  coverage/medoid placement with travel cost, unique UAV assignment and target
+  hysteresis; its objective and observability must be agreed before implementation.
+- Next gates: native GPU reset/action/train smoke; measure candidate truncation,
+  coverage, offered/processed load and drop; choose load/resource controls;
+  agree mobility baseline; then launch matched-budget multi-seed training.
+
 `evidence_tables/registry_index.csv` 是定位表格证据的入口。最终正文数字应能追溯到
 CSV/JSON 行、评估 seed、checkpoint 和远端 run 目录。
 

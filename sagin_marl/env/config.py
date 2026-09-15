@@ -171,6 +171,7 @@ class SaginConfig:
     traffic_model: str = "homogeneous"
     arrival_base_hetero: float = 0.0
     gu_init_num_clusters: int | None = None
+    gu_init_cluster_balanced: bool = False
     gu_init_cluster_std: float = 80.0
     gu_init_cluster_center_min_dist: float = 0.0
     hotspot_num_subsets: int = 0
