@@ -7,12 +7,18 @@ import os
 import sys
 from pathlib import Path
 
-ROOT = os.path.dirname(os.path.dirname(__file__))
+ROOT = str(Path(__file__).resolve().parents[2])
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
 from sagin_marl.env.config import load_config
-from sagin_marl.rl.structured_eval import _evaluate_structured_baseline_policy_with_traces
+import torch
+
+from sagin_marl.rl.structured_eval import (
+    _evaluate_structured_baseline_policy_with_traces,
+    _fixed_policy_exec_sources,
+    evaluate_structured_actor_exec_sources,
+)
 
 
 def _resolve_fieldnames(rows: list[dict[str, float]]) -> list[str]:
@@ -64,7 +70,12 @@ def main() -> None:
         default=None,
         choices=["cpu", "cuda", "auto"],
     )
+    parser.add_argument("--num_envs", type=int, default=1)
+    parser.add_argument("--access_bw_decision_interval", type=int, default=None)
+    parser.add_argument("--sat_decision_interval", type=int, default=None)
     args = parser.parse_args()
+    if args.num_envs < 1 or args.episodes < 1:
+        parser.error("num_envs and episodes must be positive")
 
     cfg = load_config(args.config)
     if args.T_steps is not None:
@@ -72,12 +83,33 @@ def main() -> None:
     if args.structured_env_tensor_backend is not None:
         cfg.structured_env_tensor_backend = str(args.structured_env_tensor_backend)
 
-    summary, rows, _traces, _actions, _reset_rollouts = _evaluate_structured_baseline_policy_with_traces(
-        cfg,
-        baseline_policy=str(args.baseline_policy),
-        episodes=int(args.episodes),
-        episode_seed_base=args.episode_seed_base,
-    )
+    for field in ("access_bw_decision_interval", "sat_decision_interval"):
+        value = getattr(args, field)
+        if value is not None:
+            if value < 1:
+                parser.error(f"{field} must be positive")
+            setattr(cfg, field, value)
+
+    sources = _fixed_policy_exec_sources(args.baseline_policy)
+    if sources is not None:
+        if not torch.cuda.is_available():
+            parser.error("Native fixed-policy evaluation requires CUDA")
+        if args.structured_env_tensor_backend == "cpu":
+            parser.error("Native fixed-policy evaluation cannot use the CPU backend")
+        summary, rows = evaluate_structured_actor_exec_sources(
+            cfg, torch.nn.Linear(1, 1), device=torch.device("cuda"),
+            episodes=args.episodes, num_envs=args.num_envs,
+            episode_seed_base=args.episode_seed_base, deterministic=True,
+            exec_accel_source=sources[0], exec_sat_source=sources[1],
+            exec_bw_source=sources[2],
+        )
+    else:
+        if args.num_envs != 1:
+            parser.error("Legacy fixed policies require num_envs=1")
+        summary, rows, _traces, _actions, _reset_rollouts = _evaluate_structured_baseline_policy_with_traces(
+            cfg, baseline_policy=args.baseline_policy, episodes=args.episodes,
+            episode_seed_base=args.episode_seed_base,
+        )
 
     out_path = Path(args.out) if args.out else _default_out_path(args.config, str(args.baseline_policy))
     out_path.parent.mkdir(parents=True, exist_ok=True)
