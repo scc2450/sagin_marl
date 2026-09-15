@@ -1,0 +1,207 @@
+{
+  "execution_commit": "9abbb34",
+  "purpose": "screening_not_formal",
+  "protocol": {
+    "episodes_per_batch": 8,
+    "num_envs": 8,
+    "seed_bases": [
+      971000,
+      972000
+    ],
+    "horizon": 250,
+    "arrival_mbps": 40,
+    "bandwidth_mhz": [
+      2,
+      4
+    ],
+    "bw_interval": 5,
+    "sat_interval": 1
+  },
+  "caveats": [
+    "B service score frozen including legacy mirrored peer overlap geometry",
+    "C2 risk decodes ego-minus-peer correctly",
+    "Zero collisions observed is not a safety guarantee",
+    "Existing rate metrics are truncated-episode sensitive"
+  ],
+  "B_replay_episode_csv_exact_match": {
+    "bandwidth2": true,
+    "bandwidth4": true
+  },
+  "fixed_horizon_delivery_definition": "sum(sat_processed_sum)/(episodes*40e6*250)",
+  "per_batch": [
+    {
+      "processed_ratio_eval": 0.7275662248767911,
+      "drop_ratio_eval": 0.21871669030509658,
+      "collision_episode_fraction": 0,
+      "episode_length": 250,
+      "D_sys_report": 19.68428792751208,
+      "pre_backlog_steps_eval": 12.190208375554532,
+      "seed_base": 971000,
+      "bandwidth_mhz": 2,
+      "policy": "distributed_queue_b",
+      "episodes": 8,
+      "complete_episodes": 8,
+      "fixed_horizon_delivery": 0.72756621623125,
+      "raw": "runs/experiments/distributed_queue_c2_20260915/seed971000/load40_bw2_distributed_queue_b"
+    },
+    {
+      "processed_ratio_eval": 0.6865713504888117,
+      "drop_ratio_eval": 0.2563688082329318,
+      "collision_episode_fraction": 0,
+      "episode_length": 250,
+      "D_sys_report": 32.127574211481964,
+      "pre_backlog_steps_eval": 12.503033573489637,
+      "seed_base": 971000,
+      "bandwidth_mhz": 2,
+      "policy": "distributed_queue_c",
+      "episodes": 8,
+      "complete_episodes": 8,
+      "fixed_horizon_delivery": 0.68657134225625,
+      "raw": "runs/experiments/distributed_queue_c2_20260915/seed971000/load40_bw2_distributed_queue_c"
+    },
+    {
+      "processed_ratio_eval": 0.9318323061447591,
+      "drop_ratio_eval": 0.024063815406465437,
+      "collision_episode_fraction": 0.125,
+      "episode_length": 225,
+      "D_sys_report": 6.702477007512643,
+      "pre_backlog_steps_eval": 5.034504665517627,
+      "seed_base": 971000,
+      "bandwidth_mhz": 4,
+      "policy": "distributed_queue_b",
+      "episodes": 8,
+      "complete_episodes": 7,
+      "fixed_horizon_delivery": 0.84924808789375,
+      "raw": "runs/experiments/distributed_queue_c2_20260915/seed971000/load40_bw4_distributed_queue_b"
+    },
+    {
+      "processed_ratio_eval": 0.9335265527423472,
+      "drop_ratio_eval": 0.03908602595690173,
+      "collision_episode_fraction": 0,
+      "episode_length": 250,
+      "D_sys_report": 6.44184771752794,
+      "pre_backlog_steps_eval": 5.277368817829905,
+      "seed_base": 971000,
+      "bandwidth_mhz": 4,
+      "policy": "distributed_queue_c",
+      "episodes": 8,
+      "complete_episodes": 8,
+      "fixed_horizon_delivery": 0.933526541565625,
+      "raw": "runs/experiments/distributed_queue_c2_20260915/seed971000/load40_bw4_distributed_queue_c"
+    },
+    {
+      "processed_ratio_eval": 0.7556340639293195,
+      "drop_ratio_eval": 0.18765107416523824,
+      "collision_episode_fraction": 0,
+      "episode_length": 250,
+      "D_sys_report": 18.411661082431674,
+      "pre_backlog_steps_eval": 12.093396044965834,
+      "seed_base": 972000,
+      "bandwidth_mhz": 2,
+      "policy": "distributed_queue_b",
+      "episodes": 8,
+      "complete_episodes": 8,
+      "fixed_horizon_delivery": 0.7556340551375,
+      "raw": "runs/experiments/distributed_queue_c2_20260915/seed972000/load40_bw2_distributed_queue_b"
+    },
+    {
+      "processed_ratio_eval": 0.7556340639293195,
+      "drop_ratio_eval": 0.18765107416523824,
+      "collision_episode_fraction": 0,
+      "episode_length": 250,
+      "D_sys_report": 18.411661082431674,
+      "pre_backlog_steps_eval": 12.093396044965834,
+      "seed_base": 972000,
+      "bandwidth_mhz": 2,
+      "policy": "distributed_queue_c",
+      "episodes": 8,
+      "complete_episodes": 8,
+      "fixed_horizon_delivery": 0.7556340551375,
+      "raw": "runs/experiments/distributed_queue_c2_20260915/seed972000/load40_bw2_distributed_queue_c"
+    },
+    {
+      "processed_ratio_eval": 0.9561981465162502,
+      "drop_ratio_eval": 0.017984738429147305,
+      "collision_episode_fraction": 0.125,
+      "episode_length": 230,
+      "D_sys_report": 4.8316766600852645,
+      "pre_backlog_steps_eval": 4.222063901707982,
+      "seed_base": 972000,
+      "bandwidth_mhz": 4,
+      "policy": "distributed_queue_b",
+      "episodes": 8,
+      "complete_episodes": 7,
+      "fixed_horizon_delivery": 0.8850530084875,
+      "raw": "runs/experiments/distributed_queue_c2_20260915/seed972000/load40_bw4_distributed_queue_b"
+    },
+    {
+      "processed_ratio_eval": 0.951420676894486,
+      "drop_ratio_eval": 0.03109341164981015,
+      "collision_episode_fraction": 0,
+      "episode_length": 250,
+      "D_sys_report": 4.945905882409424,
+      "pre_backlog_steps_eval": 4.2513709107426685,
+      "seed_base": 972000,
+      "bandwidth_mhz": 4,
+      "policy": "distributed_queue_c",
+      "episodes": 8,
+      "complete_episodes": 8,
+      "fixed_horizon_delivery": 0.9514206659,
+      "raw": "runs/experiments/distributed_queue_c2_20260915/seed972000/load40_bw4_distributed_queue_c"
+    }
+  ],
+  "pooled": [
+    {
+      "bandwidth_mhz": 2,
+      "policy": "distributed_queue_b",
+      "episodes": 16,
+      "complete_episodes": 16,
+      "processed_ratio_eval": 0.7416001444030553,
+      "drop_ratio_eval": 0.20318388223516742,
+      "collision_episode_fraction": 0,
+      "episode_length": 250,
+      "D_sys_report": 19.047974504971876,
+      "pre_backlog_steps_eval": 12.141802210260183,
+      "fixed_horizon_delivery": 0.741600135684375
+    },
+    {
+      "bandwidth_mhz": 2,
+      "policy": "distributed_queue_c",
+      "episodes": 16,
+      "complete_episodes": 16,
+      "processed_ratio_eval": 0.7211027072090657,
+      "drop_ratio_eval": 0.22200994119908501,
+      "collision_episode_fraction": 0,
+      "episode_length": 250,
+      "D_sys_report": 25.269617646956817,
+      "pre_backlog_steps_eval": 12.298214809227735,
+      "fixed_horizon_delivery": 0.721102698696875
+    },
+    {
+      "bandwidth_mhz": 4,
+      "policy": "distributed_queue_b",
+      "episodes": 16,
+      "complete_episodes": 14,
+      "processed_ratio_eval": 0.9440152263305046,
+      "drop_ratio_eval": 0.02102427691780637,
+      "collision_episode_fraction": 0.125,
+      "episode_length": 227.5,
+      "D_sys_report": 5.767076833798954,
+      "pre_backlog_steps_eval": 4.628284283612805,
+      "fixed_horizon_delivery": 0.867150548190625
+    },
+    {
+      "bandwidth_mhz": 4,
+      "policy": "distributed_queue_c",
+      "episodes": 16,
+      "complete_episodes": 16,
+      "processed_ratio_eval": 0.9424736148184165,
+      "drop_ratio_eval": 0.03508971880335594,
+      "collision_episode_fraction": 0,
+      "episode_length": 250,
+      "D_sys_report": 5.693876799968683,
+      "pre_backlog_steps_eval": 4.764369864286287,
+      "fixed_horizon_delivery": 0.9424736037328125
+    }
+  ]
+}

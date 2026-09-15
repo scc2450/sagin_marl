@@ -168,7 +168,7 @@ Algorithm contract:
   from own previous policy acceleration; B/C additionally subtract 0.25 times
   predicted served-demand overlap with constant-velocity neighboring UAVs.
   Soft overlap does not exclude users or promise unique service assignments.
-- C screens predicted boundary/neighbor conflicts with a 5 m margin over d_safe,
+- Historical C (through commit 1b599e5) screens predicted boundary/neighbor conflicts with a 5 m margin over d_safe,
   checking minimum separation along each prediction segment. If all candidates
   fail, use the in-bound candidate with largest predicted clearance; if none
   stay in bounds, brake. This is not a collision-free controller under reacting
@@ -193,12 +193,12 @@ At 40/4, processed/drop/collision-episode percentages:
 A 89.89/6.86/0; B 93.18/2.41/12.5; C 84.99/2.23/25;
 static cluster centers 87.59/9.09/0; observable centers 93.73/3.37/12.5.
 B improves traffic delivery over A and static centers, but is not a safety
-solution. C trades throughput for lower drop and still collides; low drop can
-also mean accumulating backlog. Do not promote C to a safe formal baseline.
-Next diagnosis is closed-loop trajectory/relative-acceleration analysis and
-fallback frequency, before changing the controller or choosing a formal variant.
+solution. Historical C shows lower processed/drop rates and still collides; early
+termination makes this unsuitable for interpreting a throughput/drop tradeoff. Do not promote C to a safe formal baseline.
+The following diagnosis and C2 revision supersede that initial interpretation.
 
-Diagnosis of seed 971002 (same 8-environment batch and seeds 971000-971007):
+Historical diagnosis of seed 971002 (same 8-environment batch and seeds 971000-971007;
+neighbor-sign correction below supersedes the original predictor-error attribution):
 - Original summary values reproduce exactly for all four B/C x 2/4 MHz runs.
   Single-environment preliminary diagnostics changed some metrics and are not
   the canonical reproduction. Use `diagnosis_971002_batch8_v2`.
@@ -229,6 +229,86 @@ Diagnosis of seed 971002 (same 8-environment batch and seeds 971000-971007):
   recovery from inside the margin, and account for neighbor acceleration
   uncertainty without assuming broadcast intent. Diagnose fallback and actual
   action corrections before declaring a safe controller.
+
+### C2 Risk Revision (2026-09-15)
+
+Execution commit: `9abbb34`. B's entire service/movement/switch/overlap score is
+frozen. Replayed B episode CSVs at both bandwidths are exactly equal to the
+original seed971000 campaign, and tests assert C2 base scores equal B scores.
+
+A newly verified decoding bug changes the previous causal interpretation:
+`structured_stage_builders.py` constructs peer position/velocity as **ego minus
+peer**, consistent with captured native observations. The old distributed
+controller treated them as peer minus ego, reflecting both position and velocity.
+Thus the old minimum-clearance predictions were geometrically wrong, not merely
+inaccurate because peers accelerated. The hard-buffer/fallback flaw remains real.
+C2 corrects these signs only inside risk handling. B's legacy overlap estimate
+remains frozen (and mirrored) for this controlled comparison. It is NOT yet a
+validated physical coverage-overlap penalty. A/B and C2 base scores must be
+corrected in a separate explicitly labeled experiment before formal promotion;
+do not silently reinterpret historical results. This is a heuristic-controller
+decoding issue, not evidence of an environment or learned-observation change.
+
+C2 retains the 18 actions and five-step B scoring, but risk handling now uses:
+- Correctly decoded peer position and velocity from each UAV's own observation.
+- A one-step radial separation screen against d_safe=20 m. Peer executed
+  acceleration uncertainty contributes a_max * dt^2, matching semi-implicit
+  integration, rather than assuming constant velocity with certainty.
+- The 5 m extra buffer is a soft two-step cost (weight 0.25), not a hard
+  five-step exclusion. Starting at 20-25 m no longer invalidates all actions.
+- If no candidate passes, prioritize in-bound next-step separation, then
+  lower closing speed/action magnitude; brake if none remain in bounds.
+- This is not recursive feasibility or collision-free proof. The one-step bound
+  assumes observed velocity, bounded executed peer acceleration, and interpolation
+  of the predicted own motion. Environment corrections can invalidate own-motion
+  prediction. No intentions, global assignment, or other agents' observations.
+- Legacy `candidate_clearance/predicted_clearance` diagnostics are retained for
+  B comparison and are NOT C2 safety bounds; use `robust_first_clearance`.
+
+53 focused tests pass (distributed controller, config, balanced clusters, existing
+baselines), including buffer recovery, bounded peer acceleration and frozen B
+score equality. Historical macro tests remain deferred, not repaired.
+
+Small-screen protocol: 3 UAV / 100 GU / 22 clusters, arrival 40 Mbit/s,
+bandwidth 2/4 MHz, T=250, BW K=5 / SAT K=1, GPU0. Each case uses 8 environments
+and 8 episodes; two common-seed batches 971000-971007 and 972000-972007.
+Eight cases completed, 64 episodes total, no learned training. The second batch
+is additional screening, NOT formal held-out evaluation.
+
+| Setting | Policy | Processed % | Drop % | Complete / 16 | Collision / 16 | Fixed-horizon delivery % |
+| --- | --- | ---: | ---: | ---: | ---: | ---: |
+| 40/2 | B frozen | 74.16 | 20.32 | 16 | 0 | 74.16 |
+| 40/2 | C2 | 72.11 | 22.20 | 16 | 0 | 72.11 |
+| 40/4 | B frozen | 94.40 | 2.10 | 14 | 2 | 86.72 |
+| 40/4 | C2 | 94.25 | 3.51 | 16 | 0 | 94.25 |
+
+Processed/drop are the existing equal-episode actual-length averages and remain
+truncation-sensitive. Fixed-horizon delivery = sum(sat_processed_sum) /
+(n_episodes * 40e6 * 250); failed episodes are not removed or extrapolated.
+Its denominator is nominal full-horizon arrival, not observed truncated arrival.
+This is a failure-aware throughput account, not an estimate of unseen post-crash
+traffic. Report both views plus completion; low drop alone is not an advantage.
+
+At 40/4 C2 removes the observed early collision in both batches without a material
+change in actual-length processed rate (-0.15 percentage points pooled), and
+improves nominal-horizon delivery by 7.53 points. At 40/2 it loses 2.05 points
+pooled and increases D_sys (19.05 to 25.27). Batch972000 at 40/2 is exactly equal
+to B in recorded aggregate metrics; the loss comes from batch971000.
+The original seed971002 now completes 250 steps at both bandwidths instead of
+old C's 7/6 steps. Zero collisions in 16 episodes per setting is not proof of
+safety. C2 is a 40/4 candidate, not a universally superior or final baseline.
+
+A preliminary C2 attempt before correcting peer signs still failed; preserve
+`c2_diagnosis_971002` under the original run root as failed diagnostic evidence.
+`c2_signfix_diagnosis_971002` records the corrected replay. These are dirty-tree
+diagnostics with source hashes; the two committed screening batches below are
+the result source. Do not mix the preliminary numbers into the C2 table.
+
+New raw root: Friday
+`/home/sgy/workspace/sagin_marl_moreGUs/runs/experiments/distributed_queue_c2_20260915`.
+Compact evidence: `evidence_tables/distributed_queue_c2_20260915.json`.
+Next: correct the frozen overlap geometry as a separate B2/C3 controlled test,
+then reassess throughput and safety with more seeds before formal baseline use.
 
 Raw outputs: Friday `/home/sgy/workspace/sagin_marl_moreGUs/runs/experiments/distributed_queue_20260915`;
 compact evidence: `evidence_tables/distributed_queue_20260915.json`.
