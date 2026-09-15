@@ -138,6 +138,70 @@ copies or draft panels should be treated as local scratch artifacts.
   coverage, offered/processed load and drop; choose load/resource controls;
   agree mobility baseline; then launch matched-budget multi-seed training.
 
+### Distributed Queue Scheduler Prototype (2026-09-15)
+
+Implemented first on Friday in `erik/moreGUs`. The production environment remains
+native CUDA. The new action producer uses batched GPU PyTorch on independent
+local observation rows; source-code `SOURCE_POLICY` only tells the environment
+to consume the supplied action, and does not imply a learned policy or checkpoint.
+
+Implementation: `sagin_marl/rl/distributed_queue.py`, integrated in the existing
+GPU actor bridge. CLI baseline names are `distributed_queue_a/b/c`. All three
+retain queue-aware SAT and BW; only mobility changes. There is no global
+assignment, true cluster metadata access, cross-row observation aggregation,
+agent-ID tie breaking or intent communication.
+
+Algorithm contract:
+- 18 acceleration candidates: eight directions at half/full acceleration,
+  zero acceleration and speed-limited braking. Five predicted steps, clipped
+  speed, receding-horizon execution of only the first action.
+- Decode GU queue fill and log1p expected-arrival tokens with the configured
+  nominal per-GU flow reference. Initial campaign uses mean-preserving traffic
+  with no arrival ramp. This decoding is not validated for dynamic flow refs.
+- Service proxy sums bandwidth-constrained predicted uploads capped by queued
+  plus expected demand. Proxy bandwidth fractions are proportional to that
+  demand; actual execution still uses the existing queue-aware BW allocator.
+  Link extrapolation anchors observed full-band spectral efficiency and uses
+  inverse-square distance scaling with fixed interference. It is explicitly
+  approximate, not an oracle evaluation of the real channel or association.
+- Score = served/demand - 0.02 normalized flight distance - 0.01 squared change
+  from own previous policy acceleration; B/C additionally subtract 0.25 times
+  predicted served-demand overlap with constant-velocity neighboring UAVs.
+  Soft overlap does not exclude users or promise unique service assignments.
+- C screens predicted boundary/neighbor conflicts with a 5 m margin over d_safe,
+  checking minimum separation along each prediction segment. If all candidates
+  fail, use the in-bound candidate with largest predicted clearance; if none
+  stay in bounds, brake. This is not a collision-free controller under reacting
+  neighbors or environment action corrections. No long-term target memory is
+  added; previous action comes from ego observation and naturally resets.
+
+Validation: 50 focused tests plus 14 action/critic tests passed on Friday,
+including GPU/CPU decision agreement, row independence, masked-value isolation,
+service direction with movement penalties isolated, head-on constant-velocity
+prediction and finite all-unsafe fallback. One existing zero-element tensor
+initialization warning remains. The three previously identified legacy macro
+failures were not modified or reinterpreted.
+
+Campaign `distributed_queue_20260915/comparison`: 40 Mbit/s at 2/4 MHz,
+A/B/C plus the three existing rules, 8 common-seed episodes each, seed base
+971000 (separate from the first screen), BW K=5 / SAT K=1, GPU0.
+12/12 cases completed, 96 episodes; execution commit `ad0797b`.
+Each case took roughly 9.0-9.4 s including process/env setup; this is not
+isolated per-decision latency. The initial 2-episode smoke is diagnostic only.
+
+At 40/4, processed/drop/collision-episode percentages:
+A 89.89/6.86/0; B 93.18/2.41/12.5; C 84.99/2.23/25;
+static cluster centers 87.59/9.09/0; observable centers 93.73/3.37/12.5.
+B improves traffic delivery over A and static centers, but is not a safety
+solution. C trades throughput for lower drop and still collides; low drop can
+also mean accumulating backlog. Do not promote C to a safe formal baseline.
+Next diagnosis is closed-loop trajectory/relative-acceleration analysis and
+fallback frequency, before changing the controller or choosing a formal variant.
+
+Raw outputs: Friday `/home/sgy/workspace/sagin_marl_moreGUs/runs/experiments/distributed_queue_20260915`;
+compact evidence: `evidence_tables/distributed_queue_20260915.json`.
+No learned training was launched; 40/4 remains the provisional config.
+
 `evidence_tables/registry_index.csv` 是定位表格证据的入口。最终正文数字应能追溯到
 CSV/JSON 行、评估 seed、checkpoint 和远端 run 目录。
 
