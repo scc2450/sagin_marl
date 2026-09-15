@@ -67,11 +67,12 @@ def test_head_on_forecast_chooses_feasible_candidate():
     cfg, obs = fixture()
     obs.ego_features[:, 2] = 10 / cfg.v_max
     obs.peer_mask[:, 0] = True
-    obs.peer_tokens[:, 0, 0] = 70 / cfg.map_size
-    obs.peer_tokens[:, 0, 2] = -20 / cfg.v_max
+    obs.peer_tokens[:, 0, 0] = -70 / cfg.map_size
+    obs.peer_tokens[:, 0, 2] = 20 / cfg.v_max
     _, diag = distributed_queue_action(obs, cfg, "c")
     assert (~diag["fallback"]).all()
-    assert (diag["predicted_clearance"] >= cfg.d_safe + 5).all()
+    chosen = diag["robust_first_clearance"].gather(1, diag["selected"][:, None])
+    assert (chosen >= cfg.d_safe).all()
 
 
 def test_crowded_fallback_remains_finite():
@@ -89,3 +90,35 @@ def test_cuda_cpu_same_decision():
     cfg, obs = fixture("cuda")
     gpu, _ = distributed_queue_action(obs, cfg)
     torch.testing.assert_close(cpu, gpu.cpu(), atol=1e-5, rtol=1e-5)
+
+
+def test_c_preserves_b_service_scores():
+    cfg, obs = fixture()
+    obs.peer_mask[:, 0] = True
+    obs.peer_tokens[:, 0, 0] = 100 / cfg.map_size
+    _, b = distributed_queue_action(obs, cfg, "b")
+    _, c = distributed_queue_action(obs, cfg, "c")
+    torch.testing.assert_close(c["base_scores"], b["candidate_scores"], rtol=0, atol=0)
+
+
+def test_soft_buffer_does_not_force_fallback():
+    cfg, obs = fixture()
+    obs.peer_mask[:, 0] = True
+    obs.peer_tokens[:, 0, 0] = -23 / cfg.map_size
+    action, diag = distributed_queue_action(obs, cfg, "c")
+    assert (~diag["fallback"]).all()
+    assert (action[:, 0] < 0).all()
+    chosen = diag["robust_first_clearance"].gather(1, diag["selected"][:, None])
+    assert (chosen >= cfg.d_safe).all()
+
+
+def test_near_screen_accounts_for_peer_acceleration():
+    cfg, obs = fixture()
+    obs.peer_mask[:, 0] = True
+    obs.peer_tokens[:, 0, 0] = -23 / cfg.map_size
+    _, diag = distributed_queue_action(obs, cfg, "c")
+    # Holding position is nominally outside d_safe, but an accelerating peer
+    # can enter it in one semi-implicit simulator step.
+    assert not diag["candidate_allowed"][:, 16].any()
+    robust = diag["robust_first_clearance"]
+    assert torch.all(robust[diag["candidate_allowed"]] >= cfg.d_safe)

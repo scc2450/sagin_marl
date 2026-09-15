@@ -17,6 +17,61 @@ class DQSettings:
     switch_weight: float = 0.01
     overlap_weight: float = 0.25
     safety_margin: float = 5.0
+    risk_weight: float = 0.25
+
+
+def _risk_adjustment(obs, cfg, actions, trajectories, base_score, boundary_ok, settings):
+    """One-step radial robust screen plus a soft two-step lookahead cost.
+
+    The bound assumes observed peer velocity, bounded executed acceleration and
+    straight interpolation within a simulator step; it is not a global guarantee.
+    """
+    ego, mask = obs.ego_features, obs.peer_mask
+    if obs.peer_tokens.shape[1] == 0:
+        clear = torch.full_like(base_score, float("inf"))
+        return base_score, boundary_ok, None, clear
+    dt, amax = float(cfg.tau0), float(cfg.a_max)
+    peer = torch.where(mask[..., None], obs.peer_tokens, 0.0)
+    # Observation contract is ego minus peer for both relative fields.
+    rel = -peer[..., :2] * float(cfg.map_size)
+    dist = rel.norm(dim=-1).clamp_min(1e-6)
+    normal = rel / dist[..., None]
+    own_pos = ego[:, :2] * float(cfg.map_size)
+    own_vel = ego[:, 2:4] * float(cfg.v_max)
+    peer_vel = own_vel[:, None] - peer[..., 2:4] * float(cfg.v_max)
+    own_delta = trajectories[0] - own_pos[:, None]
+    nominal_rel = rel[:, None] + peer_vel[:, None] * dt - own_delta[:, :, None]
+    # Semi-implicit simulator motion: acceleration contributes amax * dt**2,
+    # not 0.5 * amax * dt**2, to the next position.
+    endpoint = (nominal_rel * normal[:, None]).sum(-1) - amax * dt * dt
+    endpoint = endpoint.masked_fill(~mask[:, None], float("inf"))
+    current = dist.masked_fill(~mask, float("inf"))
+    robust_clear = torch.minimum(current[:, None], endpoint).amin(-1)
+    physical = float(cfg.d_safe)
+    # Starting within the soft buffer is allowed. Already-violated physical
+    # separation instead requires predicted non-worsening recovery.
+    required = torch.minimum(current, torch.full_like(current, physical))
+    permitted = (endpoint >= required[:, None]).all(-1) & boundary_ok
+    h = min(2, len(trajectories))
+    future_rel = rel[:, None] + peer_vel[:, None] * (h * dt) - (
+        trajectories[h - 1] - own_pos[:, None])[:, :, None]
+    uncertainty = amax * dt * dt * h * (h + 1) / 2
+    future_clear = (future_rel.norm(dim=-1) - uncertainty).masked_fill(
+        ~mask[:, None], float("inf"))
+    buffer = physical + settings.safety_margin
+    risk = ((buffer - future_clear) / max(buffer, 1)).clamp_min(0).square().amax(-1)
+    score = base_score - settings.risk_weight * risk
+    # Recovery prioritizes next-step separation, then lower closing speed.
+    endpoint_min = endpoint.amin(-1)
+    best_endpoint = endpoint_min.masked_fill(~boundary_ok, -float("inf")).amax(-1, keepdim=True)
+    recoverable = boundary_ok & (endpoint_min >= best_endpoint - 1e-4)
+    own_next_vel = own_delta / dt
+    closing = (-(peer_vel[:, None] - own_next_vel[:, :, None]) * normal[:, None]).sum(-1)
+    closing = closing.masked_fill(~mask[:, None], -float("inf")).amax(-1).nan_to_num(neginf=0)
+    recovery_score = -closing - 0.01 * actions.square().sum(-1)
+    fallback = recovery_score.masked_fill(~recoverable, -float("inf")).argmax(-1)
+    fallback = torch.where(boundary_ok.any(-1), fallback, torch.full_like(fallback, actions.shape[1] - 1))
+    return score, permitted, fallback, robust_clear
 
 
 @torch.no_grad()
@@ -46,6 +101,9 @@ def distributed_queue_action(obs, cfg, variant="c", settings=DQSettings()):
     clearance = torch.full_like(distance, float("inf"))
     boundary_ok = torch.ones_like(distance, dtype=torch.bool)
     trajectories = []
+    # Frozen B reference: legacy overlap/clearance uses the opposite peer sign.
+    # C safety decodes ego-minus-peer correctly in _risk_adjustment; do not
+    # interpret candidate_clearance below as its safety bound.
     peer_pos = pos[:, None] + peer[..., :2] * map_size
     peer_vel = vel[:, None] + peer[..., 2:4] * vmax
     for step in range(settings.horizon_steps):
@@ -102,8 +160,12 @@ def distributed_queue_action(obs, cfg, variant="c", settings=DQSettings()):
              - settings.movement_weight * distance / (vmax * dt * settings.horizon_steps)
              - settings.switch_weight * switch)
     allowed = boundary_ok
+    risk_fallback = None
+    robust_clear = clearance
+    base_score = score
     if variant == "c":
-        allowed = allowed & (clearance >= float(cfg.d_safe) + settings.safety_margin)
+        score, allowed, risk_fallback, robust_clear = _risk_adjustment(
+            obs, cfg, actions, trajectories, score, boundary_ok, settings)
     has_allowed = allowed.any(-1)
     best = score.masked_fill(~allowed, -float("inf")).argmax(-1)
     # If all predictions are unsafe, maximize clearance inside map bounds.
@@ -111,6 +173,8 @@ def distributed_queue_action(obs, cfg, variant="c", settings=DQSettings()):
     fallback_clearance = clearance.nan_to_num(posinf=map_size)
     fallback = fallback_clearance.masked_fill(~boundary_ok, -float("inf")).argmax(-1)
     fallback = torch.where(boundary_ok.any(-1), fallback, torch.full_like(fallback, k - 1))
+    if risk_fallback is not None:
+        fallback = risk_fallback
     best = torch.where(has_allowed, best, fallback)
     chosen = actions[torch.arange(n, device=ego.device), best]
     return chosen, {"predicted_clearance": clearance.gather(1, best[:, None]).squeeze(1),
@@ -118,4 +182,5 @@ def distributed_queue_action(obs, cfg, variant="c", settings=DQSettings()):
                     "candidate_actions": actions, "candidate_scores": score,
                     "candidate_clearance": clearance, "candidate_allowed": allowed,
                     "candidate_boundary_ok": boundary_ok, "selected": best,
-                    "first_positions": trajectories[0]}
+                    "first_positions": trajectories[0],
+                    "base_scores": base_score, "robust_first_clearance": robust_clear}
