@@ -367,3 +367,43 @@ Raw runs on Friday:
 `/home/sgy/workspace/sagin_marl_moreGUs/runs/experiments/distributed_queue_bc_corrected_20260915`.
 Manifest, per-case status, resolved config, logs and episode CSVs are retained.
 Local pull was not retried; Friday/GitHub evidence is authoritative for this run.
+
+### Dedicated Fixed-Baseline Entry Acceptance
+
+The CLI `scripts/evaluation/evaluate_structured_fixed_policy.py` now routes
+recognized native policies through the existing execution-source evaluator.
+It also supports `--num_envs`, explicit BW/SAT intervals, and direct script
+imports from the repository root. Legacy unrecognized fixed-policy routes retain
+their single-environment trace path. No C algorithm parameters were changed.
+
+Execution commit `f4fb4e9`; 40/4, T250, K_bw5, K_sat1, GPU0, 8 environments
+and 8 episodes per batch. Seed971000 episode CSV records match the prior
+mixed-head-entry evaluation exactly. New seed973000 screening also completed.
+54 existing focused tests passed, in addition to the two real CLI GPU runs.
+
+| Seed base | Processed % | Drop % | Complete | Collision | D_sys |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| 971000 (replay) | 95.30 | 2.50 | 8/8 | 0/8 | 5.61 |
+| 973000 (new screen) | 85.47 | 8.50 | 8/8 | 0/8 | 12.46 |
+
+All episodes run 250 steps, so fixed-horizon delivery matches processed rate
+up to numerical rounding. Do not double-count replay971000 as new evidence.
+New-batch throughput is materially lower; zero observed collisions is not a
+safety proof or sufficient formal validation.
+
+Raw root: Friday
+`runs/experiments/distributed_queue_c_fixed_entry_20260915`;
+manifest records commands, config hash and commit; per-batch CSV/summary/logs
+are retained. Compact evidence:
+`evidence_tables/distributed_queue_c_fixed_entry_20260915.json`.
+
+Invocation from repository root with the project CUDA Python environment:
+```sh
+CUDA_VISIBLE_DEVICES=0 OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 \
+python scripts/evaluation/evaluate_structured_fixed_policy.py \
+  --config configs/experiments/more_gus/structured_joint_mcgae_3uav100gu_22clusters_t250.yaml \
+  --baseline distributed_queue_c --episodes 8 --num_envs 8 \
+  --episode_seed_base 973000 --structured_env_tensor_backend cuda \
+  --access_bw_decision_interval 5 --sat_decision_interval 1 \
+  --out NEW_RUN/episodes.csv --summary_out NEW_RUN/summary.json
+```
