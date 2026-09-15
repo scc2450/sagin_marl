@@ -198,6 +198,38 @@ also mean accumulating backlog. Do not promote C to a safe formal baseline.
 Next diagnosis is closed-loop trajectory/relative-acceleration analysis and
 fallback frequency, before changing the controller or choosing a formal variant.
 
+Diagnosis of seed 971002 (same 8-environment batch and seeds 971000-971007):
+- Original summary values reproduce exactly for all four B/C x 2/4 MHz runs.
+  Single-environment preliminary diagnostics changed some metrics and are not
+  the canonical reproduction. Use `diagnosis_971002_batch8_v2`.
+- 40/4 C first diverges from B at step 5, UAV index 2. B's eastward full
+  acceleration has predicted minimum clearance 2.46 m under a constant-velocity
+  neighbor; C replaces it with northward half acceleration predicted at 29.66 m
+  (threshold 25 m). Actual next observation gives 23.49 m between UAVs 1 and 2.
+  Previous-policy and executed-action tokens agree at that transition.
+- The observed neighbor continues southeast acceleration, violating the
+  predictor's constant-velocity assumption. Nominal one-step joint dynamics
+  predict 23.49 m for C's chosen action versus 28.33 m for B's action at that
+  same state. This is a one-step counterfactual, not a full alternate rollout.
+- Step 6 begins inside the 25 m planning margin but outside d_safe=20 m.
+  Since clearance includes the starting point, every candidate for that pair
+  fails the hard margin test, regardless of a possible recovery trajectory.
+  Both enter max-clearance fallback; that fallback is still based on the same
+  incorrect neighbor-motion assumption. Collision terminates this episode at 6.
+  At 40/2 divergence starts at 5 and all-unsafe fallback/collision occurs at 7.
+- B at 40/4 terminates the same episode at step 50 (82.58% processed/1.44% drop);
+  C at step 6 has 16.67% processed/zero drop. Early truncation explains almost
+  the entire aggregate processed decline and masks potential later overflow.
+  Low drop is not a queue-management improvement. Mean episode length and
+  completion/collision must accompany rate tables; fixed-horizon delivery
+  accounting is needed before formal ranking.
+- Instrumentation only adds returned diagnostics and a standalone replay script;
+  A/B/C scoring and action selection are unchanged. Next remediation should
+  separate soft planning margin from physical collision constraints, handle
+  recovery from inside the margin, and account for neighbor acceleration
+  uncertainty without assuming broadcast intent. Diagnose fallback and actual
+  action corrections before declaring a safe controller.
+
 Raw outputs: Friday `/home/sgy/workspace/sagin_marl_moreGUs/runs/experiments/distributed_queue_20260915`;
 compact evidence: `evidence_tables/distributed_queue_20260915.json`.
 No learned training was launched; 40/4 remains the provisional config.

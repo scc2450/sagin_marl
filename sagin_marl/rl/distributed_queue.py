@@ -114,4 +114,8 @@ def distributed_queue_action(obs, cfg, variant="c", settings=DQSettings()):
     best = torch.where(has_allowed, best, fallback)
     chosen = actions[torch.arange(n, device=ego.device), best]
     return chosen, {"predicted_clearance": clearance.gather(1, best[:, None]).squeeze(1),
-                    "fallback": ~has_allowed, "score": score.gather(1, best[:, None]).squeeze(1)}
+                    "fallback": ~has_allowed, "score": score.gather(1, best[:, None]).squeeze(1),
+                    "candidate_actions": actions, "candidate_scores": score,
+                    "candidate_clearance": clearance, "candidate_allowed": allowed,
+                    "candidate_boundary_ok": boundary_ok, "selected": best,
+                    "first_positions": trajectories[0]}
