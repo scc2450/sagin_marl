@@ -433,3 +433,38 @@ Raw root: Friday
 Resolved config, manifest with source/config identity and exact commands,
 status, logs, per-episode CSV and summaries are retained.
 Compact evidence: `evidence_tables/distributed_queue_c_reward_20260915.json`.
+
+### C Episode Rendering (2026-09-16)
+
+The existing plotting function remains usable. Its legacy step/export loop
+produced stale t=0 snapshots in this native-C trial, so it must not be used as
+evidence of a moving native rollout. The baseline route now captures actual
+full-GU acceleration observations during the same native evaluator used by
+the dedicated baseline CLI, then renders offline. No policy logic is changed.
+Only full, consistently ordered GU observations are supported; missing slots,
+conflicting associations and nonconsecutive timestamps fail explicitly.
+Observation time is decoded using the schema's T-1 denominator.
+
+Example: 40/4, seed974000, one environment, 250 steps. Reward33.1105,
+processed94.5262%, drop3.1626%, D_sys6.7552, collision0.
+An independent dedicated baseline CLI rerun has an exactly equal summary.
+Do not equate this single-environment trajectory with an earlier batched run.
+Frames are pre-action t=0..249; the terminal post-action state is not shown.
+GIF: 51 frames at 720x720, 200ms per frame (approximately 10.2s).
+Visual checks confirm nonblank frames, changing queues/associations and U2
+movement; U0/U1 remain stationary in this episode. 18 renderer/controller tests
+pass, including observation decoding, time endpoints and partial-mask rejection.
+
+Invocation:
+```sh
+python scripts/render_structured_episode.py \
+  --config configs/experiments/more_gus/structured_joint_mcgae_3uav100gu_22clusters_t250.yaml \
+  --baseline distributed_queue_c --episode_seed 974000 --device cuda \
+  --access_bw_decision_interval 5 --sat_decision_interval 1 \
+  --frame_stride 5 --fps 5 --out NEW_RUN/episode.gif
+```
+Use the Friday CUDA virtual environment and the existing single-thread BLAS
+environment settings. Raw root:
+`runs/experiments/distributed_queue_c_render_20260916/native`.
+GIF, preview PNGs and trajectory/summary JSON were copied to the same relative
+local run directory for viewing; local source-code pull was not attempted.

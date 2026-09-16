@@ -287,8 +287,82 @@ def _done_from_step_result(step_result: Any) -> bool:
     return False
 
 
+
+def _state_from_full_accel_observation(cfg, obs):
+    """Decode a full-GU pre-action snapshot; never fabricate unobserved users."""
+    from sagin_marl.rl import structured_accel_actor_schema as schema
+    ego = obs.ego_features.detach().cpu().numpy()
+    gu = obs.gu_tokens.detach().cpu().numpy()
+    mask = obs.gu_mask.detach().cpu().numpy()
+    if gu.shape[:2] != (cfg.num_uav, cfg.num_gu) or not mask.all():
+        raise ValueError("Baseline rendering currently requires all GU slots to be observed.")
+    positions = gu[0, :, schema.GU_X:schema.GU_Y + 1]
+    if not np.allclose(gu[:, :, schema.GU_X:schema.GU_Y + 1], positions[None], atol=1e-6):
+        raise ValueError("Baseline renderer requires consistent full-GU token ordering.")
+    association_mask = gu[:, :, schema.GU_LAST_ASSOC_TO_EGO] > 0.5
+    if (association_mask.sum(axis=0) > 1).any():
+        raise ValueError("Conflicting GU association observations.")
+    assoc = np.where(association_mask.any(axis=0), association_mask.argmax(axis=0), -1)
+    return {
+        "t": int(round((1 - float(ego[0, schema.EGO_REMAINING_HORIZON_FRAC])) * max(cfg.T_steps - 1, 1))),
+        "uav_pos": (ego[:, :2] * cfg.map_size).tolist(),
+        "gu_pos": (positions * cfg.map_size).tolist(),
+        "gu_queue": (gu[0, :, schema.GU_QUEUE_FILL] * cfg.queue_max_gu).tolist(),
+        "last_association": assoc.tolist(),
+    }
+
+
+def _render_distributed_baseline(cfg, args, out_path, device):
+    import json
+    from pathlib import Path
+    import imageio.v2 as imageio
+    import sagin_marl.rl.distributed_queue as dq
+    from sagin_marl.rl.structured_eval import evaluate_structured_actor_exec_sources, _fixed_policy_exec_sources
+
+    if device.type != "cuda":
+        raise ValueError("Native baseline rendering requires CUDA.")
+    states = []
+    original = dq.distributed_queue_action
+    def capture(obs, config, *positional, **kwargs):
+        states.append(_state_from_full_accel_observation(config, obs))
+        return original(obs, config, *positional, **kwargs)
+    sources = _fixed_policy_exec_sources(args.baseline)
+    dq.distributed_queue_action = capture
+    try:
+        summary, rows = evaluate_structured_actor_exec_sources(
+            cfg, torch.nn.Linear(1, 1), device=device, episodes=1, num_envs=1,
+            episode_seed_base=args.episode_seed, deterministic=True,
+            exec_accel_source=sources[0], exec_sat_source=sources[1], exec_bw_source=sources[2])
+    finally:
+        dq.distributed_queue_action = original
+    length = int(rows[0]["episode_length"])
+    states = states[:length]
+    if [state["t"] for state in states] != list(range(length)):
+        raise RuntimeError(f"Render times invalid: length={length}, captured={len(states)}, first={[s['t'] for s in states[:12]]}, last={[s['t'] for s in states[-5:]]}")
+    path = Path(out_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.with_suffix(".json").write_text(json.dumps(dict(
+        baseline=args.baseline, seed=args.episode_seed, num_envs=1,
+        snapshot_semantics="pre-action; terminal post-action state is not included",
+        summary=summary, states=states), indent=2))
+    indices = list(range(0, length, max(args.frame_stride, 1)))
+    if indices[-1] != length - 1:
+        indices.append(length - 1)
+    frames = []
+    for index in indices:
+        frame = _render_state_frame(cfg, states[index], queue_label_limit=args.queue_label_limit)
+        frames.append(frame)
+        if index in (indices[0], indices[len(indices)//2], indices[-1]):
+            imageio.imwrite(path.with_name(f"{path.stem}_t{index:03d}.png"), frame)
+    imageio.mimsave(path, frames, duration=int(1000 / max(args.fps, 1)), loop=0)
+    print(f"Saved baseline render: {path}; frames={len(frames)}; steps={length}; reward={summary['reward_sum']:.4f}", flush=True)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
+    parser.add_argument("--baseline", choices=["distributed_queue_a", "distributed_queue_b", "distributed_queue_c"])
+    parser.add_argument("--access_bw_decision_interval", type=int, default=None)
+    parser.add_argument("--sat_decision_interval", type=int, default=None)
     parser.add_argument("--config", type=str, default=None)
     parser.add_argument("--checkpoint", type=str, default=None)
     parser.add_argument("--run_dir", type=str, default=None)
@@ -329,6 +403,17 @@ def main() -> None:
     if args.structured_env_tensor_backend is not None:
         cfg.structured_env_tensor_backend = str(args.structured_env_tensor_backend)
     device = _resolve_torch_device(args.device)
+    for field in ("access_bw_decision_interval", "sat_decision_interval"):
+        value = getattr(args, field)
+        if value is not None:
+            if value < 1:
+                parser.error(f"{field} must be positive")
+            setattr(cfg, field, value)
+    if args.baseline:
+        if args.max_steps is not None:
+            parser.error("Baseline rendering preserves the configured episode horizon.")
+        _render_distributed_baseline(cfg, args, out_path, device)
+        return
     accel_source = _source_or_cfg(args.exec_accel_source, cfg, "exec_accel_source")
     sat_source = _source_or_cfg(args.exec_sat_source, cfg, "exec_sat_source")
     bw_source = _source_or_cfg(args.exec_bw_source, cfg, "exec_bw_source")
