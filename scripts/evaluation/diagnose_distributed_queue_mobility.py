@@ -47,11 +47,14 @@ def main():
             def capture(obs, cfg, variant="c", settings=dq.DQSettings()):
                 action, diag = original(obs, cfg, variant, settings)
                 # Diagnostic only: no alternate action reaches the environment.
-                alternative, _ = original(obs, cfg, variant, replace(
+                alternative, alternative_diag = original(obs, cfg, variant, replace(
                     settings, movement_weight=0.0, switch_weight=0.0))
+                selected_score = alternative_diag["candidate_scores"].gather(1, diag["selected"][:, None]).squeeze(1)
+                margin = alternative_diag["score"] - selected_score
                 samples.append(dict(
                     pos=(obs.ego_features[:, :2] * cfg.map_size).cpu().numpy().copy(),
                     speed=(obs.ego_features[:, 2:4] * cfg.v_max).norm(dim=-1).cpu().numpy().copy(),
+                    alternative_margin=margin.cpu().numpy().copy(),
                     idle_action=(action.norm(dim=-1)<1e-6).cpu().numpy().copy(),
                     alternative_moves=(alternative.norm(dim=-1)>1e-6).cpu().numpy().copy()))
                 return action, diag
@@ -76,6 +79,7 @@ def main():
             positions = np.stack([s["pos"] for s in samples]).reshape(-1,8,3,2)
             idle = np.stack([s["idle_action"] for s in samples]).reshape(-1,8,3)
             alternate = np.stack([s["alternative_moves"] for s in samples]).reshape(-1,8,3)
+            margins = np.stack([s["alternative_margin"] for s in samples]).reshape(-1,8,3)
             agents=[]
             for episode,row in enumerate(rows):
                 n=int(float(row["episode_length"]))
@@ -89,6 +93,9 @@ def main():
                         longest_hover_steps=longest_true(hovering),
                         observed_path_m=float(np.linalg.norm(np.diff(positions[:n,episode,agent],axis=0),axis=-1).sum()),
                         stationary_decisions=int(stationary_choice.sum()),
+                        positive_margin_stationary=int((stationary_choice & (margins[:n,episode,agent]>1e-6)).sum()),
+                        stationary_margin_sum=float(margins[:n,episode,agent][stationary_choice].sum()),
+                        stationary_margin_max=float(margins[:n,episode,agent][stationary_choice].max()) if stationary_choice.any() else 0.0,
                         zero_regularizer_would_accelerate=int((stationary_choice & alternate[:n,episode,agent]).sum())))
             report=dict(interval=interval,seed_base=seed,summary=summary,agents=agents,
                 measurement="Pre-action observations; path spans t0 to t(length-1), omitting final transition",
