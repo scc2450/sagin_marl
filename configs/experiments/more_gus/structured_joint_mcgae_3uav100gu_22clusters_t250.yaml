@@ -7,6 +7,8 @@ seed: 42
 map_size: 1500.0
 tau0: 1.0
 T_steps: 250
+access_bw_decision_interval: 1
+sat_decision_interval: 1
 ref_lat_deg: 39.9042
 ref_lon_deg: 116.4074
 

@@ -22,16 +22,27 @@ def main():
     parser.add_argument("--loads", type=int, nargs="+", default=[30, 40, 50])
     parser.add_argument("--bandwidths", type=int, nargs="+", default=[2, 4, 6])
     parser.add_argument("--policies", nargs="+", default=["queue_aware_bw", "cluster_center_queue_aware", "observable_cluster_queue_aware"])
+    parser.add_argument("--access_bw_decision_interval", type=int, default=None)
+    parser.add_argument("--sat_decision_interval", type=int, default=None)
     args = parser.parse_args()
     repo = Path(__file__).resolve().parents[1]
     root = Path(args.run_dir).resolve()
     root.mkdir(parents=True, exist_ok=True)
     base = repo / "configs/experiments/more_gus/structured_joint_mcgae_3uav100gu_22clusters_t250.yaml"
+    base_config = yaml.safe_load(base.read_text())
+    intervals = {}
+    for field in ("access_bw_decision_interval", "sat_decision_interval"):
+        override = getattr(args, field)
+        value = int(base_config.get(field, 1) if override is None else override)
+        if value < 1:
+            parser.error(f"{field} must be positive")
+        intervals[field] = value
     digest = hashlib.sha256(base.read_bytes()).hexdigest()
     commit = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=repo, text=True).strip()
     identity = dict(commit=commit, config_sha256=digest, episodes=args.episodes,
                     seed_base=args.seed_base, cuda_visible_devices=os.getenv("CUDA_VISIBLE_DEVICES"),
-                    loads=args.loads, bandwidths=args.bandwidths, policies=args.policies)
+                    loads=args.loads, bandwidths=args.bandwidths, policies=args.policies,
+                    decision_intervals=intervals)
     manifest = root / "manifest.json"
     if manifest.exists() and json.loads(manifest.read_text())["identity"] != identity:
         raise RuntimeError("Run identity changed; use a new run directory.")
@@ -41,12 +52,13 @@ def main():
             torch=torch.__version__, cuda=torch.version.cuda,
             gpu=torch.cuda.get_device_name(0), started_at=time.time(),
             purpose="Parameter screening, not formal held-out evidence",
-            protocol="native CUDA; K_bw=5; K_sat=1; common episode seeds",
+            protocol=f"native CUDA; K_bw={intervals['access_bw_decision_interval']}; K_sat={intervals['sat_decision_interval']}; common episode seeds",
         ), indent=2))
     results = []
     for load in args.loads:
         for bandwidth in args.bandwidths:
-            cfg = yaml.safe_load(base.read_text())
+            cfg = dict(base_config)
+            cfg.update(intervals)
             cfg["task_arrival_rate"] = load * 1e6 / cfg["num_gu"]
             cfg["b_acc"] = bandwidth * 1e6
             config_path = root / f"load{load}_bw{bandwidth}.yaml"
@@ -61,7 +73,8 @@ def main():
                     "--config", str(config_path), "--baseline_policy", policy,
                     "--episodes", str(args.episodes), "--num_envs", str(args.episodes),
                     "--episode_seed_base", str(args.seed_base), "--device", "cuda",
-                    "--access_bw_decision_interval", "5", "--sat_decision_interval", "1",
+                    "--access_bw_decision_interval", str(intervals["access_bw_decision_interval"]),
+                    "--sat_decision_interval", str(intervals["sat_decision_interval"]),
                     "--out_dir", str(out), "--label", label]
                 record = dict(label=label, load_mbps=load, bandwidth_mhz=bandwidth,
                               policy=policy, command=command)
