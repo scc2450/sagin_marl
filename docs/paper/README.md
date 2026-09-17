@@ -468,3 +468,60 @@ environment settings. Raw root:
 `runs/experiments/distributed_queue_c_render_20260916/native`.
 GIF, preview PNGs and trajectory/summary JSON were copied to the same relative
 local run directory for viewing; local source-code pull was not attempted.
+
+### Current Protocol: K=1 Alignment and Mobility Audit (2026-09-17)
+
+Current moreGUs train/eval/render config explicitly sets access BW interval=1
+and SAT interval=1. The calibration launcher now inherits these values unless
+explicitly overridden and includes resolved intervals in its run identity and
+saved config. Its historical forced K5 is removed. Old K5 runs/tables remain
+historical K5 evidence; they are not relabeled as current K1 performance.
+C scoring, safety settings and its separate five-step prediction horizon are
+unchanged. No training was launched.
+
+Execution 5446e76; config/launcher change 45cdcae. Dedicated baseline CLI,
+40/4, 8 environments x 8 episodes per batch, paired seed bases974000/975000.
+Each K has 16 episodes. Extra repetitions are acceptance/diagnostics only:
+default calibration K1 exactly matches the dedicated entry's first batch;
+K5 replay exactly matches both old reward-screen summaries. 59 focused tests pass.
+
+| Protocol | Reward mean +/- sample SD | Processed % | Drop % | Pre-backlog | D_sys | Collision |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| K1 current | 39.6571 +/- 7.0600 | 93.1271 | 4.5580 | 4.5277 | 5.5840 | 0/16 |
+| K5 historical paired reference | 35.3617 +/- 4.0622 | 91.3439 | 5.5142 | 6.0783 | 7.6388 | 0/16 |
+
+All episodes finish250 steps. Reward is mean cumulative episode return.
+These development seeds are not formal independent evaluation.
+
+Mobility is measured from pre-action observations, with hovering defined as
+speed<0.1 m/s and stationary trajectories as every sampled speed<0.001 m/s.
+At K1: 37/48 UAV-episode trajectories are stationary throughout sampled times,
+79.64% of UAV-time samples are hovering; average speed4.21 m/s is carried by
+the small moving subset. At K5: 35/48 stationary, hovering78.06%.
+Paths span t0..249 and omit the final transition; do not interpret sampled
+stationarity as an independently checked terminal-state assertion.
+
+Passive same-observation counterfactual: remove movement AND switch penalties,
+retain service/overlap/risk terms and candidates, but execute the ORIGINAL action.
+At K1 all9537 stationary zero-acceleration choices switch to nonzero acceleration;
+all have adjusted score advantage>1e-6, mean0.007485 and max0.015086.
+Score-margin repetition at76d558b exactly reproduces the main K1 summaries.
+Thus the regularizers affect the stationary choices, not merely tie-breaking.
+This does NOT isolate which regularizer dominates or prove a throughput benefit
+from changing actions in closed loop. No proposed replacement is trained/tuned here.
+
+Status: C remains the selected baseline design, but its current weights are NOT
+finalized as a validated mobility baseline. Next compare movement-only and
+switch-only reductions separately under K1; inspect service, path, safety and
+reward together before changing the deployed scoring. Do not add a motion bonus
+merely to make the animation active, and do not conflate this with energy control.
+
+Current render omits interval overrides and therefore inherits K1. Seed974000,
+single environment, reward41.9219, 51 frames; not a batched-evaluation replay.
+Raw root: `runs/experiments/distributed_queue_c_k1_20260917`.
+Evidence: `evidence_tables/distributed_queue_c_k1_20260917.json`.
+Current commands inherit K1 from config:
+```sh
+python scripts/evaluation/evaluate_structured_fixed_policy.py --config configs/experiments/more_gus/structured_joint_mcgae_3uav100gu_22clusters_t250.yaml --baseline distributed_queue_c --episodes 8 --num_envs 8 --episode_seed_base 974000 --structured_env_tensor_backend cuda --out NEW_RUN/episodes.csv --summary_out NEW_RUN/summary.json
+python scripts/render_structured_episode.py --config configs/experiments/more_gus/structured_joint_mcgae_3uav100gu_22clusters_t250.yaml --baseline distributed_queue_c --episode_seed 974000 --device cuda --frame_stride 5 --fps 5 --out NEW_RUN/episode.gif
+```

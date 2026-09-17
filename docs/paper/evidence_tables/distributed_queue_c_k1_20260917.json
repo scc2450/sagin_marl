@@ -1,0 +1,72 @@
+{
+  "pooled": [
+    {
+      "k": 1,
+      "episodes": 16,
+      "metrics": {
+        "reward_sum": 39.65705925691873,
+        "processed_ratio_eval": 0.9312707077022642,
+        "drop_ratio_eval": 0.04558005328143463,
+        "pre_backlog_steps_eval": 4.527673722399981,
+        "D_sys_report": 5.583965847409214,
+        "collision_episode_fraction": 0,
+        "episode_length": 250,
+        "reward_sample_std": 7.060006726630323
+      },
+      "mobility": {
+        "agent_episodes": 48,
+        "mean_speed_mps": 4.21434286236763,
+        "hover_fraction": 0.7964166666666667,
+        "entirely_stationary": 37,
+        "hover_over_90pct": 37,
+        "mean_observed_path_m": 1053.5858993530273,
+        "stationary_decisions": 9537,
+        "removing_both_penalties_would_accelerate": 9537
+      }
+    },
+    {
+      "k": 5,
+      "episodes": 16,
+      "metrics": {
+        "reward_sum": 35.36166807683185,
+        "processed_ratio_eval": 0.9134386005550623,
+        "drop_ratio_eval": 0.0551421997767502,
+        "pre_backlog_steps_eval": 6.07827090682101,
+        "D_sys_report": 7.638811476337607,
+        "collision_episode_fraction": 0,
+        "episode_length": 250,
+        "reward_sample_std": 4.062201595818046
+      },
+      "mobility": {
+        "agent_episodes": 48,
+        "mean_speed_mps": 4.115085897346337,
+        "hover_fraction": 0.7805833333333333,
+        "entirely_stationary": 35,
+        "hover_over_90pct": 36,
+        "mean_observed_path_m": 1028.771728515625,
+        "stationary_decisions": 9345,
+        "removing_both_penalties_would_accelerate": 9339
+      }
+    }
+  ],
+  "default_k1_acceptance": true,
+  "k5_historical_exact_match": true,
+  "caveat": "Motion uses pre-action observations; paths omit last transition; hypothetical actions are not executed",
+  "execution_commit": "5446e7688025497ecdc6be36cc71b133bc00df0b",
+  "score_margin_check": {
+    "stationary_decisions": 9537,
+    "positive_margin_above_1e_minus6": 9537,
+    "mean_margin": 0.007485115276238473,
+    "max_margin": 0.015085786581039429,
+    "main_run_summary_exact_match": true
+  },
+  "score_margin_execution_commit": "76d558b",
+  "config_commit": "45cdcae",
+  "policy_changed": false,
+  "seed_bases": [
+    974000,
+    975000
+  ],
+  "setting": "3 UAV / 100 GU / 22 clusters; 40 Mbit/s total arrival; 4 MHz/UAV; T250; SAT K1",
+  "raw_root": "runs/experiments/distributed_queue_c_k1_20260917"
+}
