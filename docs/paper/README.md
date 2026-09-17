@@ -525,3 +525,36 @@ Current commands inherit K1 from config:
 python scripts/evaluation/evaluate_structured_fixed_policy.py --config configs/experiments/more_gus/structured_joint_mcgae_3uav100gu_22clusters_t250.yaml --baseline distributed_queue_c --episodes 8 --num_envs 8 --episode_seed_base 974000 --structured_env_tensor_backend cuda --out NEW_RUN/episodes.csv --summary_out NEW_RUN/summary.json
 python scripts/render_structured_episode.py --config configs/experiments/more_gus/structured_joint_mcgae_3uav100gu_22clusters_t250.yaml --baseline distributed_queue_c --episode_seed 974000 --device cuda --frame_stride 5 --fps 5 --out NEW_RUN/episode.gif
 ```
+
+### Executed C Trial Without Movement/Switch Penalties (2026-09-17)
+
+User requested a single-policy trial, not a new baseline comparison matrix.
+Both movement_weight and switch_weight were set to0 in the ACTUALLY EXECUTED
+C action calculation, in both evaluation and rendering. Service, overlap,
+risk handling, candidate actions and five-step prediction horizon were unchanged.
+This is an isolated runtime override; default production DQSettings were not
+silently changed for A/B/C. The root trial_harness.py and its manifest hash
+preserve the exact invocation. Source commit a5215e1, 40/4, K_bw1/K_sat1,
+seed974000/975000, eight environments/eight episodes per batch.
+
+Across16 episodes: cumulative reward32.4697 +/-1.5516 (sample SD),
+processed91.2678%, drop4.7783%, pre-backlog8.6363, D_sys10.4377.
+All16 complete250 steps; collision0/16. This is development screening, not
+a safety proof. Mobility: average speed17.4877m/s, hover2.025% (<0.1m/s),
+zero fully stationary trajectories among48 UAV-episode trajectories;
+mean observed path4371.92m. Measurements use pre-action samples and omit the
+terminal transition. Removing the penalties resolves the observed inactivity
+but does not establish better queue management or a finalized policy.
+
+The diagnostic helper's alternate-action counters are degenerate in this trial
+because BOTH its actual and alternate calls already use zero penalties.
+Do not interpret those counters as an independent ablation/control result.
+Only the actual episode and mobility measurements above are used.
+
+Rendered prespecified seed974000 in one environment: reward31.3508,
+processed92.8037%, drop3.0853%, collision0,250 completed steps.
+51 frames at200ms, all three UAVs move; observed paths approximately
+3186.95/2641.76/3319.07m. Not the same trajectory as an eight-env batch slot.
+Raw root: `runs/experiments/distributed_queue_c_no_motion_penalty_20260917`.
+Evidence: `evidence_tables/distributed_queue_c_no_motion_penalty_20260917.json`.
+GIF/preview/trajectory JSON copied locally; source pull not attempted.
