@@ -622,3 +622,51 @@ against freshly initialized seed45211 weights. Initial validation reward29.4038,
 processed42.92%, drop38.84%, pre-backlog36.57, collisions2/32. These are starting
 values, not trained-policy evidence. Initial evaluator/checker serialization and
 import-path issues are fixed; their logs are preserved separately from training.
+
+Seed45211 completed normally at u500 with `checkpoint_reward_plateau` on
+2026-09-20 18:08:58 +0800; all four post-run evaluations completed by18:09:49.
+Selected checkpoint is u400; final is u500. Each column below aggregates the
+same64 screening episodes (32 per seedbase), held out from this training and
+checkpoint selection.
+
+| Metric | Selected u400 | Final u500 |
+| --- | ---: | ---: |
+| Reward | 168.7611 | 167.1699 |
+| Processed ratio | 99.9543% | 99.9530% |
+| Drop ratio | 0.0220% | 0.0231% |
+| Pre-backlog steps | 0.15334 | 0.15282 |
+| D_sys | 0.16732 | 0.17251 |
+| Collision episodes | 0/64 | 0/64 |
+
+Validation reward fell from164.24 at u400 to66.96 at u425, then recovered to159.33
+at u500. Four checks without sufficient improvement triggered the existing
+stopping rule; this is not proof of stable convergence. Selected/final held-out
+results are close, but baseline superiority and cross-seed reproducibility
+remain unverified. The u400 single-env native render for seed1980000 is stored
+inside this campaign at `renders/u400_seed1980000_native/`; full250-step reward
+173.4202, processed99.8542%, zero drops/collisions, 51 distinct frames. Rendering
+captures full-GU observations without changing actions; an uncaptured repeat
+agrees within0.000038 reward. It is not a replay of a32-env evaluation slot.
+
+Two from-scratch replications were queued on2026-09-20, with only training seed
+changed. The source snapshot is801bcc4; all training/evaluation/config source
+files match the first campaign exactly (the orchestration launcher is excluded
+from this comparison). Evaluation seeds, optimizer settings, stopping rules,
+safety settings and the700-update cap are unchanged.
+
+| GPU | Seed | Campaign under `runs/experiments/more_gus_training/` |
+| --- | ---: | --- |
+| 0 | 45210 | `bootstrap_phase4_3uav100gu_k1_seed45210_20260920_183803` |
+| 1 | 61723 | `bootstrap_phase4_3uav100gu_k1_seed61723_20260920_183803` |
+
+Each frozen run-local driver verifies seed-only config differences and source
+hash equality, reuses the first campaign's protocol/actor-resume acceptance,
+then performs a fresh64-env250-step1-update smoke on its assigned GPU before
+formal training. This is explicitly recorded as reused protocol acceptance plus
+per-device smoke, not a new full acceptance suite. A cold-fit smoke may skip
+actors at the unchanged EV gate. Training and the four post-run evaluations
+continue automatically; failures are recorded without silent CPU fallback or
+unreviewed restart. The independent read-only monitoring task checks every10
+minutes for normal stops, completion, missing processes, failures or sustained
+stalls. Local scheduled SSH checks require the desktop app and host to remain
+available; Friday training itself is detached from the Mac.
