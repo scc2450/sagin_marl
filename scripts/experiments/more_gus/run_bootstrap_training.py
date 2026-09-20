@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+from dataclasses import asdict
 import hashlib
 import json
 import math
@@ -96,7 +97,7 @@ def prepare(root: Path, args) -> tuple[Path, dict]:
         cfg.actor_update_microbatch_size = args.actor_microbatch
     if args.critic_microbatch is not None:
         cfg.stage_mcgae_critic_update_microbatch_size = args.critic_microbatch
-    effective = vars(cfg).copy()
+    effective = asdict(cfg)
     small = dict(effective, checkpoint_eval_interval_updates=1, checkpoint_eval_start_update=1,
                  checkpoint_eval_episodes=8, checkpoint_eval_episode_seed_base=1910000,
                  checkpoint_eval_early_stop_enabled=False)
