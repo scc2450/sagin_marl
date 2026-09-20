@@ -558,3 +558,47 @@ processed92.8037%, drop3.0853%, collision0,250 completed steps.
 Raw root: `runs/experiments/distributed_queue_c_no_motion_penalty_20260917`.
 Evidence: `evidence_tables/distributed_queue_c_no_motion_penalty_20260917.json`.
 GIF/preview/trajectory JSON copied locally; source pull not attempted.
+
+### 100 GU Bootstrap Training Qualification (2026-09-20)
+
+Training follows the executed Phase4 relational-critic protocol. The scenario
+remains 3 UAV / 100 GU / 22 clusters, 40 Mbit/s arrivals, 4 MHz/UAV, T250,
+BW/SAT K1, with energy disabled. Train from scratch with bootstrap-GAE and all
+three policy heads. Use native CUDA, no torch.compile, 64 environments, 250
+steps, seed45211, and a 700-update budget cap. Retain Phase4 actor/critic learning
+rates, epochs, EV gate, KL controls and dynamic LR decay. Validation uses 32
+fixed-seed episodes every25 updates (seedbase910000); plateau stopping is allowed
+from u300 with patience4 and relative improvement threshold0.005. Preserve the
+selected checkpoint and final separately. Selection retains the existing
+collision/backlog/reward ordering, not a highest-reward-only selector.
+
+Launcher: `scripts/experiments/more_gus/run_bootstrap_training.py`.
+Use one semantic campaign directory under `runs/experiments/more_gus_training/`.
+The launcher snapshots committed source into that run, saves the full effective
+config plus hashes, and keeps acceptance tests under `preflight/`, formal
+training under `train/`, and independent evaluations under `evaluations/`.
+This isolates a running campaign from subsequent baseline development on the
+same branch. No old checkpoint or baseline scoring change is used.
+
+Acceptance sequence: 8-env two-update training, resume to u3, independent
+same-seed checkpoint evaluation versus in-loop evaluation, then 64-env three-update
+training with the original epoch/gate settings. Require finite advantage/value
+metrics and actual optimizer steps in all actor heads before formal launch.
+Measure memory and time at full scale; microbatch changes, if needed, must be
+recorded without changing outer optimizer batch semantics. The native training
+safety shield and danger imitation are explicit in saved evaluation config.
+Disable the optional queue_aware_bw reference evaluation; baseline design and
+matched safety-protocol comparisons remain a separate task and do not select
+training checkpoints.
+
+Commands (Friday shared CUDA virtual environment):
+```sh
+python scripts/experiments/more_gus/run_bootstrap_training.py --run_dir RUN --phase prepare
+python scripts/experiments/more_gus/run_bootstrap_training.py --run_dir RUN --phase preflight
+python scripts/experiments/more_gus/run_bootstrap_training.py --run_dir RUN --phase train
+```
+After training, selected and final are automatically evaluated with32 episodes
+per seedbase1980000/1981000. These seeds are excluded from this training and
+checkpoint selection; this first-run screening is not a finalized baseline
+comparison. Any subsequent tuning informed by these results requires new seeds
+for a final independent test. Do not infer good policy quality from smoke success.
