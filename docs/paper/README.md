@@ -602,3 +602,23 @@ per seedbase1980000/1981000. These seeds are excluded from this training and
 checkpoint selection; this first-run screening is not a finalized baseline
 comparison. Any subsequent tuning informed by these results requires new seeds
 for a final independent test. Do not infer good policy quality from smoke success.
+
+Acceptance completed for campaign
+`runs/experiments/more_gus_training/bootstrap_phase4_3uav100gu_k1_seed45211_20260920_120135`.
+Training source is frozen at b69af48. Full-scale updates2/3/4 took44.4/40.5/41.5s;
+peak allocated memory9.63GiB, reserved10.54GiB. All three actor optimizers run
+from u2; critic EV is approximately0.96-0.98. Full-scale resume from u3 to u4
+preserves and advances all three Adam step histories. Stored/recomputed rollout
+logprob parity reports zero bad rows, and BW credit/magnitude fields are present.
+No optimizer batch, learning rate or EV-gate threshold was changed.
+
+Checkpoint loading has no missing/adapted/skipped keys and effective configs
+match. Native CUDA evaluation is not bit-exact: the trained u3 checkpoint differs
+by0.00239 reward and0.00025 drop ratio between in-loop and standalone evaluation;
+an independent standalone repetition itself varies by0.00211 reward and0.00017
+drop ratio. Collision counts agree. Retain all reports under `evaluations/`;
+do not claim exact trajectory identity. The initial validation actor was checked
+against freshly initialized seed45211 weights. Initial validation reward29.4038,
+processed42.92%, drop38.84%, pre-backlog36.57, collisions2/32. These are starting
+values, not trained-policy evidence. Initial evaluator/checker serialization and
+import-path issues are fixed; their logs are preserved separately from training.

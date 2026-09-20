@@ -177,9 +177,13 @@ def preflight(root, source, args):
         raise RuntimeError('Preflight already recorded; do not overwrite evidence.')
     small = root / 'preflight' / 'small_resume'
     scale = root / 'preflight' / 'scale64'
-    run_command(root, source, 'small_2u', train_command(root, 'small_config.yaml', small, args, envs=8, updates=2, save_every=1))
-    run_command(root, source, 'small_resume_u3', train_command(root, 'small_config.yaml', small, args,
-                envs=8, updates=3, save_every=1, resume=small / 'checkpoint_update0002.pt'))
+    stop_file = small / 'training_stop.json'
+    completed = int(json.loads(stop_file.read_text())['completed_updates']) if stop_file.exists() else 0
+    if completed < 2:
+        run_command(root, source, 'small_2u', train_command(root, 'small_config.yaml', small, args, envs=8, updates=2, save_every=1))
+    if completed < 3:
+        run_command(root, source, 'small_resume_u3', train_command(root, 'small_config.yaml', small, args,
+                    envs=8, updates=3, save_every=1, resume=small / 'checkpoint_update0002.pt'))
     small_report = check_training(small, 3)
     external = evaluate(root, source, 'small_eval_parity', 'small_config.yaml', small / 'final.pt',
                         seed=1910000, episodes=8, envs=8)
@@ -187,7 +191,8 @@ def preflight(root, source, args):
     parity = {}
     for key in ('reward_sum', 'processed_ratio_eval', 'drop_ratio_eval', 'pre_backlog_steps_eval', 'collision_episode_fraction'):
         parity[key] = abs(float(internal[key]) - float(external[key]))
-        if not math.isclose(float(internal[key]), float(external[key]), rel_tol=1e-6, abs_tol=1e-6):
+        tolerance = 0.0 if key == 'collision_episode_fraction' else 1e-5
+        if not math.isclose(float(internal[key]), float(external[key]), rel_tol=tolerance, abs_tol=tolerance):
             raise RuntimeError(f'Internal/external evaluation mismatch: {key} {parity[key]}')
     scale_seconds = run_command(root, source, 'scale64_3u', train_command(root, 'scale_config.yaml', scale, args,
                                          envs=64, updates=3, save_every=1))
@@ -196,7 +201,7 @@ def preflight(root, source, args):
         if info['optimizer_steps'] <= 0:
             raise RuntimeError(f'{name} never updated in scale smoke; inspect critic gate.')
     write_json(root / 'preflight.json', dict(status='passed', small=small_report, scale=scale_report,
-                                            evaluation_abs_error=parity, scale_wall_seconds=scale_seconds,
+                                            evaluation_abs_error=parity, evaluation_tolerance={'rtol':1e-5,'atol':1e-5,'collision_exact':True}, scale_wall_seconds=scale_seconds,
                                             finished_at=time.time()))
 
 
@@ -242,6 +247,10 @@ def main():
     root.mkdir(parents=True, exist_ok=True)
     try:
         source, manifest = prepare(root, args)
+        sys.path.insert(0, str(source))
+        with (root / 'controller_invocations.jsonl').open('a') as handle:
+            handle.write(json.dumps(dict(phase=args.phase, time=time.time(), command=sys.argv,
+                                        sha256=hashlib.sha256(Path(__file__).read_bytes()).hexdigest())) + '\n')
         if args.phase == 'preflight':
             preflight(root, source, args)
         elif args.phase == 'train':
@@ -249,7 +258,9 @@ def main():
         write_json(root / 'status.json', dict(status='complete', phase=args.phase, time=time.time()))
         print(f'COMPLETE {args.phase} {root}', flush=True)
     except BaseException as exc:
-        write_json(root / 'failure.json', dict(phase=args.phase, error=repr(exc), time=time.time()))
+        failure = dict(status='failed', phase=args.phase, error=repr(exc), time=time.time())
+        write_json(root / 'failure.json', failure)
+        write_json(root / 'status.json', failure)
         raise
 
 
