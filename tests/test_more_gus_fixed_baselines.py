@@ -59,3 +59,9 @@ def test_aggregate_uses_all_episode_rows_and_labels_episode_sd():
     assert result["episodes"] == 3
     assert result["reward_sum_mean"] == 3
     assert result["reward_sum_episode_std"] == 2
+
+def test_paper_roster_replaces_qccs_with_dqs():
+    from scripts.experiments.more_gus.run_fixed_baselines import PAPER_LABELS
+    assert METHODS == ("distributed_queue_c", "maxweight_lyapunov", "queue_aware_bw", "static_uniform")
+    assert "cluster_center_queue_aware" not in METHODS
+    assert PAPER_LABELS["distributed_queue_c"] == "DQS"

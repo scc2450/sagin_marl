@@ -670,3 +670,101 @@ unreviewed restart. The independent read-only monitoring task checks every10
 minutes for normal stops, completion, missing processes, failures or sustained
 stalls. Local scheduled SSH checks require the desktop app and host to remain
 available; Friday training itself is detached from the Mac.
+
+### 100 GU Fixed-Baseline Alignment (2026-09-24)
+
+Paper name: **Distributed Queue-Aware Scheduler (DQS)**, the former C baseline.
+DQS replaces QCCS in the new paper comparison roster; do not plot both as
+separate current comparators. Preserve the internal identifier
+`distributed_queue_c` for reproducibility, not as a figure legend.
+Suggested description: "DQS independently selects UAV motion from current
+observations using short-horizon queue-weighted service predictions, an overlap
+penalty, and a risk screen, with queue-aware satellite and bandwidth decisions."
+This is a distributed heuristic, not learned coordination or globally optimal
+assignment. The current DQS protocol has zero movement and switch penalties.
+
+The dedicated fixed-policy CLI now accepts `--dq_movement_weight` and
+`--dq_switch_weight`. The matching config fields are
+`baseline_dq_movement_weight` and `baseline_dq_switch_weight`; historical defaults
+remain0.02/0.01. This campaign explicitly sets both to0 for C, retaining its
+service, overlap, risk and recovery logic. Its five-step prediction horizon is
+not a bandwidth decision interval: both executed SAT/BW intervals are1.
+
+Use `scripts/experiments/more_gus/run_fixed_baselines.py` with the frozen
+`config.yaml` from
+`runs/experiments/more_gus_training/bootstrap_phase4_3uav100gu_k1_seed45211_20260920_120135/`.
+Do not substitute the raw scenario YAML: training enables the NATIVE_CUDA safety
+shield and disables legacy avoidance. The launcher verifies the original
+training-config hash and archives committed source. Every evaluation records
+the complete effective config and verifies that only the requested C weights
+and explicit CUDA backend differ from the point config.
+
+Completed on Friday GPU0, source387432c:
+`runs/experiments/more_gus_baselines/fixed_nominal_k1_20260924_173145/`.
+PyTorch2.10.0+cu128/CUDA12.8 matches training. Native environment and shared
+evaluator sources match the first training source b69af48. Protocol:3UAV/100GU,
+22clusters,40Mbps mean arrivals,4MHz access per UAV,10MHz backhaul per satellite,
+50GHz satellite CPU,T250,K1. Each method has64 paired episodes:
+seedbase1980000 and1981000,32episodes/32environments each. These are reused
+post-training screening seeds, not an untouched final test.
+
+| Method | Mean episode return | Processed | Drop | Pre-backlog | D_sys | Collision episodes |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| DQS (C, no movement/switch penalties) | 32.3426 | 86.5573% | 8.9767% | 9.2736 | 13.0150 | 0/64 |
+| MaxWeight/Lyapunov | 53.4017 | 99.4437% | 0.3417% | 0.8996 | 0.9709 | 0/64 |
+| QBS | 36.4782 | 72.4342% | 17.1279% | 16.9319 | 25.6971 | 0/64 |
+| Uniform | 38.0808 | 79.5815% | 16.7757% | 7.8336 | 12.0085 | 0/64 |
+
+DQS is not the strongest heuristic in this setting; keep the unfavorable result.
+An extra64QCCS episodes completed before the roster clarification. They remain
+historical diagnostic evidence (reward40.8954,processed92.7489%), excluded from
+the current comparison table and new plots. Thus320episodes were executed but
+256belong to the four-method current roster. Historical QCCS was unchanged: select the three largest GU clusters and greedily assign
+nearest unassigned UAVs to their privileged centers. It does not dynamically
+cover all22clusters. MaxWeight/Lyapunov retains its existing stage-wise
+queue-pressure implementation; no exact-DPP or stability-proof claim is added.
+QBS uses zero acceleration and the existing zero satellite-source rule with
+queue-aware bandwidth; Uniform uses zero acceleration and uniform resources.
+All methods share the safety executor. Zero observed collisions is not a
+general safety guarantee.
+
+The consolidated machine-readable evidence is
+`evidence_tables/more_gus_fixed_baselines_20260924.json`, including episode SD,
+layer queues, raw-run paths and caveats. Raw per-episode results, job logs,
+configuration sidecars and source archive remain in the isolated Friday run;
+compact artifacts are mirrored locally. Focused tests:50passed on Friday;
+49passed/1CUDA-only skipped locally. Existing unrelated figure edits are retained.
+
+#### Scan Redraw Preparation
+
+The previous no-HA-PPO figures contained STARS,STARS-GC,QCCS,MaxWeight/Lyapunov,
+QBS and Uniform. The new roster is STARS,STARS-GC,DQS,MaxWeight/Lyapunov,QBS and Uniform.
+DQS replaces QCCS as requested, with its changed algorithm explicitly documented. New-scene STARS checkpoints exist; the currently
+registered100GU training campaigns do not provide a STARS-GC checkpoint.
+Do not insert a20GU checkpoint into that missing curve. Retrain STARS-GC under
+the matched100GU protocol before claiming a complete critic-comparison scan.
+Keep independent training seeds separate from the45211continuation, and lock
+selected/final checkpoint identities before scanning; never select a new peak
+at each test point.
+
+The new launcher supports `--axis nominal|load|resource` and `--plan_only`.
+Prepared, not executed, plans are under
+`runs/experiments/more_gus_baselines/plans/{load,resource}_dqs_k1_20260924/`.
+Each plan has56jobs:7points x4fixed methods x2seed bases. The earlier five-method
+plans ending in173145 are superseded; their manifests are retained, not run. Use a fresh run
+directory for execution; the preparation directories intentionally cannot be
+overwritten. The launcher now aggregates queue totals/layers as well as the six main metrics.
+The original nominal aggregate is retained; the expanded metrics and the four-method
+paper roster are in the evidence JSON, all derived from the same raw episode rows.
+
+- Load: multipliers0.5/0.75/1/1.25/1.5/1.75/2, corresponding to20/30/40/50/60/70/80Mbps
+  total arrival with100GU. Change only per-GU arrival from the0.4Mbps nominal.
+- Resource: multipliers0.5/0.75/1/1.25/1.5/2/3, jointly changing access bandwidth,
+  backhaul bandwidth and satellite CPU from4MHz/10MHz/50GHz. The old sweep did
+  this too, despite the figure's access-bandwidth-only axis label. Label the new
+  figure as joint resource scaling, or explicitly design a separate access-only
+  experiment; the present plan is not an access-only sensitivity test.
+- Full multi-point scans and new manuscript curves have not been run/generated
+  by this nominal acceptance campaign. Confirm the intended resource axis and
+  learned-method roster before launching them. Freeze the baseline definitions
+  before a fresh final-test seed set; do not tune against every scan point.

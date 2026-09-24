@@ -22,14 +22,22 @@ sys.path.insert(0, str(REPO))
 from sagin_marl.env.config import load_config
 
 METHODS = (
-    "distributed_queue_c", "cluster_center_queue_aware",
+    "distributed_queue_c",
     "maxweight_lyapunov", "queue_aware_bw", "static_uniform",
 )
+PAPER_LABELS = {
+    "distributed_queue_c": "DQS",
+    "maxweight_lyapunov": "MaxWeight/Lyapunov",
+    "queue_aware_bw": "QBS",
+    "static_uniform": "Uniform",
+}
 LOAD_GRID = (0.5, 0.75, 1.0, 1.25, 1.5, 1.75, 2.0)
 RESOURCE_GRID = (0.5, 0.75, 1.0, 1.25, 1.5, 2.0, 3.0)
 METRICS = (
     "reward_sum", "processed_ratio_eval", "drop_ratio_eval",
     "pre_backlog_steps_eval", "D_sys_report", "collision_episode_fraction",
+    "queue_total_mean", "gu_queue_mean", "uav_queue_mean", "sat_queue_mean",
+    "arrival_step_mean", "outflow_arrival_ratio", "sat_overlap_eval", "episode_length",
 )
 RESOURCE_FIELDS = ("b_acc", "b_backhaul_per_sat", "sat_cpu_freq")
 
@@ -101,7 +109,8 @@ def aggregate(rows):
         groups.setdefault(key, []).append(row)
     output = []
     for (axis, multiplier, method), group in groups.items():
-        result = dict(axis=axis, multiplier=multiplier, method=method, episodes=len(group))
+        result = dict(axis=axis, multiplier=multiplier, method=method,
+                      paper_label=PAPER_LABELS.get(method, method), episodes=len(group))
         for metric in METRICS:
             values = [float(row[metric]) for row in group]
             result[metric + "_mean"] = statistics.mean(values)
@@ -177,7 +186,7 @@ def main():
         training_source_commit=training_manifest["source_commit"],
         training_manifest_sha256=hashlib.sha256(training_manifest_path.read_bytes()).hexdigest(),
         created_at=time.time(), python=sys.version, gpu=args.gpu,
-        methods=args.methods, points=point_records, jobs=jobs,
+        methods=args.methods, paper_labels=PAPER_LABELS, points=point_records, jobs=jobs,
         episodes_per_seed_base=args.episodes, num_envs=args.num_envs, episode_seed_bases=args.seed_bases,
         c_weights=dict(movement_weight=0, switch_weight=0),
         evidence_role="Paired post-training screening; reused seeds, not an untouched final test",
