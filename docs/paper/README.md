@@ -768,3 +768,68 @@ paper roster are in the evidence JSON, all derived from the same raw episode row
   by this nominal acceptance campaign. Confirm the intended resource axis and
   learned-method roster before launching them. Freeze the baseline definitions
   before a fresh final-test seed set; do not tune against every scan point.
+
+### GC Training And No-GC Scans Launched (2026-09-24)
+
+GC and parameter scans run independently on Friday. Existing historical
+20-GU artifacts and the in-progress training-figure edits are not overwritten.
+
+| GPU | Campaign | State at launch |
+| --- | --- | --- |
+| 1 | `runs/experiments/more_gus_training/global_critic_3seed_k1_20260924/` | Seed45211 running;45210 and61723 queued |
+| 0 | `runs/experiments/more_gus_scans/stars_dqs_no_gc_k1_20260924/` | Frozen scan matrix running |
+
+The GC queue uses source4c2b4e0 and the original frozen45211STARS configuration.
+Each child changes only `critic_value_mode: relational -> global_only` and its
+training seed. Actor architecture, optimizer settings, reward, safety, K1,
+64-environment250-step rollouts and stopping rules are unchanged: validation
+every25updates on32episodes, minimum stopping update300, plateau patience4,
+relative improvement threshold0.005 and hard cap700. The old inactive
+configuration fields remain inactive; no old algorithm was restored.
+Each child first runs an8-env2-update/resume-to3 test, a64-env1-update smoke
+and a32-episode native evaluation, then trains from scratch. Those smoke
+weights are not resumed into formal training. Cold-start actor skips at the
+existing EV gate are recorded, not bypassed. The first child passed all
+acceptance steps; early formal training has nonzero actor KL in all3stages.
+Selected/final post-training screening runs automatically for each child.
+
+The scan campaign uses source0b74f86. The primary roster is exactly
+STARS,DQS,MaxWeight/Lyapunov,QBS,Uniform; GC and QCCS are excluded.
+The14points use the previously prepared load and joint-resource grids.
+All policies use deterministic evaluation with32envs and32episodes for each
+seedbase1980000/1981000. These remain screening seeds, not a fresh final test.
+Source, point configs and checkpoint copies are frozen and SHA256-recorded;
+the runtime checks strict checkpoint loading, fixed-policy effective configs,
+episode coverage, finite metrics and paired exogenous arrival totals.
+
+| STARS training seed | Fixed selected checkpoint | Original final checkpoint |
+| --- | ---: | ---: |
+| 45211 | u400 | u500 |
+| 45210 | u650 | u700 |
+| 61723 | u700 | u700 |
+
+The45211continuation is excluded here. No per-point checkpoint reselection or
+retraining is performed. Primary work is196batches/6272episodes
+(14points x[3STARS seeds +4fixed policies] x2seed bases x32episodes).
+Another84batches/2688episodes evaluate final checkpoints separately.
+The primary figures are generated after all196primary batches complete;
+final diagnostics are added only after the full280batch campaign completes.
+STARS bands are descriptive sample SD across3training-seed means, not a
+confidence interval treating192episodes as independent training replicas.
+Fixed curves are64episode means without a training-seed band.
+
+Outputs are `episodes.csv`, job-local CSV/summary/log/completion files, and
+`figures/{png,pdf}/` plus `figures/README.md`, per-seed tables and provenance.
+The generator is `docs/paper/reproduction/generate_more_gus_scan_figures.py`;
+the launcher is `scripts/experiments/more_gus/run_parameter_scans.py`.
+Status is in each campaign's `status.json`; the GC queue also has per-child
+status and training logs. A failure stops its own queue and is recorded;
+there is no silent retry or automatic resume of a failed run.
+
+Plotting uses the separate CPU environment
+`/home/sgy/workspace/.venvs/sagin-paper/bin/python` with numpy2.3.5,
+pandas3.0.3,matplotlib3.10.8 and PyYAML6.0.3. The CUDA training environment
+is unchanged. Preparation caught and fixed virtualenv symlink dereferencing
+before any scan run directory was created; the interpreter path is now kept
+intact and tested. The earlier dedicated fixed-only plans are superseded by
+this combined STARS-plus-fixed campaign, not launched as duplicate GPU work.
