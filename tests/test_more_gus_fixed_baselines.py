@@ -1,9 +1,14 @@
 from pathlib import Path
+from dataclasses import asdict
 
 import pytest
+import yaml
+
+from sagin_marl.env.config import SaginConfig, update_config
 
 from scripts.experiments.more_gus.run_fixed_baselines import (
-    METHODS, METRICS, aggregate, check_protocol, command_for, point_config,
+    METHODS, METRICS, RESOURCE_GRID, aggregate, check_protocol, check_config_roundtrip,
+    command_for, point_config,
 )
 
 
@@ -65,3 +70,24 @@ def test_paper_roster_replaces_qccs_with_dqs():
     assert METHODS == ("distributed_queue_c", "maxweight_lyapunov", "queue_aware_bw", "static_uniform")
     assert "cluster_center_queue_aware" not in METHODS
     assert PAPER_LABELS["distributed_queue_c"] == "DQS"
+
+
+@pytest.mark.parametrize("multiplier", RESOURCE_GRID)
+def test_resource_alias_survives_actual_config_loader(tmp_path, multiplier):
+    base = asdict(update_config(SaginConfig(), dict(b_backhaul_per_sat=1e7)))
+    changed = point_config(base, "resource", multiplier)
+    assert changed["b_sat_total"] == changed["b_backhaul_per_sat"] == 1e7 * multiplier
+    path = tmp_path / "config.yaml"
+    path.write_text(yaml.safe_dump(changed))
+    check_config_roundtrip(path)
+    assert base["b_sat_total"] == 1e7
+
+
+def test_preflight_rejects_stale_alias_before_any_evaluation(tmp_path):
+    base = asdict(update_config(SaginConfig(), dict(b_backhaul_per_sat=1e7)))
+    path = tmp_path / "bad.yaml"
+    path.write_text(yaml.safe_dump(dict(base, b_backhaul_per_sat=5e6)))
+    with pytest.raises(ValueError, match="normalization drift.*b_backhaul_per_sat"):
+        check_config_roundtrip(path)
+    path.write_text(yaml.safe_dump(point_config(base, "load", 0.5)))
+    check_config_roundtrip(path)

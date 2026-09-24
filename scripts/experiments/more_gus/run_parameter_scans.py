@@ -21,7 +21,7 @@ REPO = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(REPO))
 from scripts.experiments.more_gus.run_fixed_baselines import (
     METHODS, PAPER_LABELS, LOAD_GRID, RESOURCE_GRID, METRICS,
-    check_protocol, command_for, point_config, write_json, write_csv,
+    check_protocol, check_config_roundtrip, command_for, point_config, write_json, write_csv,
 )
 
 
@@ -58,6 +58,79 @@ def check_seed_only(base, other):
 def interpreter_path(value):
     # Resolving a venv's python symlink would select the system interpreter.
     return str(Path(value).expanduser().absolute())
+
+
+def source_inventory(root, manifest):
+    if sha(root / "source.tar") != manifest["source_archive_sha256"]:
+        raise RuntimeError("Source archive changed")
+    inventory = {}
+    with tarfile.open(root / "source.tar") as archive:
+        for member in archive:
+            if not member.isfile():
+                continue
+            digest = hashlib.sha256(archive.extractfile(member).read()).hexdigest()
+            if sha(root / "source" / member.name) != digest:
+                raise RuntimeError(f"Extracted source changed: {member.name}")
+            inventory[member.name] = digest
+    return inventory
+
+
+def reuse_completed(root, manifest, previous):
+    """Import only hash-verified evidence into a new run; never edit the failed run."""
+    previous = Path(previous).resolve()
+    old = json.loads((previous / "manifest.json").read_text())
+    status = json.loads((previous / "status.json").read_text())
+    if status["status"] != "failed":
+        raise ValueError("Recovery requires a stopped failed run")
+    before, after = source_inventory(previous, old), source_inventory(root, manifest)
+    allowed = {"scripts/experiments/more_gus/run_fixed_baselines.py",
+               "scripts/experiments/more_gus/run_parameter_scans.py"}
+    changed = {key for key in before.keys() | after.keys() if before.get(key) != after.get(key)}
+    if changed - allowed:
+        raise ValueError(f"Recovery would mix different evaluator implementations: {changed - allowed}")
+    for key in ("points", "checkpoints", "input_sha256", "training_seeds", "episode_seed_bases",
+                "episodes", "num_envs", "policy_mode", "primary_methods", "primary_jobs"):
+        if old[key] != manifest[key]:
+            raise ValueError(f"Recovery protocol changed: {key}")
+    old_jobs = {job["output"]: job for job in old["jobs"]}
+    if len(old_jobs) != len(old["jobs"]) or set(old_jobs) != {job["output"] for job in manifest["jobs"]}:
+        raise ValueError("Recovery job matrix changed or contains duplicates")
+    imported, excluded = {}, []
+    for job in manifest["jobs"]:
+        source = previous / job["output"]
+        if not (source / "completion.json").exists():
+            if source.exists():
+                excluded.append(job["output"])
+            continue
+        old_job = old_jobs[job["output"]]
+        if {k: v for k, v in old_job.items() if k != "command"} != {k: v for k, v in job.items() if k != "command"}:
+            raise ValueError(f"Completed job identity changed: {job['output']}")
+        old_command = [value.replace(str(previous), "<RUN>") for value in old_job["command"]]
+        command = [value.replace(str(root), "<RUN>") for value in job["command"]]
+        if old_command != command:
+            raise ValueError("Completed job command changed")
+        config = job["config"]
+        if sha(previous / config) != old["config_sha256"][config] or old["config_sha256"][config] != manifest["config_sha256"][config]:
+            raise ValueError(f"Completed job configuration changed: {config}")
+        marker = json.loads((source / "completion.json").read_text())
+        if marker.get("status") != "complete" or marker.get("episodes") != manifest["episodes"]:
+            raise ValueError("Invalid completion marker")
+        required = [job["rows_file"], job["summary_file"], "completion.json", "evaluation.log"]
+        if job["method"] != "stars":
+            required.append("episodes.metadata.json")
+        hashes = {name: sha(source / name) for name in required}
+        dest = root / job["output"]
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copytree(source, dest)
+        if any(sha(dest / name) != digest for name, digest in hashes.items()):
+            raise RuntimeError("Recovered evidence copy mismatch")
+        imported[job["output"]] = hashes
+    if len(imported) != status["completed"]:
+        raise ValueError("Completion markers disagree with failed-run status")
+    return dict(previous_run=str(previous), previous_manifest_sha256=sha(previous / "manifest.json"),
+        previous_source_commit=old["source_commit"], previous_status=status,
+        changed_source_files=sorted(changed), imported_jobs=imported,
+        excluded_incomplete_outputs=excluded, recovered_at=time.time())
 
 
 def prepare(args):
@@ -126,6 +199,7 @@ def prepare(args):
                 path = root / "configs" / point / f"seed{seed}.yaml"
                 path.parent.mkdir(parents=True, exist_ok=True)
                 path.write_text(yaml.safe_dump(dict(effective, seed=seed), sort_keys=False))
+                check_config_roundtrip(path)
                 configs[str(path.relative_to(root))] = sha(path)
             for method in METHODS:
                 for eval_seed in (1980000, 1981000):
@@ -163,8 +237,11 @@ def prepare(args):
         resource_axis="Joint access/backhaul/CPU multiplier, not an access-only experiment",
         evidence_role="Reused screening seeds; final locked-test evidence must use fresh seeds",
         primary_jobs=sum(job["checkpoint_kind"] != "final" for job in jobs))
+    if args.reuse_completed_from:
+        manifest["recovery"] = reuse_completed(root, manifest, args.reuse_completed_from)
     write_json(root / "manifest.json", manifest)
     write_json(root / "status.json", dict(status="prepared", completed=0, jobs=len(jobs),
+        reused_jobs=len(manifest.get("recovery", {}).get("imported_jobs", {})),
         primary_jobs=manifest["primary_jobs"], primary_figures_ready=False))
     print(f"Prepared {len(jobs)} jobs, {manifest['primary_jobs']} primary, in {root}", flush=True)
 
@@ -174,11 +251,11 @@ def run(args):
     manifest = json.loads((root / "manifest.json").read_text())
     if json.loads((root / "status.json").read_text())["status"] != "prepared":
         raise RuntimeError("Only a freshly prepared run may start; no implicit overwrite/resume")
-    if sha(root / "source.tar") != manifest["source_archive_sha256"]:
-        raise RuntimeError("Source archive changed")
+    source_inventory(root, manifest)
     for path, digest in manifest["config_sha256"].items():
         if sha(root / path) != digest:
             raise RuntimeError(f"Frozen config changed: {path}")
+        check_config_roundtrip(root / path)
     for checkpoint in manifest["checkpoints"]:
         if sha(root / checkpoint["path"]) != checkpoint["sha256"]:
             raise RuntimeError("Frozen checkpoint changed")
@@ -189,20 +266,28 @@ def run(args):
     combined, arrivals = [], {}
     completed, primary_ready = 0, False
     source = root / "source"
+    imported = manifest.get("recovery", {}).get("imported_jobs", {})
     try:
         for job in manifest["jobs"]:
             dest = root / job["output"]
-            dest.mkdir(parents=True, exist_ok=False)
+            reused = job["output"] in imported
+            if reused:
+                for name, digest in imported[job["output"]].items():
+                    if sha(dest / name) != digest:
+                        raise RuntimeError(f"Recovered evidence changed: {job['output']}/{name}")
+            else:
+                dest.mkdir(parents=True, exist_ok=False)
             started = time.time()
             write_json(root / "status.json", dict(status="running", completed=completed,
                 jobs=len(manifest["jobs"]), primary_jobs=manifest["primary_jobs"],
                 current=job["output"], primary_figures_ready=primary_ready, pid=os.getpid()))
-            print(f"START {job['output']}", flush=True)
-            with (dest / "evaluation.log").open("w") as handle:
-                result = subprocess.run(job["command"], cwd=source, env=env,
-                    stdout=handle, stderr=subprocess.STDOUT, timeout=900)
-            if result.returncode:
-                raise RuntimeError(f"{job['output']} exited {result.returncode}")
+            print(f"{'REUSE' if reused else 'START'} {job['output']}", flush=True)
+            if not reused:
+                with (dest / "evaluation.log").open("w") as handle:
+                    result = subprocess.run(job["command"], cwd=source, env=env,
+                        stdout=handle, stderr=subprocess.STDOUT, timeout=900)
+                if result.returncode:
+                    raise RuntimeError(f"{job['output']} exited {result.returncode}")
             with (dest / job["rows_file"]).open() as handle:
                 rows = list(csv.DictReader(handle))
             summary = json.loads((dest / job["summary_file"]).read_text())
@@ -235,8 +320,9 @@ def run(args):
                      "training_seed", "checkpoint_kind", "seed_base",
                      "total_arrival_mbps", "access_mhz", "backhaul_mhz", "satellite_cpu_ghz")}
                 combined.append(dict(**fields, **row))
-            write_json(dest / "completion.json", dict(status="complete", episodes=32,
-                elapsed_seconds=time.time() - started, finished_at=time.time()))
+            if not reused:
+                write_json(dest / "completion.json", dict(status="complete", episodes=32,
+                    elapsed_seconds=time.time() - started, finished_at=time.time()))
             completed += 1
             # Persist partial evidence, but publish primary figures only after the full primary matrix.
             write_csv(root / "episodes.csv", combined)
@@ -261,12 +347,15 @@ def main():
     parser.add_argument("--training_runs", nargs="+")
     parser.add_argument("--gpu", type=int, default=0)
     parser.add_argument("--plot_python", default=sys.executable)
+    parser.add_argument("--reuse_completed_from", help="Explicitly import verified completed jobs from a failed run")
     args = parser.parse_args()
     if args.phase == "prepare":
         if not args.training_runs or args.gpu < 0:
             parser.error("Preparation needs --training_runs and a nonnegative GPU")
         prepare(args)
     else:
+        if args.reuse_completed_from:
+            parser.error("--reuse_completed_from is only valid during preparation of a new run")
         run(args)
 
 

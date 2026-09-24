@@ -1,11 +1,18 @@
 from pathlib import Path
 import importlib.util
+from dataclasses import asdict
+import json
 import sys
+import tarfile
+from types import SimpleNamespace
 
 import pandas as pd
 import pytest
+import yaml
 
 from scripts.experiments.more_gus.run_parameter_scans import check_seed_only
+from scripts.experiments.more_gus import run_parameter_scans as scans
+from sagin_marl.env.config import SaginConfig, update_config
 
 
 def plot_module():
@@ -82,3 +89,98 @@ def test_single_panel_renders(tmp_path):
     plot.save(fig, tmp_path, "smoke")
     assert (tmp_path / "png/smoke.png").stat().st_size > 1000
     assert (tmp_path / "pdf/smoke.pdf").stat().st_size > 1000
+
+
+def recovery_fixture(tmp_path):
+    old, new = tmp_path / "failed", tmp_path / "recovered"
+    config = asdict(update_config(SaginConfig(), dict(structured_env_tensor_backend="cuda")))
+    manifests = []
+    for root in (old, new):
+        (root / "source/scripts/experiments/more_gus").mkdir(parents=True)
+        (root / "source/evaluator.py").write_text("unchanged")
+        (root / "source/scripts/experiments/more_gus/run_parameter_scans.py").write_text(root.name)
+        with tarfile.open(root / "source.tar", "w") as handle:
+            for path in sorted((root / "source").rglob("*.py")):
+                handle.add(path, arcname=str(path.relative_to(root / "source")))
+        (root / "config.yaml").write_text(yaml.safe_dump(config))
+        jobs = [dict(output=f"evaluations/{index}", config="config.yaml", method="static_uniform",
+            command=["python", str(root / "source/evaluator.py"), str(root / f"evaluations/{index}")],
+            rows_file="episodes.csv", summary_file="summary.json", axis="load", multiplier=1,
+            point="load_1", paper_label="Uniform", training_seed=None, checkpoint_kind="fixed",
+            seed_base=index * 1000, total_arrival_mbps=40, access_mhz=4, backhaul_mhz=10,
+            satellite_cpu_ghz=50) for index in range(2)]
+        manifest = dict(source_commit=root.name, source_archive_sha256=scans.sha(root / "source.tar"),
+            points=[], checkpoints=[], input_sha256={}, training_seeds=[], episode_seed_bases=[0, 1000],
+            episodes=32, num_envs=32, policy_mode="deterministic", primary_methods=["Uniform"],
+            primary_jobs=2, jobs=jobs, config_sha256={"config.yaml": scans.sha(root / "config.yaml")},
+            gpu=0, plot_python="plot-python")
+        scans.write_json(root / "manifest.json", manifest)
+        manifests.append(manifest)
+    scans.write_json(old / "status.json", dict(status="failed", completed=1))
+    for job in manifests[0]["jobs"]:
+        dest = old / job["output"]
+        dest.mkdir(parents=True)
+        write_fake_evaluation(dest, config)
+    scans.write_json(old / "evaluations/0/completion.json", dict(status="complete", episodes=32))
+    return old, new, manifests[1], config
+
+
+def write_fake_evaluation(dest, config):
+    scans.write_csv(dest / "episodes.csv", [dict(episode=i, arrival_sum=100,
+        **{metric: 1 for metric in scans.METRICS}) for i in range(32)])
+    scans.write_json(dest / "summary.json", {})
+    scans.write_json(dest / "episodes.metadata.json", dict(effective_config=config))
+    (dest / "evaluation.log").write_text("finished")
+
+
+def test_recovery_revalidates_completed_and_reruns_incomplete_without_overwriting(tmp_path, monkeypatch):
+    old, new, manifest, config = recovery_fixture(tmp_path)
+    recovery = scans.reuse_completed(new, manifest, old)
+    assert list(recovery["imported_jobs"]) == ["evaluations/0"]
+    assert recovery["excluded_incomplete_outputs"] == ["evaluations/1"]
+    assert not (new / "evaluations/1").exists()
+    old_marker = (old / "evaluations/0/completion.json").read_bytes()
+    manifest["recovery"] = recovery
+    scans.write_json(new / "manifest.json", manifest)
+    scans.write_json(new / "status.json", dict(status="prepared"))
+    commands = []
+
+    def fake_run(command, **kwargs):
+        commands.append(command)
+        if command[0] == "python":
+            write_fake_evaluation(Path(command[-1]), config)
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr(scans.subprocess, "run", fake_run)
+    scans.run(SimpleNamespace(run_dir=new))
+    assert [cmd for cmd in commands if cmd[0] == "python"] == [manifest["jobs"][1]["command"]]
+    assert json.loads((new / "status.json").read_text())["episodes"] == 64
+    assert (new / "evaluations/0/completion.json").read_bytes() == old_marker
+    assert json.loads((old / "status.json").read_text())["status"] == "failed"
+
+
+@pytest.mark.parametrize("changed", ["config", "source", "command", "active", "count"])
+def test_recovery_rejects_incompatible_or_active_evidence(tmp_path, changed):
+    old, new, manifest, _ = recovery_fixture(tmp_path)
+    if changed == "config":
+        manifest["config_sha256"]["config.yaml"] = "different"
+    elif changed == "source":
+        (old / "source/evaluator.py").write_text("changed")
+    elif changed == "command":
+        manifest["jobs"][0]["command"].append("--different")
+    else:
+        scans.write_json(old / "status.json", dict(status="running" if changed == "active" else "failed",
+            completed=2 if changed == "count" else 1))
+    with pytest.raises((ValueError, RuntimeError)):
+        scans.reuse_completed(new, manifest, old)
+
+
+def test_recovery_rejects_tampered_import_before_launch(tmp_path, monkeypatch):
+    old, new, manifest, _ = recovery_fixture(tmp_path)
+    manifest["recovery"] = scans.reuse_completed(new, manifest, old)
+    scans.write_json(new / "manifest.json", manifest)
+    scans.write_json(new / "status.json", dict(status="prepared"))
+    (new / "evaluations/0/episodes.csv").write_text("tampered")
+    monkeypatch.setattr(scans.subprocess, "run", lambda *a, **kw: pytest.fail("Must not launch"))
+    with pytest.raises(RuntimeError, match="Recovered evidence changed"):
+        scans.run(SimpleNamespace(run_dir=new))

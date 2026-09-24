@@ -68,7 +68,20 @@ def point_config(base, axis, multiplier):
     fields = ("task_arrival_rate",) if axis == "load" else RESOURCE_FIELDS if axis == "resource" else ()
     for field in fields:
         result[field] = base[field] * multiplier
+    # Frozen effective configs contain this legacy alias, which takes precedence on load.
+    if axis == "resource" and "b_sat_total" in result:
+        result["b_sat_total"] = result["b_backhaul_per_sat"]
     return result
+
+
+def check_config_roundtrip(path):
+    expected = yaml.safe_load(path.read_text())
+    effective = json.loads(json.dumps(asdict(load_config(str(path)))))
+    changed = {key: (expected.get(key), effective.get(key))
+               for key in expected.keys() | effective.keys()
+               if expected.get(key) != effective.get(key)}
+    if changed:
+        raise ValueError(f"Config normalization drift before evaluation: {path}: {changed}")
 
 
 def check_protocol(config, episodes, num_envs, seeds):
@@ -170,6 +183,7 @@ def main():
         point = f"{args.axis}_{multiplier:g}"
         config_path = root / f"{point}.yaml"
         config_path.write_text(yaml.safe_dump(config, sort_keys=False))
+        check_config_roundtrip(config_path)
         point_records.append(dict(name=point, multiplier=multiplier, config=config_path.name,
             config_sha256=hashlib.sha256(config_path.read_bytes()).hexdigest(),
             changed_fields={key: value for key, value in config.items() if value != cfg[key]}))
