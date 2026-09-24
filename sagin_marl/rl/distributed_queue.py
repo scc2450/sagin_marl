@@ -20,6 +20,17 @@ class DQSettings:
     risk_weight: float = 0.25
 
 
+def settings_from_config(cfg) -> DQSettings:
+    weights = {
+        name: float(getattr(cfg, f"baseline_dq_{name}", getattr(DQSettings(), name)))
+        for name in ("movement_weight", "switch_weight")
+    }
+    for name, value in weights.items():
+        if not math.isfinite(value) or value < 0:
+            raise ValueError(f"baseline_dq_{name} must be finite and nonnegative")
+    return DQSettings(**weights)
+
+
 def _risk_adjustment(obs, cfg, actions, trajectories, base_score, boundary_ok, settings):
     """One-step radial robust screen plus a soft two-step lookahead cost.
 
@@ -75,7 +86,9 @@ def _risk_adjustment(obs, cfg, actions, trajectories, base_score, boundary_ok, s
 
 
 @torch.no_grad()
-def distributed_queue_action(obs, cfg, variant="c", settings=DQSettings()):
+def distributed_queue_action(obs, cfg, variant="c", settings=None):
+    if settings is None:
+        settings = settings_from_config(cfg)
     if variant not in {"a", "b", "c"}:
         raise ValueError(f"Unknown distributed queue variant: {variant}")
     if settings.horizon_steps < 1:

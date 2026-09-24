@@ -134,3 +134,40 @@ def test_peer_clearance_uses_ego_minus_peer_contract():
     _, diag = distributed_queue_action(obs, cfg, "b", DQSettings(horizon_steps=1))
     torch.testing.assert_close(diag["candidate_clearance"][:, 16],
                                torch.full((2,), 50.0), atol=1e-4, rtol=0)
+
+
+def test_configured_weights_match_explicit_settings_and_preserve_defaults():
+    cfg, obs = fixture()
+    cfg.b_acc = 1e6
+    cfg.queue_max_gu = 1e8
+    _, default = distributed_queue_action(obs, cfg)
+    cfg.baseline_dq_movement_weight = 0.0
+    cfg.baseline_dq_switch_weight = 0.0
+    action, configured = distributed_queue_action(obs, cfg)
+    explicit, expected = distributed_queue_action(obs, cfg, settings=DQSettings(
+        movement_weight=0, switch_weight=0))
+    torch.testing.assert_close(action, explicit, rtol=0, atol=0)
+    torch.testing.assert_close(configured["candidate_scores"], expected["candidate_scores"])
+    _, override = distributed_queue_action(obs, cfg, settings=DQSettings())
+    torch.testing.assert_close(default["candidate_scores"], override["candidate_scores"])
+    assert not torch.equal(default["candidate_scores"], configured["candidate_scores"])
+
+
+@pytest.mark.parametrize("field", ["movement_weight", "switch_weight"])
+@pytest.mark.parametrize("value", [-1, float("nan"), float("inf")])
+def test_invalid_configured_weights_rejected(field, value):
+    cfg, obs = fixture()
+    setattr(cfg, f"baseline_dq_{field}", value)
+    with pytest.raises(ValueError, match="finite and nonnegative"):
+        distributed_queue_action(obs, cfg)
+
+
+def test_dedicated_cli_resolves_zero_weights_and_rejects_ignored_overrides():
+    from scripts.evaluation.evaluate_structured_fixed_policy import apply_dq_overrides
+    cfg = SaginConfig()
+    assert apply_dq_overrides(cfg, "distributed_queue_c") == DQSettings()
+    settings = apply_dq_overrides(cfg, "distributed_queue_c", 0, 0)
+    assert settings.movement_weight == settings.switch_weight == 0
+    assert cfg.baseline_dq_movement_weight == cfg.baseline_dq_switch_weight == 0
+    with pytest.raises(ValueError, match="require a distributed_queue"):
+        apply_dq_overrides(cfg, "static_uniform", 0, 0)

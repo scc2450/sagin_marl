@@ -430,6 +430,8 @@ class SaginConfig:
     baseline_repulse_radius_factor: float = 1.5
     baseline_energy_low: float = 0.3
     baseline_energy_weight: float = 1.0
+    baseline_dq_movement_weight: float = 0.02
+    baseline_dq_switch_weight: float = 0.01
     baseline_cluster_cruise_speed: float | None = None
     baseline_cluster_slow_radius: float = 120.0
     baseline_cluster_stop_radius: float = 20.0

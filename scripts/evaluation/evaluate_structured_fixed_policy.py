@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import argparse
 import csv
+from dataclasses import asdict
+import hashlib
 import json
 import os
 import sys
@@ -12,6 +14,7 @@ if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
 from sagin_marl.env.config import load_config
+from sagin_marl.rl.distributed_queue import settings_from_config
 import torch
 
 from sagin_marl.rl.structured_eval import (
@@ -55,6 +58,18 @@ def _default_out_path(config_path: str, baseline_policy: str) -> Path:
     return parent / f"eval_{baseline_policy}.csv"
 
 
+def apply_dq_overrides(cfg, baseline: str, movement_weight=None, switch_weight=None):
+    values = {"movement_weight": movement_weight, "switch_weight": switch_weight}
+    if any(value is not None for value in values.values()) and baseline not in {
+        "distributed_queue_a", "distributed_queue_b", "distributed_queue_c"
+    }:
+        raise ValueError("DQ weight overrides require a distributed_queue baseline")
+    for name, value in values.items():
+        if value is not None:
+            setattr(cfg, f"baseline_dq_{name}", value)
+    return settings_from_config(cfg)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--config", type=str, required=True)
@@ -73,6 +88,8 @@ def main() -> None:
     parser.add_argument("--num_envs", type=int, default=1)
     parser.add_argument("--access_bw_decision_interval", type=int, default=None)
     parser.add_argument("--sat_decision_interval", type=int, default=None)
+    parser.add_argument("--dq_movement_weight", type=float, default=None)
+    parser.add_argument("--dq_switch_weight", type=float, default=None)
     args = parser.parse_args()
     if args.num_envs < 1 or args.episodes < 1:
         parser.error("num_envs and episodes must be positive")
@@ -89,6 +106,12 @@ def main() -> None:
             if value < 1:
                 parser.error(f"{field} must be positive")
             setattr(cfg, field, value)
+
+    try:
+        dq_settings = apply_dq_overrides(
+            cfg, args.baseline_policy, args.dq_movement_weight, args.dq_switch_weight)
+    except ValueError as exc:
+        parser.error(str(exc))
 
     sources = _fixed_policy_exec_sources(args.baseline_policy)
     if sources is not None:
@@ -117,6 +140,20 @@ def main() -> None:
         writer = csv.DictWriter(f, fieldnames=_resolve_fieldnames(rows))
         writer.writeheader()
         writer.writerows(rows)
+
+    metadata = {
+        "baseline": args.baseline_policy,
+        "config_path": str(Path(args.config).resolve()),
+        "input_config_sha256": hashlib.sha256(Path(args.config).read_bytes()).hexdigest(),
+        "effective_config": asdict(cfg),
+        "dq_settings": asdict(dq_settings) if args.baseline_policy.startswith("distributed_queue_") else None,
+        "exec_sources": sources, "episodes": args.episodes, "num_envs": args.num_envs,
+        "episode_seed_base": args.episode_seed_base, "deterministic": True,
+        "torch": torch.__version__, "cuda": torch.version.cuda,
+        "device": torch.cuda.get_device_name(0) if sources is not None else "legacy",
+    }
+    out_path.with_suffix(".metadata.json").write_text(
+        json.dumps(metadata, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
 
     if args.summary_out:
         summary_path = Path(args.summary_out)

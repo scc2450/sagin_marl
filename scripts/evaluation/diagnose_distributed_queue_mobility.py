@@ -44,7 +44,9 @@ def main():
             dest = root / f"k{interval}_seed{seed}"
             dest.mkdir()
             samples = []
-            def capture(obs, cfg, variant="c", settings=dq.DQSettings()):
+            def capture(obs, cfg, variant="c", settings=None):
+                if settings is None:
+                    settings = dq.settings_from_config(cfg)
                 action, diag = original(obs, cfg, variant, settings)
                 # Diagnostic only: no alternate action reaches the environment.
                 alternative, alternative_diag = original(obs, cfg, variant, replace(
