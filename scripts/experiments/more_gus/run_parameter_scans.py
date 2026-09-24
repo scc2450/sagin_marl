@@ -55,9 +55,14 @@ def check_seed_only(base, other):
         raise ValueError(f"Training protocols differ beyond seed: {changed}")
 
 
+def interpreter_path(value):
+    # Resolving a venv's python symlink would select the system interpreter.
+    return str(Path(value).expanduser().absolute())
+
+
 def prepare(args):
     import torch
-    plot_python = str(Path(args.plot_python).resolve())
+    plot_python = interpreter_path(args.plot_python)
     plot_runtime = json.loads(subprocess.check_output([plot_python, "-c",
         "import json,importlib.metadata as m; print(json.dumps({p:m.version(p) for p in ('numpy','pandas','matplotlib','pyyaml')}))"], text=True))
     runs = [Path(p).resolve() for p in args.training_runs]

@@ -40,6 +40,16 @@ def test_only_seed_may_differ_between_stars_runs():
         check_seed_only(dict(seed=1, b_acc=4e6), dict(seed=2, b_acc=2e6))
 
 
+def test_virtualenv_python_path_is_not_dereferenced(tmp_path):
+    from scripts.experiments.more_gus.run_parameter_scans import interpreter_path
+    target = tmp_path / "system-python"
+    target.touch()
+    virtual = tmp_path / "venv-python"
+    virtual.symlink_to(target)
+    assert interpreter_path(virtual) == str(virtual)
+    assert interpreter_path(virtual) != str(virtual.resolve())
+
+
 def test_plot_requires_complete_matrix_and_excludes_old_methods():
     plot, data, manifest = fixture()
     assert len(plot.validate_primary(data, manifest)) == 448
