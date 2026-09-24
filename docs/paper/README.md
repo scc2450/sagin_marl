@@ -833,3 +833,35 @@ is unchanged. Preparation caught and fixed virtualenv symlink dereferencing
 before any scan run directory was created; the interpreter path is now kept
 intact and tested. The earlier dedicated fixed-only plans are superseded by
 this combined STARS-plus-fixed campaign, not launched as duplicate GPU work.
+
+### Parameter Scan Recovery (2026-09-24)
+
+The original `stars_dqs_no_gc_k1_20260924` scan stopped after98accepted load
+batches. Its first resource0.5DQS batch exited normally but failed the effective
+configuration check: canonical `b_backhaul_per_sat=5e6` was overwritten by the
+serialized legacy alias `b_sat_total=1e7` during config loading. That batch is
+not valid resource-scan evidence and was never added to the combined CSV.
+This is a scan-config generation bug, not a change to the underlying training
+configurations, checkpoints or evaluator. The original failed directory is
+retained unchanged for diagnosis; do not plot it as a complete scan.
+
+Source `fcc0e02` synchronizes the alias when scaling resources and checks every
+generated effective config through the real loader before GPU execution. The
+recovery is a separate frozen campaign:
+`runs/experiments/more_gus_scans/stars_dqs_no_gc_k1_20260924_recovered/`.
+It imports the98completed batches only after checking evaluator-source identity,
+job/config/checkpoint identity and artifact hashes, then revalidates their rows
+and pairing. Its manifest records the old source commit, manifest hash, imported
+artifact hashes and excluded incomplete output. No failed output is reused.
+Only the two orchestration scripts differ between the frozen source archives.
+The old fixed-only resource plans also contain stale aliases at non-unit points;
+they remain superseded, not executable plans to reuse. Regenerate any such plan
+with the corrected launcher.
+
+Recovery launched onGPU0 asPID2388771. The first rerun resource0.5DQS batch
+passed with32episodes in12.39s: effective access2MHz, backhaul5MHz (both alias
+and canonical field), satellite CPU25GHz, K_bw=K_sat=1. The remaining workload
+at recovery launch was98primary batches plus84final diagnostics. Primary figures
+still require all196primary batches; do not publish a partial matrix. GPU1GC
+training was left untouched. Local regression checks:29passed; Friday config/
+baseline checks:17passed. No runtime dependencies were installed or modified.
