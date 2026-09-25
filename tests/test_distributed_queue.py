@@ -1,3 +1,4 @@
+"""Regression controls for the historical pre-service-forecast DQS controller."""
 from types import SimpleNamespace
 import pytest
 import torch

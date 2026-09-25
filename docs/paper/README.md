@@ -674,6 +674,8 @@ available; Friday training itself is detached from the Mac.
 ### 100 GU Fixed-Baseline Alignment (2026-09-24)
 
 Paper name: **Distributed Queue-Aware Scheduler (DQS)**, the former C baseline.
+The description and results in this dated subsection refer to the historical
+controller; see **DQS Service-Forecast Revision** below for the current definition.
 DQS replaces QCCS in the new paper comparison roster; do not plot both as
 separate current comparators. Preserve the internal identifier
 `distributed_queue_c` for reproducibility, not as a figure legend.
@@ -964,3 +966,114 @@ without the slot-duration conversion and its assumptions.
 
 Local executable files match Friday/GitHub, but localHEAD remains
 0a9e72b; file synchronization is not a completed local Git fast-forward.
+
+### DQS Service-Forecast Revision (2026-09-25)
+
+Development campaigns are isolated under
+`runs/experiments/dqs_development/service_forecast_20260925_dev1/` and
+`service_forecast_20260925_dev2/`, frozen at b825e60. The old DQS implementation
+and completed scans are retained unchanged. The worker explicitly records its
+component mapping and candidate source hash; it invokes the dedicated fixed-policy
+evaluator. GPU0/1 use the existing PyTorch2.10.0+cu128 runtime, with no environment,
+reward, arrival, resource or safety-shield changes. Configs derive from the verified
+load1 scan config and pass loader round-trips, including the backhaul alias.
+
+The old mobility proxy credits all visible users, while the execution allocator
+serves only nearest-associated users. It also omits bandwidth-dependent SNR and
+inter-cell interference and predicts constant acceleration across five steps.
+The candidate instead forecasts association, queue-aware bandwidth, public mean
+path loss, interference, queue evolution and overflow together. It uses only each
+UAV's current observation and public constants, predicting peers at constant
+velocity; it does not read other actors' observations, future states or cluster
+labels. Observed ergodic SE is converted to an effective SNR, an approximation
+rather than an exact Rician inversion. Allocation uses pre-arrival queues and
+service includes new arrivals, matching the native queue-update ordering.
+Candidate motion includes velocity tracking, local demand-centroid directions
+and braking; C's risk screen and the shared execution shield remain active.
+There is no artificial reward for movement and no centralized target assignment.
+
+Development seed bases2190000/2191000 are disjoint from old scans; each batch uses
+32episodes/32environments,T250,Kbw=Ksat=1. Points are nominal,load2 and joint
+resources0.5. Dev1 crosses old/pressure-based mobility with queue/pressure-based
+resources, plus the forecast candidates; dev2 checks both forecast candidates
+against old DQS and MaxWeight. Zero movement/switch weights and horizon5 are
+fixed. Held-out bases2290000/2291000 are reserved for a locked candidate, not
+selection. All outcomes and failures are retained. One identical-command retry
+is permitted for the previously observed startup SIGSEGV, with both logs saved.
+The selection criteria consider processing, drop and backlog jointly, require
+zero observed collisions in screening, and report cumulative episode reward.
+Both development campaigns completed (576+384episode executions). Swapping
+only the old mobility component for native pressure-guided motion raised nominal
+processing from88.15%to99.65%; swapping only SAT/BW left it at87.91%. This locates
+the dominant problem in mobility, but does not isolate the contribution of each
+individual forecast correction.
+
+The locked candidate is `forecast_pressure`: new forecast mobility plus existing
+native `lyapunov` SAT/BW sources. It is now the formal `distributed_queue_c` entry,
+revision `service-forecast-pressure-v1`, integrated in aee84c9. The historical C
+function is explicitly retained only for controls. A/B remain historical
+diagnostics and are no longer same-score ablations of current C. Execution uses
+pressure-based resources while the mobility model uses an approximate queue-aware
+bandwidth surrogate (including an association bonus absent in the actual pressure
+allocator); do not describe this as exact native-model prediction. The objective
+minimizes forecast mean ground backlog plus twice forecast overflow over5steps,
+normalized by observed queue plus expected arrivals. A1e-5terminal-speed term
+breaks near-ties; movement/switch penalties remain0. No reward/scenario/safety
+parameters were changed and no held-out outcome was used to retune this version.
+
+Held-out evaluation completed at
+`runs/experiments/dqs_development/service_forecast_20260925_heldout/`:
+3methods x3points x64episodes =576episode executions. Each table entry uses the
+same64episodes (seed bases2290000/2291000,32each); all192revised-DQS episodes have
+zero observed collision flags. These are evaluation episodes, not training seeds.
+
+| Point | Method | Mean episode return | Processed | Drop | D_sys proxy |
+| --- | --- | ---: | ---: | ---: | ---: |
+| Nominal | Old DQS | 32.770 | 88.612% | 7.576% | 11.739 |
+| Nominal | Revised DQS | 54.421 | 99.543% | 0.0066% | 0.802 |
+| Nominal | MaxWeight/Lyapunov | 53.931 | 99.501% | 0.282% | 0.886 |
+| Load2 | Old DQS | 27.794 | 50.591% | 44.893% | 23.231 |
+| Load2 | Revised DQS | 39.465 | 84.584% | 8.198% | 14.168 |
+| Load2 | MaxWeight/Lyapunov | 36.966 | 85.042% | 8.178% | 12.738 |
+| Resources0.5 | Old DQS | 26.449 | 53.221% | 38.784% | 40.200 |
+| Resources0.5 | Revised DQS | 39.350 | 93.483% | 1.960% | 7.987 |
+| Resources0.5 | MaxWeight/Lyapunov | 36.431 | 94.276% | 2.264% | 7.427 |
+
+DQS is now competitive with MaxWeight, not uniformly superior. Under load2,
+revised DQS total queue rises from805.45to941.39Mbit even though ground queue
+falls from734.82to151.84Mbit: more admitted work reaches the constrained UAV
+relay queues instead of being discarded at the ground. Do not claim all-metric
+dominance or hide this tradeoff. D_sys remains a queue-based proxy, not measured
+end-to-end latency. Zero observed collisions is finite-sample evidence only.
+
+Formal-entry parity was checked with another64nominal executions using the same
+held-out seeds, at `dqs_production_parity_20260925/`. Every CSV field except the
+intentionally different method label matches the candidate output exactly; these
+replays are not additional independent evidence. Focused tests:73passed/2CUDA
+skipped locally, including2figure-replacement tests;61passed on Friday including
+CUDA checks. The broad Friday test collection needs pandas, absent from
+the training runtime; that runtime was not modified. Plotting uses the separate
+paper environment, and the plotting module no longer imports environment code.
+
+The official entry completed28scan batches /896episodes:
+`dqs_revised_load_20260925/` and `dqs_revised_resource_20260925/`, source aee84c9.
+All28effective configs and896paired arrival records match the old scan. All new
+DQS scan episodes have zero observed collisions. New figures are at
+`runs/experiments/more_gus_scans/stars_dqs_revised_k1_20260925/figures/`.
+Only896DQS rows are replaced in a new8960-row artifact; all8064other policy rows,
+including STARS selected/final, are unchanged. Original runs/figures remain intact.
+These full scans reuse1980000/1981000and remain screening evidence, separate from
+the held-out acceptance above. The new `verification.json` passed and16PNG/PDF
+pairs were regenerated with separate source/hash provenance.
+
+Canonical machine-readable evidence: `evidence_tables/dqs_revision_20260925.json`.
+Reproduce the figure overlay with `reproduction/generate_dqs_revision_figures.py`
+using `--reference` for the old completed scan, `--load` and `--resource` for the
+two revised-DQS campaigns, and a new `--out` directory. Run directories are in
+`docs/run_registry.csv`; no new scattered prose runbook is introduced.
+
+Current paper wording: "DQS independently selects UAV motion using short-horizon,
+observation-based forecasts of user association, interference, and queue evolution,
+followed by a local risk screen. Satellite selection and bandwidth allocation use
+stage-wise queue-pressure rules under the common safety executor." It is a
+distributed heuristic, not exact DPP, learned coordination or a stability theorem.

@@ -1,0 +1,263 @@
+{
+  "revision": "service-forecast-pressure-v1",
+  "selected_candidate": "forecast_pressure",
+  "development_seed_bases": [
+    2190000,
+    2191000
+  ],
+  "heldout_seed_bases": [
+    2290000,
+    2291000
+  ],
+  "num_envs": 32,
+  "horizon": 250,
+  "access_bw_decision_interval": 1,
+  "sat_decision_interval": 1,
+  "sources": {
+    "service_forecast_20260925_dev1": {
+      "manifest_sha256": "87862e38dc56dfed6172c6dd6174c446c00646da1c6d2ad41960d355fcc72867",
+      "episodes_sha256": "d6dd5a7fd4ade386e1103d915a5c48264f2970701eeeabf22a27fff3039ca56f",
+      "source_commit": "b825e60d0c26f6737b4299482a113b5353c6ae7a",
+      "episodes": 576
+    },
+    "service_forecast_20260925_dev2": {
+      "manifest_sha256": "1247ae10a294f67093d1dc83da673c2cc2dd74c4c543c738a8b64abee180214a",
+      "episodes_sha256": "50ffb5922018591f3c382b9452acb72c98d30e72547da8c8a7424973893b7eb4",
+      "source_commit": "b825e60d0c26f6737b4299482a113b5353c6ae7a",
+      "episodes": 384
+    },
+    "service_forecast_20260925_heldout": {
+      "manifest_sha256": "ff22173af3f7fb8e3dc5f7400122f271d4f6b566fc9777dc25b4f9cf291b4017",
+      "episodes_sha256": "a355198ff02b825d1c604307d403ebb8f939548baf7a886f39c3d6bf8d7e09e7",
+      "source_commit": "b825e60d0c26f6737b4299482a113b5353c6ae7a",
+      "episodes": 576
+    },
+    "dqs_revised_load_20260925": {
+      "manifest_sha256": "0aa540147aae58c02eb488b740f027fe3f7191771168c281b43cbf6a7fef3771",
+      "episodes_sha256": "c802f8d5b6191569dc5aa5e98177cee31e735de3fba3c081b510e3bb0f509c5f",
+      "source_commit": "aee84c95cf2a8b3a539888d5d0148a579676b738",
+      "episodes": 448
+    },
+    "dqs_revised_resource_20260925": {
+      "manifest_sha256": "f95b58fae88c1fb85aa92a38d403c1ef6eec1ed7cc6ffe7b340a77105c2cb729",
+      "episodes_sha256": "6f286c57631fe1e67c5906b035867f1e56a513d34a0e568d5ad0045ffde7f401",
+      "source_commit": "aee84c95cf2a8b3a539888d5d0148a579676b738",
+      "episodes": 448
+    },
+    "dqs_production_parity_20260925": {
+      "manifest_sha256": "f0a5354b5e3aeeebecd5b42f59d2b2566ad624ba7d7bacd6e5c49f41cbaa2b2a",
+      "episodes_sha256": "90cf7f1e0e99f6234b7fbf73e9e27a79aecf7f8b501aa3717cfa5f259edba558",
+      "source_commit": "aee84c95cf2a8b3a539888d5d0148a579676b738",
+      "episodes": 64
+    }
+  },
+  "heldout": [
+    {
+      "axis": "nominal",
+      "method": "legacy",
+      "episodes": 64,
+      "means": {
+        "reward_sum": 32.770237704738975,
+        "processed_ratio_eval": 0.8861204955587163,
+        "drop_ratio_eval": 0.07576192028290125,
+        "D_sys_report": 11.739314856239353,
+        "queue_total_mean": 351832697.332,
+        "gu_queue_mean": 3353792.26732375,
+        "uav_queue_mean": 5484490.205333333,
+        "collision_episode_fraction": 0.0
+      }
+    },
+    {
+      "axis": "nominal",
+      "method": "maxweight",
+      "episodes": 64,
+      "means": {
+        "reward_sum": 53.930710262735374,
+        "processed_ratio_eval": 0.9950052399067209,
+        "drop_ratio_eval": 0.002822073368126411,
+        "D_sys_report": 0.8855333666709757,
+        "queue_total_mean": 33247357.22,
+        "gu_queue_mean": 323884.9821525,
+        "uav_queue_mean": 286286.336,
+        "collision_episode_fraction": 0.0
+      }
+    },
+    {
+      "axis": "nominal",
+      "method": "forecast_pressure",
+      "episodes": 64,
+      "means": {
+        "reward_sum": 54.4205449342262,
+        "processed_ratio_eval": 0.9954294505435973,
+        "drop_ratio_eval": 6.585049332352355e-05,
+        "D_sys_report": 0.8018244560603307,
+        "queue_total_mean": 31011901.596125,
+        "gu_queue_mean": 233734.654614375,
+        "uav_queue_mean": 2546145.376,
+        "collision_episode_fraction": 0.0
+      }
+    },
+    {
+      "axis": "load",
+      "method": "legacy",
+      "episodes": 64,
+      "means": {
+        "reward_sum": 27.794125412707217,
+        "processed_ratio_eval": 0.5059053564984352,
+        "drop_ratio_eval": 0.44893489405560605,
+        "D_sys_report": 23.230738209687175,
+        "queue_total_mean": 805448802.7305624,
+        "gu_queue_mean": 7348166.72914125,
+        "uav_queue_mean": 23544043.277333334,
+        "collision_episode_fraction": 0.0
+      }
+    },
+    {
+      "axis": "load",
+      "method": "maxweight",
+      "episodes": 64,
+      "means": {
+        "reward_sum": 36.96571335254703,
+        "processed_ratio_eval": 0.8504220542330295,
+        "drop_ratio_eval": 0.08177920770805774,
+        "D_sys_report": 12.738067012601531,
+        "queue_total_mean": 863195260.747625,
+        "gu_queue_mean": 2299143.19219,
+        "uav_queue_mean": 211093647.24266666,
+        "collision_episode_fraction": 0.0
+      }
+    },
+    {
+      "axis": "load",
+      "method": "forecast_pressure",
+      "episodes": 64,
+      "means": {
+        "reward_sum": 39.46483252116013,
+        "processed_ratio_eval": 0.8458423945009709,
+        "drop_ratio_eval": 0.08197585444574804,
+        "D_sys_report": 14.168036396248267,
+        "queue_total_mean": 941391221.094125,
+        "gu_queue_mean": 1518424.118668125,
+        "uav_queue_mean": 263182936.432,
+        "collision_episode_fraction": 0.0
+      }
+    },
+    {
+      "axis": "resource",
+      "method": "legacy",
+      "episodes": 64,
+      "means": {
+        "reward_sum": 26.44875839643646,
+        "processed_ratio_eval": 0.532214839107357,
+        "drop_ratio_eval": 0.3878416168711565,
+        "D_sys_report": 40.200277941195296,
+        "queue_total_mean": 710635535.056,
+        "gu_queue_mean": 7020627.027323125,
+        "uav_queue_mean": 2857069.642666667,
+        "collision_episode_fraction": 0.0
+      }
+    },
+    {
+      "axis": "resource",
+      "method": "maxweight",
+      "episodes": 64,
+      "means": {
+        "reward_sum": 36.431049965904094,
+        "processed_ratio_eval": 0.9427577029140666,
+        "drop_ratio_eval": 0.022643578321384816,
+        "D_sys_report": 7.4266211291477084,
+        "queue_total_mean": 274404153.9425,
+        "gu_queue_mean": 1743030.013838125,
+        "uav_queue_mean": 33360269.082666665,
+        "collision_episode_fraction": 0.0
+      }
+    },
+    {
+      "axis": "resource",
+      "method": "forecast_pressure",
+      "episodes": 64,
+      "means": {
+        "reward_sum": 39.3502740196418,
+        "processed_ratio_eval": 0.9348270777035504,
+        "drop_ratio_eval": 0.01959593651557874,
+        "D_sys_report": 7.987312172155828,
+        "queue_total_mean": 286888771.0516875,
+        "gu_queue_mean": 1206829.553161875,
+        "uav_queue_mean": 55383988.424,
+        "collision_episode_fraction": 0.0
+      }
+    }
+  ],
+  "production_parity": {
+    "episodes": 64,
+    "fields": [
+      "D_sys_report",
+      "D_sys_total",
+      "active_drop_ratio",
+      "arrival_step_mean",
+      "arrival_sum",
+      "axis",
+      "backhaul_step_mean",
+      "backhaul_sum",
+      "bw_weighted_workload_delta_sum",
+      "bw_weighted_workload_level_sum",
+      "collision_episode_fraction",
+      "d_pre_mean",
+      "d_pre_total",
+      "drop_ratio",
+      "drop_ratio_eval",
+      "drop_ratio_total",
+      "drop_sum",
+      "drop_sum_active",
+      "episode",
+      "episode_length",
+      "g_pre_mean",
+      "g_pre_total",
+      "gu_drop_ratio",
+      "gu_drop_sum",
+      "gu_queue_mean",
+      "multiplier",
+      "outflow_arrival_ratio",
+      "outflow_step_mean",
+      "outflow_sum",
+      "pre_backlog_steps_eval",
+      "pre_backlog_total",
+      "processed_ratio_eval",
+      "processed_ratio_total",
+      "queue_total_mean",
+      "reward_sum",
+      "sat_drop_ratio",
+      "sat_drop_sum",
+      "sat_incoming_arrival_ratio",
+      "sat_overlap_eval",
+      "sat_overlap_total",
+      "sat_processed_arrival_ratio",
+      "sat_processed_incoming_ratio",
+      "sat_processed_step_mean",
+      "sat_processed_sum",
+      "sat_queue_mean",
+      "seed_base",
+      "step_count",
+      "terminated_early",
+      "uav_drop_ratio",
+      "uav_drop_sum",
+      "uav_queue_mean",
+      "x_acc_mean",
+      "x_acc_total",
+      "x_rel_mean",
+      "x_rel_total"
+    ],
+    "exact_match": true
+  },
+  "heldout_dqs_collision_episodes": 0,
+  "heldout_dqs_episodes": 192,
+  "selection": "Two development seed blocks; retain forecast motion plus native pressure SAT/BW; no held-out retuning",
+  "scan_artifact": "runs/experiments/more_gus_scans/stars_dqs_revised_k1_20260925",
+  "limits": [
+    "DQS is a heuristic; not exact DPP or a stability theorem",
+    "Forecast uses an approximate queue-aware allocation surrogate and effective SNR",
+    "Queue-based D_sys is not measured end-to-end latency",
+    "Same episode seeds across points do not create independent training seeds",
+    "Zero observed collisions does not establish a general safety guarantee"
+  ]
+}
