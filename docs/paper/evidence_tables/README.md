@@ -31,6 +31,9 @@ Each row tries to record:
 
 ## Current Coverage
 
+- Current 100-GU paper-figure tables and index are in the separate
+  `docs/paper_moreGUs/evidence_tables/` archive. See its parent README.
+  Earlier calibration and baseline-acceptance records remain here.
 - Phase2 MC/bootstrap checkpoint-selection evidence.
 - Phase3 same-scale zero-shot evidence.
 - Phase3 nearby scale-transfer evidence.

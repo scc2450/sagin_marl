@@ -47,6 +47,14 @@ copies or draft panels should be treated as local scratch artifacts.
 
 ## Evidence Policy
 
+### Current 100-GU Figure Archive (2026-09-25)
+
+The current 100-GU figure/script/evidence archive is now maintained separately
+at `docs/paper_moreGUs/`, at the author's request. See
+`docs/paper_moreGUs/README.md` for the 28 individual panels, protocols, review
+flags and reproduction commands. No selected/final comparison is exported.
+The historical experiment notes below remain here; old 20-GU assets are unchanged.
+
 ### 100 GU Expansion (2026-09-15)
 
 - Branch: `erik/moreGUs`, based on clean `main` at `8bcb81c` after fetching origin.
@@ -671,6 +679,27 @@ minutes for normal stops, completion, missing processes, failures or sustained
 stalls. Local scheduled SSH checks require the desktop app and host to remain
 available; Friday training itself is detached from the Mac.
 
+### 100 GU Figure Review (2026-09-23)
+
+Both from-scratch replications completed u700 and all selected/final screening
+evaluations. The first seed45211 run retains its original u500 early stop.
+For the requested curve extension, only
+`bootstrap_phase4_3uav100gu_k1_seed45211_u500_to_u700_20260922_132212`
+is joined after u500. It keeps seed45211 but disables reward early stopping;
+the continuation is dashed, and its u700 endpoint is not represented as the
+original stopping result. The alternative rollout-seed continuation is excluded
+from these figures, not deleted or counted as an independent training seed.
+
+The consolidated review is `runs/experiments/more_gus_training/analysis/README.md`.
+It embeds five PNG figures, with matching vector PDFs: raw/best-so-far reward,
+service-quality curves, selected/endpoint screening, queue decomposition and
+one previously captured native episode. Flow decomposition is omitted because
+all six policies' access/backhaul/processed ratios are within99.137%-99.983%.
+Queue totals vary from5.54 to73.68Mbit and their layer breakdown is retained.
+No new baseline, load or bandwidth sweep is claimed. Source hashes, intermediate
+tables and the exact command accompany the report; historical figures remain
+untouched. Reproduction entry and protocol checks are in `reproduction/README.md`.
+
 ### 100 GU Fixed-Baseline Alignment (2026-09-24)
 
 Paper name: **Distributed Queue-Aware Scheduler (DQS)**, the former C baseline.
@@ -822,7 +851,7 @@ Fixed curves are64episode means without a training-seed band.
 
 Outputs are `episodes.csv`, job-local CSV/summary/log/completion files, and
 `figures/{png,pdf}/` plus `figures/README.md`, per-seed tables and provenance.
-The generator is `docs/paper/reproduction/generate_more_gus_scan_figures.py`;
+The generator is `docs/paper_moreGUs/reproduction/generate_more_gus_scan_figures.py`;
 the launcher is `scripts/experiments/more_gus/run_parameter_scans.py`.
 Status is in each campaign's `status.json`; the GC queue also has per-child
 status and training logs. A failure stops its own queue and is recorded;
@@ -1067,7 +1096,7 @@ the held-out acceptance above. The new `verification.json` passed and16PNG/PDF
 pairs were regenerated with separate source/hash provenance.
 
 Canonical machine-readable evidence: `evidence_tables/dqs_revision_20260925.json`.
-Reproduce the figure overlay with `reproduction/generate_dqs_revision_figures.py`
+Reproduce the figure overlay with `docs/paper_moreGUs/reproduction/generate_dqs_revision_figures.py`
 using `--reference` for the old completed scan, `--load` and `--resource` for the
 two revised-DQS campaigns, and a new `--out` directory. Run directories are in
 `docs/run_registry.csv`; no new scattered prose runbook is introduced.

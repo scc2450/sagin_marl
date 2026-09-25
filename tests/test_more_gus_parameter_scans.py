@@ -16,7 +16,7 @@ from sagin_marl.env.config import SaginConfig, update_config
 
 
 def plot_module():
-    path = Path(__file__).resolve().parents[1] / "docs/paper/reproduction"
+    path = Path(__file__).resolve().parents[1] / "docs/paper_moreGUs/reproduction"
     sys.path.insert(0, str(path))
     spec = importlib.util.spec_from_file_location("scan_plot_test", path / "generate_more_gus_scan_figures.py")
     module = importlib.util.module_from_spec(spec)

@@ -147,7 +147,7 @@ def prepare(args):
     for cfg, _ in loaded[1:]:
         check_seed_only(base, cfg)
     dirty = subprocess.check_output(["git", "status", "--porcelain", "--",
-        "sagin_marl", "scripts", "configs", "docs/paper/reproduction/generate_more_gus_scan_figures.py"],
+        "sagin_marl", "scripts", "configs", "docs/paper_moreGUs/reproduction/generate_more_gus_scan_figures.py"],
         cwd=REPO, text=True)
     if dirty.strip():
         raise RuntimeError("Commit scan source first; unrelated paper edits may remain")
@@ -157,7 +157,7 @@ def prepare(args):
     archive = root / "source.tar"
     with archive.open("wb") as handle:
         subprocess.run(["git", "archive", commit, "sagin_marl", "scripts", "configs",
-            "docs/paper/reproduction/generate_more_gus_scan_figures.py",
+            "docs/paper_moreGUs/reproduction/generate_more_gus_scan_figures.py",
             "docs/paper/reproduction/generate_section5_single_panel_figures_20260714.py"],
             cwd=REPO, stdout=handle, check=True)
     source = root / "source"
@@ -327,7 +327,10 @@ def run(args):
             # Persist partial evidence, but publish primary figures only after the full primary matrix.
             write_csv(root / "episodes.csv", combined)
             if completed in (manifest["primary_jobs"], len(manifest["jobs"])):
-                command = [manifest["plot_python"], str(source / "docs/paper/reproduction/generate_more_gus_scan_figures.py"),
+                plotter = source / "docs/paper_moreGUs/reproduction/generate_more_gus_scan_figures.py"
+                if not plotter.exists():
+                    plotter = source / "docs/paper/reproduction/generate_more_gus_scan_figures.py"
+                command = [manifest["plot_python"], str(plotter),
                            "--run_dir", str(root)]
                 subprocess.run(command, env=env, check=True)
                 primary_ready = True

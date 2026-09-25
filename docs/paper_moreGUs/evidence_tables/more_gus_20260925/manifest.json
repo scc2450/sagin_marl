@@ -1,0 +1,173 @@
+{
+  "scenario": "3UAV/100GU/22clusters",
+  "T_steps": 250,
+  "bandwidth_interval": 1,
+  "satellite_interval": 1,
+  "source_sha256": {
+    "runs/experiments/more_gus_training/analysis/data/provenance.json": "158112a63f64b95071058886fa91632c6a3ce88f0c9e5ff39f88011edc76dc63",
+    "runs/experiments/more_gus_scans/stars_dqs_revised_k1_20260925/manifest.json": "97774f16ca54937924a70989b0fc42d720086ea10c407ecbf121c4889ee1fe75",
+    "runs/experiments/more_gus_scans/stars_dqs_revised_k1_20260925/verification.json": "6ea828b082b6a9b73e5e6de36019b2bdfb91582adf430ecf35b932572508229e",
+    "runs/experiments/more_gus_scans/stars_dqs_revised_k1_20260925/figures/per_training_seed.csv": "2036ba52d007e293e44df1501b6369de5e4179c3623d04cc64c0d3e6cb418979",
+    "runs/experiments/more_gus_training/bootstrap_phase4_3uav100gu_k1_seed45211_u500_to_u700_20260922_132212/manifest.json": "3a06c74d9013da3988b491fcefbfab40d8218064846eec198daa96fafba84b68",
+    "runs/experiments/more_gus_training/bootstrap_phase4_3uav100gu_k1_seed45211_u500_to_u700_20260922_132212/result.json": "376b83983e0f039fe27bc4e725403126ed578ba2707c766aa6ca228d32a68169",
+    "runs/experiments/more_gus_training/bootstrap_phase4_3uav100gu_k1_seed45211_u500_to_u700_20260922_132212/status.json": "453fb59edd88ed6bb53ca974e7b3d4f82a988b19551bb3def371469f1499a79d",
+    "runs/experiments/more_gus_training/bootstrap_phase4_3uav100gu_k1_seed45211_u500_to_u700_20260922_132212/config.yaml": "e8fed2f4514c191f040cdc92a790be2b43afd1b475f0d87478fbafa30cda3deb",
+    "runs/experiments/more_gus_training/bootstrap_phase4_3uav100gu_k1_seed45211_u500_to_u700_20260922_132212/train/checkpoint_eval.csv": "81c38b40b6582eb15d9e53db31d0f4c9a6f8633369880b491c4245731d815c68",
+    "runs/experiments/more_gus_training/bootstrap_phase4_3uav100gu_k1_seed45211_20260920_120135/manifest.json": "68a90e42dc74e20faca7b7aeab0ad816f87a069f1857a0b74347670fed90f19e",
+    "runs/experiments/more_gus_training/bootstrap_phase4_3uav100gu_k1_seed45211_20260920_120135/result.json": "618835b62d76e6c6bea70d67801d8e08f7b333891b4c06cf6c92c869f996d0a7",
+    "runs/experiments/more_gus_training/bootstrap_phase4_3uav100gu_k1_seed45211_20260920_120135/status.json": "3af5120ae914fab2efcd8c1d51187b090dc7c662e8a25aa7345af51cbb38936f",
+    "runs/experiments/more_gus_training/bootstrap_phase4_3uav100gu_k1_seed45211_20260920_120135/config.yaml": "29db0d926bbf2681246322be3b07d61ed20b4e49b3ab40fb0597c2203eaddba8",
+    "runs/experiments/more_gus_training/bootstrap_phase4_3uav100gu_k1_seed45211_20260920_120135/train/checkpoint_eval.csv": "d603db32814e6f0dcb91d98ff17285c3f7f2e9487ecc69fbd0f53ffd98d5f6e6",
+    "runs/experiments/more_gus_training/bootstrap_phase4_3uav100gu_k1_seed45211_20260920_120135/evaluations/selected_seed1980000/selected_seed1980000_summary.json": "182bcd36c87557d83a92f626cfa3af2f4d8c3bc506131a38157b9134be090d8e",
+    "runs/experiments/more_gus_training/bootstrap_phase4_3uav100gu_k1_seed45211_20260920_120135/evaluations/selected_seed1980000/selected_seed1980000_episodes.csv": "549ad4db6f1ca20b6597e2ca1f4ac8d0a6357dad6dd047b20a125e64dc3374ba",
+    "runs/experiments/more_gus_training/bootstrap_phase4_3uav100gu_k1_seed45211_20260920_120135/evaluations/selected_seed1981000/selected_seed1981000_summary.json": "a39c96bfbef8970f022010a632051681e1a577fa7668c10afc05d1e45c7116b7",
+    "runs/experiments/more_gus_training/bootstrap_phase4_3uav100gu_k1_seed45211_20260920_120135/evaluations/selected_seed1981000/selected_seed1981000_episodes.csv": "405e0627420ece31f44e811467fcaf87808bd4b8ae3cd2e28e4b32c4a710214c",
+    "runs/experiments/more_gus_training/bootstrap_phase4_3uav100gu_k1_seed45210_20260920_183803/manifest.json": "46ef34b0afaaa7bd9bda58ba4da199add9c97b29f0e069d14bf67c397ad4f6a7",
+    "runs/experiments/more_gus_training/bootstrap_phase4_3uav100gu_k1_seed45210_20260920_183803/result.json": "9b8750fc7fd2560815a86dd89266b0f7e8964dd8463b069d68bc040d262f3bdf",
+    "runs/experiments/more_gus_training/bootstrap_phase4_3uav100gu_k1_seed45210_20260920_183803/status.json": "2678b8c2a3a2e3d9f9b6432ff4af3c2fe0ef42489f21066b8d56b5306152dad3",
+    "runs/experiments/more_gus_training/bootstrap_phase4_3uav100gu_k1_seed45210_20260920_183803/config.yaml": "972481bb7019c5e8f8e33aaed07efed2e7e6ca32eefe1535c606aa465eb60464",
+    "runs/experiments/more_gus_training/bootstrap_phase4_3uav100gu_k1_seed45210_20260920_183803/train/checkpoint_eval.csv": "2e4c88e94eba6b8acefaa0b4e145601fde56f939d16663615e4ebc4482d52cf3",
+    "runs/experiments/more_gus_training/bootstrap_phase4_3uav100gu_k1_seed45210_20260920_183803/evaluations/selected_seed1980000/selected_seed1980000_summary.json": "3c9e93abb8b8bb2befce3ac9053ac6d0508f3d3cc2140fe62f2faf6d7169b849",
+    "runs/experiments/more_gus_training/bootstrap_phase4_3uav100gu_k1_seed45210_20260920_183803/evaluations/selected_seed1980000/selected_seed1980000_episodes.csv": "691442a8daf5bef0abe1b9749a0edc92edba050686fc24f93478bd331b683fbc",
+    "runs/experiments/more_gus_training/bootstrap_phase4_3uav100gu_k1_seed45210_20260920_183803/evaluations/selected_seed1981000/selected_seed1981000_summary.json": "4bdf7b0d35395dbd2450bcb64cb4542c8f013637580c8ad14647772dff9157a9",
+    "runs/experiments/more_gus_training/bootstrap_phase4_3uav100gu_k1_seed45210_20260920_183803/evaluations/selected_seed1981000/selected_seed1981000_episodes.csv": "11525c1dd73dcfff9cd370efa74139e7ceb0b81679e8e6c21d88d979a89f4585",
+    "runs/experiments/more_gus_training/bootstrap_phase4_3uav100gu_k1_seed61723_20260920_183803/manifest.json": "a6ec76ff4972fa6195e48c4d2cc56646a52d7edd3ffc665abb0a3866508be924",
+    "runs/experiments/more_gus_training/bootstrap_phase4_3uav100gu_k1_seed61723_20260920_183803/result.json": "0ed5f58ff891104cefc28d97fd5e1bf5ef577ba326fc48af69591789cdddd97a",
+    "runs/experiments/more_gus_training/bootstrap_phase4_3uav100gu_k1_seed61723_20260920_183803/status.json": "84559b041bebeb3fd3aded58971a103448a971b7a9a0a3caffb83aabada5ec07",
+    "runs/experiments/more_gus_training/bootstrap_phase4_3uav100gu_k1_seed61723_20260920_183803/config.yaml": "c1f3758f6ddbf7649a0ca02aeae01de300d31bc09b2486ea8096bb907f40f178",
+    "runs/experiments/more_gus_training/bootstrap_phase4_3uav100gu_k1_seed61723_20260920_183803/train/checkpoint_eval.csv": "f1690f4606001f4df335dd4b34d51081df59d74caf2622cde017c4dc6681be03",
+    "runs/experiments/more_gus_training/bootstrap_phase4_3uav100gu_k1_seed61723_20260920_183803/evaluations/selected_seed1980000/selected_seed1980000_summary.json": "dd13960d053fb9edd2171480273f3c4d82a3388c59f1986473e1eb8174de5cbc",
+    "runs/experiments/more_gus_training/bootstrap_phase4_3uav100gu_k1_seed61723_20260920_183803/evaluations/selected_seed1980000/selected_seed1980000_episodes.csv": "4adecc18cbe633e89a9af9c00300b81e153db10d121c757655c8fc8cd9f2a724",
+    "runs/experiments/more_gus_training/bootstrap_phase4_3uav100gu_k1_seed61723_20260920_183803/evaluations/selected_seed1981000/selected_seed1981000_summary.json": "602bca99e50ded0eb3c4b03ff5c60d6500a9099d3a9ccaf95f5acead358cefcb",
+    "runs/experiments/more_gus_training/bootstrap_phase4_3uav100gu_k1_seed61723_20260920_183803/evaluations/selected_seed1981000/selected_seed1981000_episodes.csv": "aef014a8278b8d19344bb0233ed49042b9323758882dc62089b6bca92fef6667",
+    "runs/experiments/more_gus_training/global_critic_3seed_k1_20260924/seed45211/manifest.json": "15c717b07de5ea6afd04a55ed35a0461ee485c2fffc95cd856cf31ffc8af19ef",
+    "runs/experiments/more_gus_training/global_critic_3seed_k1_20260924/seed45211/result.json": "60bda6932d27d89beebe52d6646d5425b7c16dc8fe24e92ffbd785c8df37671d",
+    "runs/experiments/more_gus_training/global_critic_3seed_k1_20260924/seed45211/status.json": "c5070f2f4dd2dd513cbc1cfab5f0ef3d482fbb6abb537ed895e41e60eef235c8",
+    "runs/experiments/more_gus_training/global_critic_3seed_k1_20260924/seed45211/config.yaml": "22c0952885624bad08b94547817eb17bed8c457c09ac322382a9191be2e6ff79",
+    "runs/experiments/more_gus_training/global_critic_3seed_k1_20260924/seed45211/train/checkpoint_eval.csv": "47ea07e738c9c9e4b551749a586cbe14e4a827f18f3c56bc7825cf6e8d051425",
+    "runs/experiments/more_gus_training/global_critic_3seed_k1_20260924/seed45211/evaluations/selected_seed1980000/selected_seed1980000_summary.json": "987aece32946489a920b87c50d09e69aa69e2fe7470f90499289109edf61b9fa",
+    "runs/experiments/more_gus_training/global_critic_3seed_k1_20260924/seed45211/evaluations/selected_seed1980000/selected_seed1980000_episodes.csv": "3b2734dd273130b245a66fc2b5767a51cb4a7bb3df62882013be8685bbdd8751",
+    "runs/experiments/more_gus_training/global_critic_3seed_k1_20260924/seed45211/evaluations/selected_seed1981000/selected_seed1981000_summary.json": "a6af86a3bccec18b517ff09cf070e391892670fa2f65484d6d1090ebf5099e90",
+    "runs/experiments/more_gus_training/global_critic_3seed_k1_20260924/seed45211/evaluations/selected_seed1981000/selected_seed1981000_episodes.csv": "c2347e3b8049941dd4cb0ae848a2f8b66d65609f297f7be69c82bc246444829e",
+    "runs/experiments/more_gus_training/global_critic_3seed_k1_20260924/seed45210/manifest.json": "36546a5ca350dd5886fb64b8302beee558e9428ffddaf7be8b8c081605778520",
+    "runs/experiments/more_gus_training/global_critic_3seed_k1_20260924/seed45210/result.json": "6da4748936ed443b5052c520899114a43b4926c0ceb05c47cdaaa1a303059fe2",
+    "runs/experiments/more_gus_training/global_critic_3seed_k1_20260924/seed45210/status.json": "cb381f1493b296ac6e655a1048aeb723ecc3cb11dc4c2c06c444db9dc7d6756f",
+    "runs/experiments/more_gus_training/global_critic_3seed_k1_20260924/seed45210/config.yaml": "f6099eafb88251646cb3697fdb61daa3c971da62d337618acb5712122f37b3a8",
+    "runs/experiments/more_gus_training/global_critic_3seed_k1_20260924/seed45210/train/checkpoint_eval.csv": "21b4c5cd06ec344f0b6c6250f72a70685bcf91c38b52295965e199baa6427c2e",
+    "runs/experiments/more_gus_training/global_critic_3seed_k1_20260924/seed45210/evaluations/selected_seed1980000/selected_seed1980000_summary.json": "4f39478536ac22979f98be794b7279be6db31f42fe9f2120ea0641239ae3fb23",
+    "runs/experiments/more_gus_training/global_critic_3seed_k1_20260924/seed45210/evaluations/selected_seed1980000/selected_seed1980000_episodes.csv": "1de545436839eb9fcb6e8e303c28bbee0f16d01530e42548fd5dde6b058bbda0",
+    "runs/experiments/more_gus_training/global_critic_3seed_k1_20260924/seed45210/evaluations/selected_seed1981000/selected_seed1981000_summary.json": "744db8b4b045f1a4a9aeff9b29beb55de48ea66816c56bbce0f46027eb86a7ee",
+    "runs/experiments/more_gus_training/global_critic_3seed_k1_20260924/seed45210/evaluations/selected_seed1981000/selected_seed1981000_episodes.csv": "876042acaae19b4ae2ec02589453e20f2cb42735b001e8005627402efe8eedf2",
+    "runs/experiments/more_gus_training/global_critic_3seed_k1_20260924/seed61723/manifest.json": "13fdd759eea3c59727acfec5ea6b4d08d04f006e559f549c802047d9ae793b0f",
+    "runs/experiments/more_gus_training/global_critic_3seed_k1_20260924/seed61723/result.json": "d4b7dd30e8950ba1e2c9910040ca181acdf6c360a248e668e9a87d02cf4bc700",
+    "runs/experiments/more_gus_training/global_critic_3seed_k1_20260924/seed61723/status.json": "23db5b7de2fb7f17437e950681ebf587ff3aa231ffd2c71559df1c54d1d1aeca",
+    "runs/experiments/more_gus_training/global_critic_3seed_k1_20260924/seed61723/config.yaml": "5e114977fee42841da07a33763569fe60971359011783078b0b6dccff32b86e3",
+    "runs/experiments/more_gus_training/global_critic_3seed_k1_20260924/seed61723/train/checkpoint_eval.csv": "6923260273a836b5e55860b4e58ddf9385f3690006cbe0b5b48dde289d1db8b4",
+    "runs/experiments/more_gus_training/global_critic_3seed_k1_20260924/seed61723/evaluations/selected_seed1980000/selected_seed1980000_summary.json": "1f799beb5889ca11aff9410c6c23a0b2e2ec853135ff50aa24faf5fcce7cc4a3",
+    "runs/experiments/more_gus_training/global_critic_3seed_k1_20260924/seed61723/evaluations/selected_seed1980000/selected_seed1980000_episodes.csv": "24ffe75ecb1e9df06e16c9992a75d740ea227eccbd0f56fa82156db51bb964a7",
+    "runs/experiments/more_gus_training/global_critic_3seed_k1_20260924/seed61723/evaluations/selected_seed1981000/selected_seed1981000_summary.json": "053d2ef9d784a9d6dcbc0947a422ebc3d35d85c4b01aafd89fe28d717297420b",
+    "runs/experiments/more_gus_training/global_critic_3seed_k1_20260924/seed61723/evaluations/selected_seed1981000/selected_seed1981000_episodes.csv": "a0af83663774cf5a46a239d6ed5a70bf631f0c193e19464ee5ba74bc4069846d",
+    "runs/experiments/more_gus_training/bootstrap_phase4_3uav100gu_k1_seed61723_20260920_183803/renders/u700_seed1980000_native/episode.json": "5cc8a2827f24e6d3bb4c39ae1dcd26d4ba75f1cf0241cae37f53e2fb4f58168f",
+    "runs/experiments/more_gus_training/bootstrap_phase4_3uav100gu_k1_seed61723_20260920_183803/renders/hotspot_tape_seed1980000.json": "d9f96096eacd13fd89ebe5fb1070c1d18cedad4d98a1f94c9093d151600e7ffa"
+  },
+  "scan_source_commits": {
+    "/home/sgy/workspace/sagin_marl_moreGUs/runs/experiments/more_gus_scans/stars_dqs_no_gc_k1_20260925_final_recovery": {
+      "source_commit": "717b93d8606779230b4e4dc024502fc495b894d0",
+      "manifest_sha256": "4feb7f0fc0e40cbd78f254d3710cf8a7a32e00348cde2d400bf04fa3abd92e2f",
+      "episodes_sha256": "20314a7d6e04f7e432b9663c9297ced1ba9983a22e2105ce680c9695b29e97fa"
+    },
+    "/home/sgy/workspace/sagin_marl_moreGUs/runs/experiments/dqs_development/dqs_revised_load_20260925": {
+      "source_commit": "aee84c95cf2a8b3a539888d5d0148a579676b738",
+      "manifest_sha256": "0aa540147aae58c02eb488b740f027fe3f7191771168c281b43cbf6a7fef3771",
+      "episodes_sha256": "c802f8d5b6191569dc5aa5e98177cee31e735de3fba3c081b510e3bb0f509c5f"
+    },
+    "/home/sgy/workspace/sagin_marl_moreGUs/runs/experiments/dqs_development/dqs_revised_resource_20260925": {
+      "source_commit": "aee84c95cf2a8b3a539888d5d0148a579676b738",
+      "manifest_sha256": "f95b58fae88c1fb85aa92a38d403c1ef6eec1ed7cc6ffe7b340a77105c2cb729",
+      "episodes_sha256": "6f286c57631fe1e67c5906b035867f1e56a513d34a0e568d5ad0045ffde7f401"
+    }
+  },
+  "independent_training_seeds": [
+    45211,
+    45210,
+    61723
+  ],
+  "continuation": "bootstrap_phase4_3uav100gu_k1_seed45211_u500_to_u700_20260922_132212",
+  "continuation_role": "Only seed45211 resumes after u500; reward early stopping disabled; not a fourth seed",
+  "review_source": "runs/experiments/more_gus_training/analysis",
+  "review_episode": {
+    "seed": 1980000,
+    "training_seed": 61723,
+    "update": 700,
+    "reward": 199.086781591177,
+    "path_lengths": [
+      5927.286751013907,
+      5794.376438509182,
+      6177.0362309640395
+    ],
+    "hotspot_overlay": true
+  },
+  "eval_protocol": "Selected-checkpoint screening: 64 episodes, seed bases 1980000/1981000, deterministic, num_envs=32",
+  "validation_protocol": "32 fixed validation episodes per checkpoint, seed base 910000; raw means, no smoothing",
+  "selected_final_comparison_exported": false,
+  "gc_status": "pending_review",
+  "gc_config_differences": {
+    "45211": {
+      "baseline_dq_movement_weight": [
+        null,
+        0.02
+      ],
+      "baseline_dq_switch_weight": [
+        null,
+        0.01
+      ],
+      "critic_value_mode": [
+        "relational",
+        "global_only"
+      ]
+    },
+    "45210": {
+      "baseline_dq_movement_weight": [
+        null,
+        0.02
+      ],
+      "baseline_dq_switch_weight": [
+        null,
+        0.01
+      ],
+      "critic_value_mode": [
+        "relational",
+        "global_only"
+      ]
+    },
+    "61723": {
+      "baseline_dq_movement_weight": [
+        null,
+        0.02
+      ],
+      "baseline_dq_switch_weight": [
+        null,
+        0.01
+      ],
+      "critic_value_mode": [
+        "relational",
+        "global_only"
+      ]
+    }
+  },
+  "gc_config_note": "DQS penalty fields absent in original STARS config are serialized as .02/.01 defaults in GC; learned-policy execution does not read these heuristic-only fields",
+  "gc_caveat": "Training degradation and collision cases remain unexplained; separate critic ablation, not an independent learned algorithm",
+  "episode_note": "Illustrative one-env episode; paths t=0..249, post-step queue/reward t=1..250; not aggregate evidence",
+  "map_size": 1500.0,
+  "table_sha256": {
+    "scan_seed_means.csv": "a3e16d65b300e6d8049a93fb04162f18c6d113ae29feb612fcd5fe0e6289135e",
+    "training_curves.csv": "cc75e27c522c40bd593aa211f1cc910c5f1287c4b50e6b3ebb9c8a7d26e8c778",
+    "training_selection.csv": "f5c15ee06261ba3da53f42de6f3878c28662a901499cf4e5d742142b098d85eb",
+    "selected_policy_means.csv": "4771ac6d9674c7f3a211eb7d47b6cc3a6020f8edc7e62189c5ac323f451c99e3",
+    "critic_curves.csv": "8e7527560ebcf3b461db7d4c96edabbeb62c2e18ae08397cecac01f93efbf0c5",
+    "critic_status.csv": "e0f3580fc290baead7e710b48f263cae3849d0e2e705de937025832acfcf71df",
+    "episode_paths.csv": "688a4e1045bc5e72d2587a4fe9c0994336a2719de34ea6a403bc2a8d219438f4",
+    "episode_users.csv": "5e5ebb80068d951eece0617977e391c574ae992a3f2e457c324347d0c288257e",
+    "episode_traces.csv": "733d5cde1e56b4d84740aa5d37faecfb42d5d54f413e7b4eb33ec3719864784f"
+  }
+}

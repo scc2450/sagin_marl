@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import sys
 
 os.environ.setdefault("MPLCONFIGDIR", "/tmp/sagin_marl_scan_matplotlib")
 import matplotlib
@@ -14,11 +15,12 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 
+sys.path.append(str(Path(__file__).resolve().parents[2] / "paper/reproduction"))
 from generate_section5_single_panel_figures_20260714 import configure_style
 
 ORDER = ["stars", "distributed_queue_c", "maxweight_lyapunov", "queue_aware_bw", "static_uniform"]
-LABELS = dict(zip(ORDER, ["STARS", "DQS", "MaxWeight/Lyapunov", "QBS", "Uniform"]))
-COLORS = dict(zip(ORDER, ["#0072B2", "#E69F00", "#009E73", "#56B4E9", "#666666"]))
+LABELS = dict(zip(ORDER, ["STARS", "DQS", "Lyapunov", "QBS", "Uniform"]))
+COLORS = dict(zip(ORDER, ["#0072B2", "#009E73", "#E69F00", "#56B4E9", "#666666"]))
 MARKERS = dict(zip(ORDER, ["o", "D", "P", "v", "x"]))
 PANELS = [
     ("reward_sum", "Episode reward", 1.0),
@@ -107,6 +109,8 @@ def main():
     root = Path(args.run_dir).resolve()
     manifest = json.loads((root / "manifest.json").read_text())
     data = pd.read_csv(root / "episodes.csv")
+    legacy_label = (data.method == "maxweight_lyapunov") & (data.paper_label == "MaxWeight/Lyapunov")
+    data.loc[legacy_label, "paper_label"] = "Lyapunov"
     primary = validate_primary(data, manifest)
     per_seed, mean, spread = summaries(data)
     out = root / "figures"
@@ -158,7 +162,7 @@ def main():
     (out / "provenance.json").write_text(json.dumps(provenance, indent=2) + "\n")
     report = [
         "# 100-GU Parameter Scans", "",
-        "Primary methods: STARS, DQS, MaxWeight/Lyapunov, QBS, Uniform. GC and QCCS are excluded.",
+        "Primary methods: STARS, DQS, Lyapunov, QBS, Uniform. GC and QCCS are excluded.",
         "STARS checkpoints were selected before scanning; no per-point model selection or retraining.",
         "STARS bands show descriptive training-seed SD (n=3), not an episode-level confidence interval.",
         "Fixed baselines use64paired episodes each. Seeds1980000/1981000 are reused screening seeds.",

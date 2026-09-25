@@ -347,7 +347,6 @@ def _qccs_reward() -> float | None:
 
 
 def _best_so_far_df(curve_df: pd.DataFrame) -> pd.DataFrame:
-    updates = np.arange(25, 526, 25)
     rows: list[dict[str, object]] = []
     for seed in sorted(curve_df["training_seed"].unique()):
         group = (
@@ -355,8 +354,9 @@ def _best_so_far_df(curve_df: pd.DataFrame) -> pd.DataFrame:
             .sort_values("update")[["update", "reward_sum"]]
             .drop_duplicates("update", keep="last")
         )
-        rewards = group.set_index("update")["reward_sum"].reindex(updates)
-        best_so_far = rewards.ffill().cummax()
+        # Preserve observed endpoints: early stopping is not extra evaluation.
+        rewards = group.set_index("update")["reward_sum"].dropna()
+        best_so_far = rewards.cummax()
         for update, reward in best_so_far.items():
             if pd.isna(reward):
                 continue
@@ -411,7 +411,9 @@ def plot_checkpoint_panel(
         label="Median",
         zorder=4,
     )
-    err = agg[agg["update"].isin({125, 225, 325, 425, 525})].copy()
+    error_indices = np.unique(
+        np.linspace(0, len(agg) - 1, min(5, len(agg))).round().astype(int))
+    err = agg.iloc[error_indices].copy()
     ax.errorbar(
         err["update"].to_numpy(dtype=float),
         err["median"].to_numpy(dtype=float),
@@ -443,9 +445,15 @@ def plot_checkpoint_panel(
             zorder=2,
         )
 
-    ax.set_xlim(20, 535)
-    ax.set_ylim(25, 75)
-    ax.set_xticks([25, 125, 225, 325, 425, 525])
+    x = panel_df["update"].to_numpy(dtype=float)
+    y = panel_df["reward_sum"].to_numpy(dtype=float)
+    if qccs_reward is not None:
+        y = np.append(y, qccs_reward)
+    x_pad = max(float(np.ptp(x)) * 0.025, 1.0)
+    y_pad = max(float(np.ptp(y)) * 0.07, 1.0)
+    ax.set_xlim(float(x.min()) - x_pad, float(x.max()) + x_pad)
+    ax.set_ylim(float(y.min()) - y_pad, float(y.max()) + y_pad)
+    ax.xaxis.set_major_locator(plt.MaxNLocator(nbins=6, integer=True))
     ax.set_xlabel("Training update")
     ax.set_ylabel("Validation reward")
     ax.grid(axis="y", color="#D9D9D9", alpha=0.72)
@@ -470,7 +478,6 @@ def plot_checkpoint_panel(
 
 def plot_checkpoint_figures() -> None:
     curve_df = pd.read_csv(STARS_CURVE_SOURCE)
-    curve_df = curve_df[curve_df["update"] <= 525].copy()
     qccs_reward = _qccs_reward()
     plot_checkpoint_panel(
         curve_df,

@@ -1,0 +1,10 @@
+file,row_count,table_families,row_scopes,scenario_count,sample_scenarios
+more_gus_20260925/scan_seed_means.csv,98,more_gus_paper_assets,validation or selected-policy summary,1,3uav100gu_22clusters_k1
+more_gus_20260925/training_curves.csv,84,more_gus_paper_assets,validation or selected-policy summary,1,3uav100gu_22clusters_k1
+more_gus_20260925/training_selection.csv,3,more_gus_paper_assets,validation or selected-policy summary,1,3uav100gu_22clusters_k1
+more_gus_20260925/selected_policy_means.csv,6,more_gus_paper_assets,validation or selected-policy summary,1,3uav100gu_22clusters_k1
+more_gus_20260925/critic_curves.csv,121,more_gus_paper_assets,validation or selected-policy summary,1,3uav100gu_22clusters_k1
+more_gus_20260925/critic_status.csv,3,more_gus_paper_assets,validation or selected-policy summary,1,3uav100gu_22clusters_k1
+more_gus_20260925/episode_paths.csv,750,more_gus_paper_assets,illustrative episode,1,3uav100gu_22clusters_k1
+more_gus_20260925/episode_users.csv,100,more_gus_paper_assets,illustrative episode,1,3uav100gu_22clusters_k1
+more_gus_20260925/episode_traces.csv,250,more_gus_paper_assets,illustrative episode,1,3uav100gu_22clusters_k1

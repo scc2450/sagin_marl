@@ -1,4 +1,4 @@
-"""Replace only DQS rows in a new scan artifact, preserving original evidence."""
+"""Replace only DQS rows in a new 100-GU scan, preserving original evidence."""
 from __future__ import annotations
 
 import argparse
@@ -116,8 +116,9 @@ def main():
             for root in (reference, load, resource)},
         newly_evaluated_rows=len(updates), unchanged_rows=len(rows)-len(updates),
         generator_sha256=sha(Path(__file__)),
-        plotting_sources={name: sha(Path(__file__).with_name(name)) for name in (
-            "generate_more_gus_scan_figures.py", "generate_section5_single_panel_figures_20260714.py")})
+        plotting_sources={str(path.relative_to(Path(__file__).resolve().parents[3])): sha(path) for path in (
+            Path(__file__).with_name("generate_more_gus_scan_figures.py"),
+            Path(__file__).resolve().parents[2] / "paper/reproduction/generate_section5_single_panel_figures_20260714.py")})
     (out / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
     verification = dict(status="passed", verified_effective_configs=verified_configs,
         matched_arrivals=len(updates), replacements=len(updates), rows=len(rows),

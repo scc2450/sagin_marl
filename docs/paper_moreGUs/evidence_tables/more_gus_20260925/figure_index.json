@@ -1,0 +1,776 @@
+{
+  "generator": "docs/paper_moreGUs/reproduction/generate_more_gus_paper_assets.py",
+  "generator_sha256": "266cd7a93870ff09a8c61dc4d484cff73b368a382aedaae9cfbcc287791053b7",
+  "style_helper": "docs/paper/reproduction/generate_section5_single_panel_figures_20260714.py",
+  "style_helper_sha256": "f63b9993c947f4e1a265649faab6ca94396149f2d5039c3a77c7263be32040d4",
+  "manifest_sha256": "3091dbcc9b0df20448132d5a9321ba370a1397039a856be52e6600b6560299d6",
+  "figures": [
+    {
+      "name": "sec5_100gu_load_reward_20260925",
+      "pdf": "docs/paper_moreGUs/manuscript_overleaf/figures/sec5_100gu_load_reward_20260925.pdf",
+      "pdf_sha256": "84f1a745a816327264ef55468ea78f209e2aaf8b10c94300304d96cc3ccf382f",
+      "status": "candidate",
+      "caption": "STARS, DQS and Lyapunov define the displayed y-range; QBS/Uniform may be off-scale. STARS error bars: descriptive SD of three independent training-seed means. Fixed policies: means of 64 paired screening episodes; no training-seed error bars. Resource scaling jointly changes access bandwidth, backhaul and CPU. D_sys is a queue-based proxy.",
+      "source_tables": [
+        "scan_seed_means.csv"
+      ],
+      "axis_limits": [
+        0.0,
+        275.0
+      ],
+      "off_scale": []
+    },
+    {
+      "name": "sec5_100gu_load_processed_ratio_20260925",
+      "pdf": "docs/paper_moreGUs/manuscript_overleaf/figures/sec5_100gu_load_processed_ratio_20260925.pdf",
+      "pdf_sha256": "1d678f75708b47d7880a32d6ecd1062abfd5be4390a585b020233822be7f334e",
+      "status": "candidate",
+      "caption": "STARS, DQS and Lyapunov define the displayed y-range; QBS/Uniform may be off-scale. STARS error bars: descriptive SD of three independent training-seed means. Fixed policies: means of 64 paired screening episodes; no training-seed error bars. Resource scaling jointly changes access bandwidth, backhaul and CPU. D_sys is a queue-based proxy.",
+      "source_tables": [
+        "scan_seed_means.csv"
+      ],
+      "axis_limits": [
+        80.0,
+        101.0
+      ],
+      "off_scale": [
+        {
+          "method": "QBS",
+          "x": 40.0,
+          "value": 72.43417961681263
+        },
+        {
+          "method": "QBS",
+          "x": 50.0,
+          "value": 63.1595963736996
+        },
+        {
+          "method": "QBS",
+          "x": 60.0,
+          "value": 55.716063135303564
+        },
+        {
+          "method": "QBS",
+          "x": 70.0,
+          "value": 49.449742434732606
+        },
+        {
+          "method": "QBS",
+          "x": 80.0,
+          "value": 44.25702083948999
+        },
+        {
+          "method": "Uniform",
+          "x": 40.0,
+          "value": 79.58149706795811
+        },
+        {
+          "method": "Uniform",
+          "x": 50.0,
+          "value": 73.48538172845728
+        },
+        {
+          "method": "Uniform",
+          "x": 60.0,
+          "value": 67.55505558731966
+        },
+        {
+          "method": "Uniform",
+          "x": 70.0,
+          "value": 62.134694872610275
+        },
+        {
+          "method": "Uniform",
+          "x": 80.0,
+          "value": 57.08525895108468
+        }
+      ]
+    },
+    {
+      "name": "sec5_100gu_load_drop_ratio_20260925",
+      "pdf": "docs/paper_moreGUs/manuscript_overleaf/figures/sec5_100gu_load_drop_ratio_20260925.pdf",
+      "pdf_sha256": "35deb6566bbbd203eb58adcc68773f155d939df095ad9d817f1281240bd5a464",
+      "status": "candidate",
+      "caption": "STARS, DQS and Lyapunov define the displayed y-range; QBS/Uniform may be off-scale. STARS error bars: descriptive SD of three independent training-seed means. Fixed policies: means of 64 paired screening episodes; no training-seed error bars. Resource scaling jointly changes access bandwidth, backhaul and CPU. D_sys is a queue-based proxy.",
+      "source_tables": [
+        "scan_seed_means.csv"
+      ],
+      "axis_limits": [
+        0.0,
+        9.75
+      ],
+      "off_scale": [
+        {
+          "method": "QBS",
+          "x": 40.0,
+          "value": 17.12787118336313
+        },
+        {
+          "method": "QBS",
+          "x": 50.0,
+          "value": 25.63598575320948
+        },
+        {
+          "method": "QBS",
+          "x": 60.0,
+          "value": 33.02942814722919
+        },
+        {
+          "method": "QBS",
+          "x": 70.0,
+          "value": 39.45610886681334
+        },
+        {
+          "method": "QBS",
+          "x": 80.0,
+          "value": 44.92323590929764
+        },
+        {
+          "method": "Uniform",
+          "x": 30.0,
+          "value": 11.17311145459281
+        },
+        {
+          "method": "Uniform",
+          "x": 40.0,
+          "value": 16.77568513592713
+        },
+        {
+          "method": "Uniform",
+          "x": 50.0,
+          "value": 22.356288999922842
+        },
+        {
+          "method": "Uniform",
+          "x": 60.0,
+          "value": 27.534271513391623
+        },
+        {
+          "method": "Uniform",
+          "x": 70.0,
+          "value": 32.48111582566374
+        },
+        {
+          "method": "Uniform",
+          "x": 80.0,
+          "value": 37.143158634404536
+        }
+      ]
+    },
+    {
+      "name": "sec5_100gu_load_delay_proxy_20260925",
+      "pdf": "docs/paper_moreGUs/manuscript_overleaf/figures/sec5_100gu_load_delay_proxy_20260925.pdf",
+      "pdf_sha256": "8d867d90cc7c6a6c636f1b539e91c0daa09e8da6a42ff10753e7585fc9979b6b",
+      "status": "candidate",
+      "caption": "STARS, DQS and Lyapunov define the displayed y-range; QBS/Uniform may be off-scale. STARS error bars: descriptive SD of three independent training-seed means. Fixed policies: means of 64 paired screening episodes; no training-seed error bars. Resource scaling jointly changes access bandwidth, backhaul and CPU. D_sys is a queue-based proxy.",
+      "source_tables": [
+        "scan_seed_means.csv"
+      ],
+      "axis_limits": [
+        0.0,
+        17.5
+      ],
+      "off_scale": [
+        {
+          "method": "QBS",
+          "x": 40.0,
+          "value": 25.69713238279716
+        },
+        {
+          "method": "QBS",
+          "x": 50.0,
+          "value": 33.50175837946078
+        },
+        {
+          "method": "QBS",
+          "x": 60.0,
+          "value": 39.14724315635115
+        },
+        {
+          "method": "QBS",
+          "x": 70.0,
+          "value": 43.84545190723613
+        },
+        {
+          "method": "QBS",
+          "x": 80.0,
+          "value": 48.35301121070236
+        },
+        {
+          "method": "Uniform",
+          "x": 60.0,
+          "value": 17.923889470095745
+        },
+        {
+          "method": "Uniform",
+          "x": 70.0,
+          "value": 21.000485861472782
+        },
+        {
+          "method": "Uniform",
+          "x": 80.0,
+          "value": 23.777645950999112
+        }
+      ]
+    },
+    {
+      "name": "sec5_100gu_load_pre_backlog_20260925",
+      "pdf": "docs/paper_moreGUs/manuscript_overleaf/figures/sec5_100gu_load_pre_backlog_20260925.pdf",
+      "pdf_sha256": "43e9b44768c31fb799917405a3f786b8a5fb06306778bd0f668858a2d1383d6c",
+      "status": "candidate",
+      "caption": "STARS, DQS and Lyapunov define the displayed y-range; QBS/Uniform may be off-scale. STARS error bars: descriptive SD of three independent training-seed means. Fixed policies: means of 64 paired screening episodes; no training-seed error bars. Resource scaling jointly changes access bandwidth, backhaul and CPU. D_sys is a queue-based proxy.",
+      "source_tables": [
+        "scan_seed_means.csv"
+      ],
+      "axis_limits": [
+        0.0,
+        15.0
+      ],
+      "off_scale": [
+        {
+          "method": "QBS",
+          "x": 40.0,
+          "value": 16.93187936968896
+        },
+        {
+          "method": "QBS",
+          "x": 50.0,
+          "value": 19.78338502738066
+        },
+        {
+          "method": "QBS",
+          "x": 60.0,
+          "value": 20.579459681003353
+        },
+        {
+          "method": "QBS",
+          "x": 70.0,
+          "value": 20.621265935070813
+        },
+        {
+          "method": "QBS",
+          "x": 80.0,
+          "value": 20.47797363740392
+        }
+      ]
+    },
+    {
+      "name": "sec5_100gu_load_queue_workload_20260925",
+      "pdf": "docs/paper_moreGUs/manuscript_overleaf/figures/sec5_100gu_load_queue_workload_20260925.pdf",
+      "pdf_sha256": "0048f7c33d340e05d01487ef6f01adeb6555613188e2708f3e16960606b09906",
+      "status": "candidate",
+      "caption": "STARS, DQS and Lyapunov define the displayed y-range; QBS/Uniform may be off-scale. STARS error bars: descriptive SD of three independent training-seed means. Fixed policies: means of 64 paired screening episodes; no training-seed error bars. Resource scaling jointly changes access bandwidth, backhaul and CPU. D_sys is a queue-based proxy.",
+      "source_tables": [
+        "scan_seed_means.csv"
+      ],
+      "axis_limits": [
+        0.0,
+        1250.0
+      ],
+      "off_scale": [
+        {
+          "method": "QBS",
+          "x": 70.0,
+          "value": 1443.4885597118748
+        },
+        {
+          "method": "QBS",
+          "x": 80.0,
+          "value": 1638.237871456
+        }
+      ]
+    },
+    {
+      "name": "sec5_100gu_resource_reward_20260925",
+      "pdf": "docs/paper_moreGUs/manuscript_overleaf/figures/sec5_100gu_resource_reward_20260925.pdf",
+      "pdf_sha256": "4387f0f783730f4b40e61d35cbc67332543c3d1a3cdde31d6ce493a9d2fec6c8",
+      "status": "candidate",
+      "caption": "STARS, DQS and Lyapunov define the displayed y-range; QBS/Uniform may be off-scale. STARS error bars: descriptive SD of three independent training-seed means. Fixed policies: means of 64 paired screening episodes; no training-seed error bars. Resource scaling jointly changes access bandwidth, backhaul and CPU. D_sys is a queue-based proxy.",
+      "source_tables": [
+        "scan_seed_means.csv"
+      ],
+      "axis_limits": [
+        0.0,
+        275.0
+      ],
+      "off_scale": []
+    },
+    {
+      "name": "sec5_100gu_resource_processed_ratio_20260925",
+      "pdf": "docs/paper_moreGUs/manuscript_overleaf/figures/sec5_100gu_resource_processed_ratio_20260925.pdf",
+      "pdf_sha256": "64332626e03d406b3a7e151e184f9098da86d54b182efc94621caa9fb0f3aa53",
+      "status": "candidate",
+      "caption": "STARS, DQS and Lyapunov define the displayed y-range; QBS/Uniform may be off-scale. STARS error bars: descriptive SD of three independent training-seed means. Fixed policies: means of 64 paired screening episodes; no training-seed error bars. Resource scaling jointly changes access bandwidth, backhaul and CPU. D_sys is a queue-based proxy.",
+      "source_tables": [
+        "scan_seed_means.csv"
+      ],
+      "axis_limits": [
+        90.0,
+        101.0
+      ],
+      "off_scale": [
+        {
+          "method": "QBS",
+          "x": 0.5,
+          "value": 51.57399334171787
+        },
+        {
+          "method": "QBS",
+          "x": 0.75,
+          "value": 63.8759683762677
+        },
+        {
+          "method": "QBS",
+          "x": 1.0,
+          "value": 72.43417961681263
+        },
+        {
+          "method": "QBS",
+          "x": 1.25,
+          "value": 78.45376730561256
+        },
+        {
+          "method": "QBS",
+          "x": 1.5,
+          "value": 82.92721202075481
+        },
+        {
+          "method": "QBS",
+          "x": 2.0,
+          "value": 89.48841731343418
+        },
+        {
+          "method": "Uniform",
+          "x": 0.5,
+          "value": 62.15861200271174
+        },
+        {
+          "method": "Uniform",
+          "x": 0.75,
+          "value": 73.03467667894438
+        },
+        {
+          "method": "Uniform",
+          "x": 1.0,
+          "value": 79.58149706795811
+        },
+        {
+          "method": "Uniform",
+          "x": 1.25,
+          "value": 84.10704355780035
+        },
+        {
+          "method": "Uniform",
+          "x": 1.5,
+          "value": 87.28185366969555
+        }
+      ]
+    },
+    {
+      "name": "sec5_100gu_resource_drop_ratio_20260925",
+      "pdf": "docs/paper_moreGUs/manuscript_overleaf/figures/sec5_100gu_resource_drop_ratio_20260925.pdf",
+      "pdf_sha256": "cb0bc36f2dba7b1f903e46bcf41d7c86fc5fca7e523a0e581f6bce51530a79d7",
+      "status": "candidate",
+      "caption": "STARS, DQS and Lyapunov define the displayed y-range; QBS/Uniform may be off-scale. STARS error bars: descriptive SD of three independent training-seed means. Fixed policies: means of 64 paired screening episodes; no training-seed error bars. Resource scaling jointly changes access bandwidth, backhaul and CPU. D_sys is a queue-based proxy.",
+      "source_tables": [
+        "scan_seed_means.csv"
+      ],
+      "axis_limits": [
+        0.0,
+        4.5
+      ],
+      "off_scale": [
+        {
+          "method": "QBS",
+          "x": 0.5,
+          "value": 31.98843669708807
+        },
+        {
+          "method": "QBS",
+          "x": 0.75,
+          "value": 23.2049998688024
+        },
+        {
+          "method": "QBS",
+          "x": 1.0,
+          "value": 17.12787118336313
+        },
+        {
+          "method": "QBS",
+          "x": 1.25,
+          "value": 12.905452102620341
+        },
+        {
+          "method": "QBS",
+          "x": 1.5,
+          "value": 9.88723953232318
+        },
+        {
+          "method": "QBS",
+          "x": 2.0,
+          "value": 5.547601606621829
+        },
+        {
+          "method": "Uniform",
+          "x": 0.5,
+          "value": 31.68490683443125
+        },
+        {
+          "method": "Uniform",
+          "x": 0.75,
+          "value": 22.34506441905693
+        },
+        {
+          "method": "Uniform",
+          "x": 1.0,
+          "value": 16.77568513592713
+        },
+        {
+          "method": "Uniform",
+          "x": 1.25,
+          "value": 13.11607272074388
+        },
+        {
+          "method": "Uniform",
+          "x": 1.5,
+          "value": 10.58240053981595
+        },
+        {
+          "method": "Uniform",
+          "x": 2.0,
+          "value": 7.41688710775046
+        }
+      ]
+    },
+    {
+      "name": "sec5_100gu_resource_delay_proxy_20260925",
+      "pdf": "docs/paper_moreGUs/manuscript_overleaf/figures/sec5_100gu_resource_delay_proxy_20260925.pdf",
+      "pdf_sha256": "fd95cb0e8f9767fcae24cc7e7bc1134ee8421f823e6cd2dcd818af5d936c1cb3",
+      "status": "candidate",
+      "caption": "STARS, DQS and Lyapunov define the displayed y-range; QBS/Uniform may be off-scale. STARS error bars: descriptive SD of three independent training-seed means. Fixed policies: means of 64 paired screening episodes; no training-seed error bars. Resource scaling jointly changes access bandwidth, backhaul and CPU. D_sys is a queue-based proxy.",
+      "source_tables": [
+        "scan_seed_means.csv"
+      ],
+      "axis_limits": [
+        0.0,
+        9.5
+      ],
+      "off_scale": [
+        {
+          "method": "QBS",
+          "x": 0.5,
+          "value": 57.0866700662598
+        },
+        {
+          "method": "QBS",
+          "x": 0.75,
+          "value": 36.669620419062674
+        },
+        {
+          "method": "QBS",
+          "x": 1.0,
+          "value": 25.69713238279716
+        },
+        {
+          "method": "QBS",
+          "x": 1.25,
+          "value": 19.37686460133219
+        },
+        {
+          "method": "QBS",
+          "x": 1.5,
+          "value": 15.239073613442905
+        },
+        {
+          "method": "Uniform",
+          "x": 0.5,
+          "value": 25.5177298304243
+        },
+        {
+          "method": "Uniform",
+          "x": 0.75,
+          "value": 16.46242344597506
+        },
+        {
+          "method": "Uniform",
+          "x": 1.0,
+          "value": 12.008456345660957
+        }
+      ]
+    },
+    {
+      "name": "sec5_100gu_resource_pre_backlog_20260925",
+      "pdf": "docs/paper_moreGUs/manuscript_overleaf/figures/sec5_100gu_resource_pre_backlog_20260925.pdf",
+      "pdf_sha256": "fa04904325e8ca8e70d190f72e07dc32ad1bb27773b7cd64e2c6cac3fe56bba1",
+      "status": "candidate",
+      "caption": "STARS, DQS and Lyapunov define the displayed y-range; QBS/Uniform may be off-scale. STARS error bars: descriptive SD of three independent training-seed means. Fixed policies: means of 64 paired screening episodes; no training-seed error bars. Resource scaling jointly changes access bandwidth, backhaul and CPU. D_sys is a queue-based proxy.",
+      "source_tables": [
+        "scan_seed_means.csv"
+      ],
+      "axis_limits": [
+        0.0,
+        8.75
+      ],
+      "off_scale": [
+        {
+          "method": "QBS",
+          "x": 0.5,
+          "value": 27.71039810259454
+        },
+        {
+          "method": "QBS",
+          "x": 0.75,
+          "value": 21.848506561239017
+        },
+        {
+          "method": "QBS",
+          "x": 1.0,
+          "value": 16.93187936968896
+        },
+        {
+          "method": "QBS",
+          "x": 1.25,
+          "value": 13.52570687092845
+        },
+        {
+          "method": "QBS",
+          "x": 1.5,
+          "value": 11.131902235210896
+        },
+        {
+          "method": "Uniform",
+          "x": 0.5,
+          "value": 13.2780984796877
+        },
+        {
+          "method": "Uniform",
+          "x": 0.75,
+          "value": 9.906721533289062
+        }
+      ]
+    },
+    {
+      "name": "sec5_100gu_resource_queue_workload_20260925",
+      "pdf": "docs/paper_moreGUs/manuscript_overleaf/figures/sec5_100gu_resource_queue_workload_20260925.pdf",
+      "pdf_sha256": "8e817b8214f90ec73e47df08aa5f77797bfd30d5d18d792d9cabd57a56d1af3a",
+      "status": "candidate",
+      "caption": "STARS, DQS and Lyapunov define the displayed y-range; QBS/Uniform may be off-scale. STARS error bars: descriptive SD of three independent training-seed means. Fixed policies: means of 64 paired screening episodes; no training-seed error bars. Resource scaling jointly changes access bandwidth, backhaul and CPU. D_sys is a queue-based proxy.",
+      "source_tables": [
+        "scan_seed_means.csv"
+      ],
+      "axis_limits": [
+        0.0,
+        350.0
+      ],
+      "off_scale": [
+        {
+          "method": "QBS",
+          "x": 0.5,
+          "value": 1128.9180004959376
+        },
+        {
+          "method": "QBS",
+          "x": 0.75,
+          "value": 873.964490881
+        },
+        {
+          "method": "QBS",
+          "x": 1.0,
+          "value": 677.27516678725
+        },
+        {
+          "method": "QBS",
+          "x": 1.25,
+          "value": 541.0282684715
+        },
+        {
+          "method": "QBS",
+          "x": 1.5,
+          "value": 445.27608430112497
+        },
+        {
+          "method": "Uniform",
+          "x": 0.5,
+          "value": 531.1345255379375
+        },
+        {
+          "method": "Uniform",
+          "x": 0.75,
+          "value": 396.26908917475
+        }
+      ]
+    },
+    {
+      "name": "sec5_100gu_training_reward_20260925",
+      "pdf": "docs/paper_moreGUs/manuscript_overleaf/figures/sec5_100gu_training_reward_20260925.pdf",
+      "pdf_sha256": "1e3713c23935a91714414c52839d9cd32b10b9ffabd1c19fef492ce1aa8c35ed",
+      "status": "candidate",
+      "caption": "32 fixed validation episodes per point; raw means without smoothing. Only seed 45211 resumes after u500 with reward early stopping disabled; not a fourth independent seed. Best-so-far is not a convergence claim; no selected/final comparison panel is exported.",
+      "source_tables": [
+        "training_curves.csv"
+      ]
+    },
+    {
+      "name": "sec5_100gu_training_best_so_far_reward_20260925",
+      "pdf": "docs/paper_moreGUs/manuscript_overleaf/figures/sec5_100gu_training_best_so_far_reward_20260925.pdf",
+      "pdf_sha256": "b6f92413643000efc5b4758f6e3963f34207c2ab4e6d9eada6bda1387101b7ac",
+      "status": "candidate",
+      "caption": "32 fixed validation episodes per point; raw means without smoothing. Only seed 45211 resumes after u500 with reward early stopping disabled; not a fourth independent seed. Best-so-far is not a convergence claim; no selected/final comparison panel is exported.",
+      "source_tables": [
+        "training_curves.csv"
+      ]
+    },
+    {
+      "name": "sec5_100gu_training_processed_ratio_20260925",
+      "pdf": "docs/paper_moreGUs/manuscript_overleaf/figures/sec5_100gu_training_processed_ratio_20260925.pdf",
+      "pdf_sha256": "0bde692e317b38417594601e44b44ba7187e65d66d0e12eacff35f8aa47aa321",
+      "status": "candidate",
+      "caption": "32 fixed validation episodes per point; raw means without smoothing. Only seed 45211 resumes after u500 with reward early stopping disabled; not a fourth independent seed. Best-so-far is not a convergence claim; no selected/final comparison panel is exported.",
+      "source_tables": [
+        "training_curves.csv"
+      ]
+    },
+    {
+      "name": "sec5_100gu_training_drop_ratio_20260925",
+      "pdf": "docs/paper_moreGUs/manuscript_overleaf/figures/sec5_100gu_training_drop_ratio_20260925.pdf",
+      "pdf_sha256": "78657c44178c4dbebaeb79d0cdd8a053bdb3c1e3e95f2800be5c70b327ce64fa",
+      "status": "candidate",
+      "caption": "32 fixed validation episodes per point; raw means without smoothing. Only seed 45211 resumes after u500 with reward early stopping disabled; not a fourth independent seed. Best-so-far is not a convergence claim; no selected/final comparison panel is exported.",
+      "source_tables": [
+        "training_curves.csv"
+      ]
+    },
+    {
+      "name": "sec5_100gu_training_delay_proxy_20260925",
+      "pdf": "docs/paper_moreGUs/manuscript_overleaf/figures/sec5_100gu_training_delay_proxy_20260925.pdf",
+      "pdf_sha256": "5603c7ef0ba2241f7833ed19e4041fe493753ab2fd65bd40f15724454a03cb1e",
+      "status": "candidate",
+      "caption": "32 fixed validation episodes per point; raw means without smoothing. Only seed 45211 resumes after u500 with reward early stopping disabled; not a fourth independent seed. Best-so-far is not a convergence claim; no selected/final comparison panel is exported.",
+      "source_tables": [
+        "training_curves.csv"
+      ]
+    },
+    {
+      "name": "sec5_100gu_training_pre_backlog_20260925",
+      "pdf": "docs/paper_moreGUs/manuscript_overleaf/figures/sec5_100gu_training_pre_backlog_20260925.pdf",
+      "pdf_sha256": "c01fc9ce6a8905a88afdbdd40ec603f95640e33a0045c647bb0379e765082040",
+      "status": "candidate",
+      "caption": "32 fixed validation episodes per point; raw means without smoothing. Only seed 45211 resumes after u500 with reward early stopping disabled; not a fourth independent seed. Best-so-far is not a convergence claim; no selected/final comparison panel is exported.",
+      "source_tables": [
+        "training_curves.csv"
+      ]
+    },
+    {
+      "name": "sec5_100gu_selected_queue_decomposition_20260925",
+      "pdf": "docs/paper_moreGUs/manuscript_overleaf/figures/sec5_100gu_selected_queue_decomposition_20260925.pdf",
+      "pdf_sha256": "ffa85f04982ffb4253b0f005d5559f6376727017131bfa2d17f0a96d23e7c454",
+      "status": "candidate",
+      "caption": "Selected STARS checkpoints only; 64 screening episodes per seed. Layer totals use 100 GU, 3 UAV and actual satellite counts. Zero SAT queues are omitted. No endpoint comparison.",
+      "source_tables": [
+        "selected_policy_means.csv"
+      ]
+    },
+    {
+      "name": "sec5_100gu_episode_trajectory_20260925",
+      "pdf": "docs/paper_moreGUs/manuscript_overleaf/figures/sec5_100gu_episode_trajectory_20260925.pdf",
+      "pdf_sha256": "a3a20dc207e3ca6c39587c5e74334a924ecf04e211e1cc8b8f203b72a8a1cfa9",
+      "status": "candidate",
+      "caption": "Illustrative one-env episode; paths t=0..249, post-step queue/reward t=1..250; not aggregate evidence; seed 61723/u700, episode 1980000. GU marker area increases with hotspot occupancy; circles=start, stars=last recorded position.",
+      "source_tables": [
+        "episode_paths.csv",
+        "episode_users.csv"
+      ]
+    },
+    {
+      "name": "sec5_100gu_episode_queues_20260925",
+      "pdf": "docs/paper_moreGUs/manuscript_overleaf/figures/sec5_100gu_episode_queues_20260925.pdf",
+      "pdf_sha256": "5f96151678ac0bbc102540d0a221caea5da76967a8782e82b0fb51684e6a2231",
+      "status": "candidate",
+      "caption": "Illustrative one-env episode; paths t=0..249, post-step queue/reward t=1..250; not aggregate evidence",
+      "source_tables": [
+        "episode_traces.csv"
+      ]
+    },
+    {
+      "name": "sec5_100gu_episode_reward_20260925",
+      "pdf": "docs/paper_moreGUs/manuscript_overleaf/figures/sec5_100gu_episode_reward_20260925.pdf",
+      "pdf_sha256": "49d8362ab3fe58f438db0f7d55c80f16e7cf5720665f718375eb8b967a778c1d",
+      "status": "candidate",
+      "caption": "Illustrative one-env episode; paths t=0..249, post-step queue/reward t=1..250; not aggregate evidence",
+      "source_tables": [
+        "episode_traces.csv"
+      ]
+    },
+    {
+      "name": "sec5_100gu_critic_ablation_training_review_20260925",
+      "pdf": "docs/paper_moreGUs/manuscript_overleaf/figures/sec5_100gu_critic_ablation_training_review_20260925.pdf",
+      "pdf_sha256": "1e077981413ecb19682225e3127dfbb8bb6e70eca878d218c9176285ef7b64ab",
+      "status": "pending_review",
+      "caption": "PENDING REVIEW: critic-only ablation. Thin lines are actual independent runs; thick means and SD bands require all 3 seeds at that update. No continuation, imputed tails or selected/final comparison. GC stops at u375; same stopping rule and cap 700, not equal executed updates. GC degradation and collisions are unresolved.",
+      "source_tables": [
+        "critic_curves.csv",
+        "critic_status.csv"
+      ]
+    },
+    {
+      "name": "sec5_100gu_critic_ablation_reward_review_20260925",
+      "pdf": "docs/paper_moreGUs/manuscript_overleaf/figures/sec5_100gu_critic_ablation_reward_review_20260925.pdf",
+      "pdf_sha256": "8fa48ad8bfb84ba99bef76f2957ab9b218c4bcbd02c92be550fa542b7fa88cfc",
+      "status": "pending_review",
+      "caption": "PENDING REVIEW: existing selected checkpoints; 64 paired screening episodes per training seed, 3 independent seeds per method. Bars=mean, error bars=training-seed SD, dots=seed means. The axis has a physical lower bound of zero; any negative SD extent is clipped. GC is a critic ablation, not an independent algorithm. Degradation/collision causes remain unresolved.",
+      "source_tables": [
+        "selected_policy_means.csv",
+        "critic_status.csv"
+      ]
+    },
+    {
+      "name": "sec5_100gu_critic_ablation_processed_ratio_review_20260925",
+      "pdf": "docs/paper_moreGUs/manuscript_overleaf/figures/sec5_100gu_critic_ablation_processed_ratio_review_20260925.pdf",
+      "pdf_sha256": "bca38d9f7eb95a843d0acb55971992932f4caf6e4aab5ac43ce40419854596c9",
+      "status": "pending_review",
+      "caption": "PENDING REVIEW: existing selected checkpoints; 64 paired screening episodes per training seed, 3 independent seeds per method. Bars=mean, error bars=training-seed SD, dots=seed means. The axis has a physical lower bound of zero; any negative SD extent is clipped. GC is a critic ablation, not an independent algorithm. Degradation/collision causes remain unresolved.",
+      "source_tables": [
+        "selected_policy_means.csv",
+        "critic_status.csv"
+      ]
+    },
+    {
+      "name": "sec5_100gu_critic_ablation_drop_ratio_review_20260925",
+      "pdf": "docs/paper_moreGUs/manuscript_overleaf/figures/sec5_100gu_critic_ablation_drop_ratio_review_20260925.pdf",
+      "pdf_sha256": "6f155030c4810232b3ea35671b33af49699ed06a2ab0dcaf6f86a102c0d86a23",
+      "status": "pending_review",
+      "caption": "PENDING REVIEW: existing selected checkpoints; 64 paired screening episodes per training seed, 3 independent seeds per method. Bars=mean, error bars=training-seed SD, dots=seed means. The axis has a physical lower bound of zero; any negative SD extent is clipped. GC is a critic ablation, not an independent algorithm. Degradation/collision causes remain unresolved.",
+      "source_tables": [
+        "selected_policy_means.csv",
+        "critic_status.csv"
+      ]
+    },
+    {
+      "name": "sec5_100gu_critic_ablation_delay_proxy_review_20260925",
+      "pdf": "docs/paper_moreGUs/manuscript_overleaf/figures/sec5_100gu_critic_ablation_delay_proxy_review_20260925.pdf",
+      "pdf_sha256": "b94ab0dad53a614c3943c40f42b977c8944405ffea5d44e5b8020c5ea1f7e9f8",
+      "status": "pending_review",
+      "caption": "PENDING REVIEW: existing selected checkpoints; 64 paired screening episodes per training seed, 3 independent seeds per method. Bars=mean, error bars=training-seed SD, dots=seed means. The axis has a physical lower bound of zero; any negative SD extent is clipped. GC is a critic ablation, not an independent algorithm. Degradation/collision causes remain unresolved.",
+      "source_tables": [
+        "selected_policy_means.csv",
+        "critic_status.csv"
+      ]
+    },
+    {
+      "name": "sec5_100gu_critic_ablation_collision_review_20260925",
+      "pdf": "docs/paper_moreGUs/manuscript_overleaf/figures/sec5_100gu_critic_ablation_collision_review_20260925.pdf",
+      "pdf_sha256": "cb7a4f746de475ac9faa6fcda88a7bb2490c1edc81b0a9e7c5b25c9a841ef829",
+      "status": "pending_review",
+      "caption": "PENDING REVIEW: existing selected checkpoints; 64 paired screening episodes per training seed, 3 independent seeds per method. Bars=mean, error bars=training-seed SD, dots=seed means. The axis has a physical lower bound of zero; any negative SD extent is clipped. GC is a critic ablation, not an independent algorithm. Degradation/collision causes remain unresolved.",
+      "source_tables": [
+        "selected_policy_means.csv",
+        "critic_status.csv"
+      ]
+    }
+  ],
+  "selected_final_comparison_exported": false,
+  "formats": [
+    "pdf"
+  ],
+  "preview_format": "png"
+}

@@ -54,9 +54,16 @@ figure copy.
 
 ## Current Figure Set / 当前图集
 
-当前稿件采用的 Sec.5 PDF 图位于 `docs/paper/manuscript_overleaf/figures/`：
+The current 100-GU assets and reproduction instructions are maintained in
+`docs/paper_moreGUs/README.md`. Its generators live in
+`docs/paper_moreGUs/reproduction/`; the existing Section5 style helper remains
+here as a shared dependency.
 
-The current Section 5 manuscript PDFs are under
+### Historical Section 5 / 历史 Sec.5
+
+历史 20 GU 场景的 Sec.5 PDF 图保留在 `docs/paper/manuscript_overleaf/figures/`：
+
+The historical 20-GU Section 5 manuscript PDFs remain under
 `docs/paper/manuscript_overleaf/figures/`:
 
 - `sec5_stars_raw_checkpoint_reward_20260714.pdf`

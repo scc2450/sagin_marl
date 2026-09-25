@@ -5,7 +5,7 @@ import pytest
 
 
 def module():
-    path = Path(__file__).resolve().parents[1] / "docs/paper/reproduction/generate_dqs_revision_figures.py"
+    path = Path(__file__).resolve().parents[1] / "docs/paper_moreGUs/reproduction/generate_dqs_revision_figures.py"
     spec = importlib.util.spec_from_file_location("dqs_revision_figures", path)
     loaded = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(loaded)
