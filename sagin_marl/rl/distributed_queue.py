@@ -195,3 +195,155 @@ def distributed_queue_action(obs, cfg, variant="c", settings=None):
                     "candidate_boundary_ok": boundary_ok, "selected": best,
                     "first_positions": trajectories[0],
                     "base_scores": base_score, "robust_first_clearance": robust_clear}
+
+
+def _geometry_gain(distance_sq, cfg):
+    """Public mean path loss, used only to extrapolate observed link quality."""
+    height = float(cfg.uav_height)
+    d = (distance_sq + height * height).sqrt().clamp_min(1)
+    elevation = (height / d).clamp(0, 1).asin() * (180 / math.pi)
+    los = 1 / (1 + float(cfg.los_a) * torch.exp(-float(cfg.los_b) * (elevation - float(cfg.los_a))))
+    excess = (torch.full_like(los, float(cfg.xi_los)) if cfg.pathloss_mode == "free_space"
+              else los * float(cfg.xi_los) + (1 - los) * float(cfg.xi_nlos))
+    return torch.pow(10.0, -excess / 10) / d.square()
+
+
+def _predicted_access_service(queue, snr, owners, previous_owners, valid, cfg, available=None):
+    """Local forecast of the actual queue-aware allocator and inter-cell reuse.
+
+    Receiver zero is ego. Other receivers are forecasts from this row's peer
+    observations, not their private states, decisions, or future observations.
+    """
+    receiver = torch.arange(snr.shape[-1], device=snr.device)
+    membership = (owners[..., None] == receiver) & valid[:, None, :, None]
+    weight = queue[..., None] * (0.5 + torch.log2(1 + snr))
+    weight *= 1 + float(cfg.baseline_assoc_bonus) * (previous_owners[..., None] == receiver)
+    weight = weight * membership
+    total = weight.sum(-2, keepdim=True)
+    uniform = membership / membership.sum(-2, keepdim=True).clamp_min(1)
+    allocation = torch.where(total > 1e-9, weight / total.clamp_min(1e-9), uniform)
+    band = allocation.sum(-1)
+    interference = (snr * band[..., None] * (~membership)).sum(-2)
+    if not bool(cfg.interference_enabled):
+        interference = torch.zeros_like(interference)
+    beta = allocation.clamp_min(1e-12)
+    se = torch.log2(1 + snr / (beta * (1 + interference[..., None, :])))
+    capacity = (allocation * float(cfg.b_acc) * se * float(cfg.tau0)).sum(-1)
+    return torch.minimum(queue if available is None else available, capacity), allocation
+
+
+@torch.no_grad()
+def service_consistent_queue_action(obs, cfg, variant="c", settings=None):
+    """Experimental observation-only receding-horizon access controller.
+
+    The fixed-policy execution interface remains unchanged. Forecasts update
+    ownership, queue-aware bandwidth, inter-cell interference, queues and drops
+    together; only the first ego acceleration is executed.
+    """
+    settings = settings_from_config(cfg) if settings is None else settings
+    if variant not in {"a", "b", "c"} or settings.horizon_steps < 1:
+        raise ValueError("Invalid distributed queue variant or prediction horizon")
+    ego, valid = obs.ego_features, obs.gu_mask
+    gu = torch.where(valid[..., None], obs.gu_tokens, 0.0)
+    peer = torch.where(obs.peer_mask[..., None], obs.peer_tokens, 0.0)
+    dt, vmax, amax = float(cfg.tau0), float(cfg.v_max), float(cfg.a_max)
+    size = float(cfg.map_size)
+    pos, vel = ego[:, :2] * size, ego[:, 2:4] * vmax
+    gu_pos = pos[:, None] + gu[..., 12:14] * size
+    peer_pos = pos[:, None] - peer[..., :2] * size
+    peer_vel = vel[:, None] - peer[..., 2:4] * vmax
+    level = int(cfg.traffic_level)
+    ratio = (cfg.traffic_level_nav_ratio if level <= 0 else
+             cfg.traffic_level_easy_ratio if level == 1 else cfg.traffic_level_hard_ratio)
+    flow = float(cfg.task_arrival_rate) * float(ratio) * dt
+    queue = gu[..., 3].clamp_min(0) * float(cfg.queue_max_gu) * valid
+    arrival = gu[..., 4].clamp(0, 20).expm1() * flow * valid
+    demand = queue + settings.horizon_steps * arrival
+    own_dist = (gu_pos - pos[:, None]).norm(dim=-1)
+    peer_dist = (gu_pos[:, :, None] - peer_pos[:, None]).norm(dim=-1)
+    peer_dist = peer_dist.masked_fill(~obs.peer_mask[:, None], float("inf"))
+    nearest_peer = peer_dist.amin(-1) if peer.shape[1] else torch.full_like(own_dist, float("inf"))
+    responsibility = ((nearest_peer - own_dist) / max(float(cfg.uav_height), 1)).sigmoid()
+    weights = torch.stack((demand * responsibility,
+                           demand * (own_dist <= nearest_peer)), 1)
+    targets = (weights[..., None] * gu_pos[:, None]).sum(-2) / weights.sum(-1, keepdim=True).clamp_min(1)
+    targets = torch.where(weights.sum(-1, keepdim=True) > 0, targets, pos[:, None])
+    angles = torch.arange(8, device=ego.device, dtype=ego.dtype) * (math.pi / 4)
+    dirs = torch.stack((angles.cos(), angles.sin()), -1)
+    fixed = torch.cat((dirs * 0.5, dirs, dirs[:1] * 0), 0)
+
+    def target_velocity(p):
+        error = targets - p
+        dist = error.norm(dim=-1, keepdim=True)
+        speed = float(cfg.uav_opt_speed) * (dist / 120).clamp_max(1)
+        return torch.where(dist > 5, error / dist.clamp_min(1e-6) * speed, 0.0)
+
+    directed = (target_velocity(pos[:, None]) - vel[:, None]) / (amax * dt)
+    directed /= directed.norm(dim=-1, keepdim=True).clamp_min(1)
+    brake = -vel / (amax * dt)
+    brake /= brake.norm(dim=-1, keepdim=True).clamp_min(1)
+    actions = torch.cat((fixed[None].expand(ego.shape[0], -1, -1), directed, brake[:, None]), 1)
+    desired = vel[:, None] + actions * (amax * dt)
+    desired *= vmax / desired.norm(dim=-1, keepdim=True).clamp_min(vmax)
+    desired[:, -1] = 0
+    p = pos[:, None].expand_as(desired).clone()
+    v = vel[:, None].expand_as(desired).clone()
+    q = queue[:, None].expand(-1, actions.shape[1], -1).clone()
+    current_receivers = torch.cat((pos[:, None], peer_pos), 1)
+    receiver_mask = torch.cat((torch.ones_like(valid[:, :1]), obs.peer_mask), -1)
+    initial_d2 = (gu_pos[:, :, None] - current_receivers[:, None]).square().sum(-1)
+    initial_d2 = initial_d2.masked_fill(~receiver_mask[:, None], float("inf"))
+    prev = initial_d2.argmin(-1)[:, None].expand_as(q)
+    anchor = _geometry_gain(initial_d2[..., 0], cfg).clamp_min(1e-20)
+    # This is an effective-SNR approximation to observed ergodic SE, not an
+    # exact inversion of the Rician expectation or an oracle channel query.
+    observed_snr = torch.exp2(gu[..., 15].clamp(0, 30)) - 1
+    trajectories, predictions = [], []
+    boundary_ok = torch.ones_like(actions[..., 0], dtype=torch.bool)
+    backlog = torch.zeros_like(actions[..., 0])
+    drops = torch.zeros_like(backlog)
+    travel = torch.zeros_like(backlog)
+    for step in range(settings.horizon_steps):
+        desired[:, 17:19] = target_velocity(p[:, 17:19])
+        accel = (desired - v) / (amax * dt)
+        accel /= accel.norm(dim=-1, keepdim=True).clamp_min(1)
+        v = v + accel * (amax * dt)
+        v *= vmax / v.norm(dim=-1, keepdim=True).clamp_min(vmax)
+        p = p + v * dt
+        travel += v.norm(dim=-1) * dt
+        trajectories.append(p)
+        boundary_ok &= ((p >= 0) & (p <= size)).all(-1)
+        predicted_peer = (peer_pos + peer_vel * ((step + 1) * dt)).clamp(0, size)
+        receivers = torch.cat((p[:, :, None], predicted_peer[:, None].expand(-1, p.shape[1], -1, -1)), 2)
+        d2 = (gu_pos[:, None, :, None] - receivers[:, :, None]).square().sum(-1)
+        d2 = d2.masked_fill(~receiver_mask[:, None, None], float("inf"))
+        owners = d2.argmin(-1)
+        snr = _geometry_gain(d2, cfg) / anchor[:, None, :, None] * observed_snr[:, None, :, None]
+        # Allocation uses the pre-arrival queues; service includes new arrivals.
+        # Overflow is assessed after service in the native queue update.
+        available = q + arrival[:, None]
+        served, _ = _predicted_access_service(q, snr, owners, prev, valid, cfg, available)
+        remaining = available - served
+        drops += (remaining - float(cfg.queue_max_gu)).clamp_min(0).sum(-1)
+        q = remaining.clamp_max(float(cfg.queue_max_gu))
+        backlog += q.sum(-1)
+        predictions.append(served.sum(-1))
+        prev = owners
+    scale = demand.sum(-1, keepdim=True).clamp_min(1)
+    base = -(backlog / settings.horizon_steps + 2 * drops) / scale
+    base -= settings.movement_weight * travel / (vmax * dt * settings.horizon_steps)
+    base -= settings.switch_weight * (actions - ego[:, None, 20:22]).square().sum(-1)
+    # Prefer braking when service forecasts are equal, without rewarding motion.
+    base -= 1e-5 * v.square().sum(-1) / (vmax * vmax)
+    score, allowed, fallback, clear = _risk_adjustment(
+        obs, cfg, actions, trajectories, base, boundary_ok, settings) if variant == "c" else (
+            base, boundary_ok, None, torch.full_like(base, float("inf")))
+    has_allowed = allowed.any(-1)
+    best = score.masked_fill(~allowed, -float("inf")).argmax(-1)
+    fallback = torch.full_like(best, actions.shape[1] - 1) if fallback is None else fallback
+    best = torch.where(has_allowed, best, fallback)
+    chosen = actions[torch.arange(actions.shape[0], device=ego.device), best]
+    return chosen, dict(candidate_actions=actions, candidate_scores=score, base_scores=base,
+        candidate_allowed=allowed, candidate_boundary_ok=boundary_ok, selected=best,
+        fallback=~has_allowed, first_positions=trajectories[0], robust_first_clearance=clear,
+        predicted_service=torch.stack(predictions).mean(0), score=score.gather(1, best[:, None]).squeeze(1))
