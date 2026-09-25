@@ -865,3 +865,102 @@ at recovery launch was98primary batches plus84final diagnostics. Primary figures
 still require all196primary batches; do not publish a partial matrix. GPU1GC
 training was left untouched. Local regression checks:29passed; Friday config/
 baseline checks:17passed. No runtime dependencies were installed or modified.
+
+### Scan Recovery And Evidence Review (2026-09-25)
+
+The bandwidth-alias fix is present in both working copies and Friday/GitHub
+commit `717b93d` (implementation `fcc0e02`). All42generated configs round-trip
+through the real loader before execution. The legacy loader precedence itself
+is unchanged; no historical training config or checkpoint was edited. Fresh
+regression checks:77passed/1CUDA-only skipped locally and19passed on Friday.
+
+The first recovery completed196primary batches and12final batches, then stopped
+with SIGSEGV (`-11`) while importing PyTorch `hipify_python` during CUDA-extension
+loading. The failed job was `load_1/stars/seed45211_final/seedbase1980000`; only
+its failure log exists, not an accepted result. An isolated, identical-command
+diagnostic rerun completed32episodes in12.45s without changing the environment
+or dependencies. This is not proof that the intermittent process fault is fixed.
+The diagnostic is under
+`runs/experiments/more_gus_scans/diagnostics/final_import_segfault_20260925/` and
+is not included in the comparison matrix.
+
+The next isolated campaign is
+`runs/experiments/more_gus_scans/stars_dqs_no_gc_k1_20260925_final_recovery/`.
+It uses frozen source717b93d and imports208completed batches with artifact hashes;
+its archived executable/plotting source is byte-identical to the previous
+recovery. The incomplete output was excluded, and the72remaining batches ran
+onGPU0 (PID2621452) without another interruption. The campaign completed all
+280batches/8960episode records at14:51:36+0800 on2026-09-25. Both predecessors
+remain unchanged. Primary figures and final-checkpoint diagnostics are complete.
+No checkpoint reselection, seed replacement, algorithm retuning or new package
+installation is involved.
+
+The load and resource overviews are in that campaign's `figures/png/` and
+`figures/pdf/`, with `means.csv`, `per_training_seed.csv`, `training_seed_sd.csv`
+and hash-recorded `provenance.json`. These are new100GU/K1 figures, not replacements
+for historical20GU manuscript figures. Primary screening results include:
+
+| Point | STARS processed | MaxWeight/Lyapunov processed | STARS drop | MaxWeight/Lyapunov drop |
+| --- | ---: | ---: | ---: | ---: |
+| Load80Mbit/s | 88.65% | 84.58% | 4.64% | 8.83% |
+| Joint resources0.5x | 95.89% | 93.70% | 2.68% | 2.38% |
+
+Do not claim uniform dominance: the lowest-resource point has slightly higher
+STARS drop despite better mean processing and delay. DQS is retained even where
+its result is unfavorable. All6272primary episodes have zero observed collision
+flags, which is finite-sample evidence, not a safety guarantee. Resource scaling
+is joint access/backhaul/CPU, not an isolated access-bandwidth experiment.
+Final verification covers all8960records: every episode ran250steps, no duplicate
+episode identities were found, paired exogenous arrival totals match exactly,
+all280aggregate batches match their raw job metrics, all208imported batches
+retain their recorded artifact hashes, and all42config hashes/loader round-trips
+pass. There were zero observed collision flags in both primary and final scans.
+`verification.json` records this audit. There are16PNG/PDF figure pairs, including
+both selected/final overviews; their provenance hashes match the completed data.
+At nominal load, STARS selected/final mean reward is181.451/145.495 while mean
+processed is99.953%/99.910%. Do not hide the final-return degradation merely
+because the processing ratios are close. The scans do not establish its cause.
+
+#### GC Completion And Open Questions
+
+All three GC children completed normally at update375 by the configured reward
+plateau rule (hard cap700, minimum stopping update300). Each selected and final
+entry below uses64screening episodes; GC remains excluded from the current scans.
+
+| Seed | Selected update | Selected reward | Final reward | Selected processed | Final processed | Selected/final collision episodes |
+| --- | ---: | ---: | ---: | ---: | ---: | --- |
+| 45211 | 50 | 31.322 | 21.511 | 84.41% | 29.59% | 2/64;6/64 |
+| 45210 | 25 | 34.392 | 25.970 | 84.02% | 58.36% | 0/64;5/64 |
+| 61723 | 75 | 34.460 | 24.217 | 84.97% | 33.18% | 0/64;0/64 |
+
+The effective-config difference is limited to `critic_value_mode` and training
+seed. Actor updates are not universally disabled: each stage has nonzero logged
+KL for369/372/370of375updates in seeds45211/45210/61723, respectively; the critic
+EV gate skipped only6/3/5updates. This rules out a permanently closed EV gate as
+the explanation, but does not identify the cause of the degradation. Inspect
+critic targets, advantage quality, bandwidth updates and safety trajectories
+before changing the training protocol. Preserve these runs as controls.
+
+`Selected` follows the existing collision-prioritized, backlog-aware checkpoint
+rule in `structured_eval.py`; it does not mean maximum validation reward.
+Reward-plateau stopping and model selection are distinct rules. The lower-reward
+GC selected checkpoints must not be silently replaced using scan/test outcomes.
+
+Remaining work: diagnose the native-extension startup fault and GC degradation/
+collision cases separately; retain selected/final diagnostics; freeze definitions
+before a fresh held-out seed set. Current1980000/1981000seeds have already been
+used for screening and cannot be presented as an untouched final test. The old
+inactive configuration fields and their known legacy test failures remain out
+of scope. These scans compare STARS with fixed schedulers; GC is a critic-only
+ablation, not a substitute for an independent learned baseline in the100GU
+setting. Any broader learned-method superiority claim needs that separate
+matched-scenario evidence.
+
+In figure captions, define `D_sys_report` as a queue-based delay proxy:
+the native evaluator computes total queued work divided by that slot's satellite
+processed work, then averages the metric over the episode. It is not measured
+per-task end-to-end latency and must not be labeled as such or assigned seconds
+without the slot-duration conversion and its assumptions.
+
+Local executable files match Friday/GitHub, but localHEAD remains
+0a9e72b; file synchronization is not a completed local Git fast-forward.
