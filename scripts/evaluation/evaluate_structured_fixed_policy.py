@@ -14,7 +14,7 @@ if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
 from sagin_marl.env.config import load_config
-from sagin_marl.rl.distributed_queue import settings_from_config
+from sagin_marl.rl.distributed_queue import DQS_REVISION, settings_from_config
 import torch
 
 from sagin_marl.rl.structured_eval import (
@@ -143,6 +143,7 @@ def main() -> None:
 
     metadata = {
         "baseline": args.baseline_policy,
+        "dqs_revision": DQS_REVISION if args.baseline_policy == "distributed_queue_c" else None,
         "config_path": str(Path(args.config).resolve()),
         "input_config_sha256": hashlib.sha256(Path(args.config).read_bytes()).hexdigest(),
         "effective_config": asdict(cfg),

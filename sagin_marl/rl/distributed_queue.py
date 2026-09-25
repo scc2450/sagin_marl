@@ -9,6 +9,8 @@ from dataclasses import dataclass
 import math
 import torch
 
+DQS_REVISION = "service-forecast-pressure-v1"
+
 
 @dataclass(frozen=True)
 class DQSettings:
@@ -86,7 +88,7 @@ def _risk_adjustment(obs, cfg, actions, trajectories, base_score, boundary_ok, s
 
 
 @torch.no_grad()
-def distributed_queue_action(obs, cfg, variant="c", settings=None):
+def legacy_distributed_queue_action(obs, cfg, variant="c", settings=None):
     if settings is None:
         settings = settings_from_config(cfg)
     if variant not in {"a", "b", "c"}:
@@ -197,6 +199,16 @@ def distributed_queue_action(obs, cfg, variant="c", settings=None):
                     "base_scores": base_score, "robust_first_clearance": robust_clear}
 
 
+def distributed_queue_action(obs, cfg, variant="c", settings=None):
+    """Current DQS motion; A/B remain historical diagnostic variants.
+
+    The fixed-policy evaluator pairs C with native pressure-based SAT/BW rules.
+    Historical C is available explicitly for paired controls and frozen runs.
+    """
+    controller = service_consistent_queue_action if variant == "c" else legacy_distributed_queue_action
+    return controller(obs, cfg, variant, settings)
+
+
 def _geometry_gain(distance_sq, cfg):
     """Public mean path loss, used only to extrapolate observed link quality."""
     height = float(cfg.uav_height)
@@ -234,11 +246,13 @@ def _predicted_access_service(queue, snr, owners, previous_owners, valid, cfg, a
 
 @torch.no_grad()
 def service_consistent_queue_action(obs, cfg, variant="c", settings=None):
-    """Experimental observation-only receding-horizon access controller.
+    """Observation-only receding-horizon access controller.
 
     The fixed-policy execution interface remains unchanged. Forecasts update
-    ownership, queue-aware bandwidth, inter-cell interference, queues and drops
-    together; only the first ego acceleration is executed.
+    ownership, a queue-aware bandwidth surrogate, interference, queues and drops
+    together; only the first ego acceleration is executed. The pressure-based
+    execution allocator is not identical to this surrogate (e.g. no association
+    bonus); neither exact rate prediction nor model-predictive optimality is claimed.
     """
     settings = settings_from_config(cfg) if settings is None else settings
     if variant not in {"a", "b", "c"} or settings.horizon_steps < 1:

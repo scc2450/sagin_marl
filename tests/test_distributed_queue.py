@@ -2,7 +2,9 @@ from types import SimpleNamespace
 import pytest
 import torch
 from sagin_marl.env.config import SaginConfig
-from sagin_marl.rl.distributed_queue import DQSettings, distributed_queue_action
+from sagin_marl.rl.distributed_queue import (
+    DQSettings, legacy_distributed_queue_action as distributed_queue_action,
+)
 
 
 def fixture(device="cpu"):

@@ -4,7 +4,7 @@ import pytest
 import torch
 
 from sagin_marl.rl.distributed_queue import (
-    DQSettings, _predicted_access_service, service_consistent_queue_action,
+    DQSettings, _predicted_access_service, service_consistent_queue_action, distributed_queue_action,
 )
 from tests.test_distributed_queue import fixture
 
@@ -64,6 +64,31 @@ def test_service_planner_brakes_with_no_demand():
     action, _ = service_consistent_queue_action(obs, cfg, settings=DQSettings(movement_weight=0, switch_weight=0))
     assert (action[:, 0] < 0).all()
     torch.testing.assert_close(action[:, 1], torch.zeros(2))
+
+
+def test_current_dqs_uses_forecast_and_pressure_resources():
+    from sagin_marl.rl.structured_eval import _fixed_policy_exec_sources
+    from sagin_marl.rl.distributed_queue import DQS_REVISION
+    cfg, obs = fixture()
+    cfg.b_acc = 1e5
+    actual, _ = distributed_queue_action(obs, cfg)
+    expected, _ = service_consistent_queue_action(obs, cfg)
+    torch.testing.assert_close(actual, expected, atol=0, rtol=0)
+    assert _fixed_policy_exec_sources("distributed_queue_c") == ("distributed_queue_c", "lyapunov", "lyapunov")
+    assert DQS_REVISION == "service-forecast-pressure-v1"
+
+
+@pytest.mark.parametrize("distance,speed,relative_speed", [(70, 10, 20), (23, 0, 0)])
+def test_current_dqs_respects_robust_first_step_screen(distance, speed, relative_speed):
+    cfg, obs = fixture()
+    obs.ego_features[:, 2] = speed / cfg.v_max
+    obs.peer_mask[:, 0] = True
+    obs.peer_tokens[:, 0, 0] = -distance / cfg.map_size
+    obs.peer_tokens[:, 0, 2] = relative_speed / cfg.v_max
+    _, diag = distributed_queue_action(obs, cfg)
+    assert (~diag["fallback"]).all()
+    chosen = diag["robust_first_clearance"].gather(1, diag["selected"][:, None])
+    assert (chosen >= cfg.d_safe).all()
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")

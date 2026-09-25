@@ -31,6 +31,7 @@ VARIANTS = {
     "pressure_resource": ("distributed_queue_c", "lyapunov", "lyapunov"),
     "forecast": ("distributed_queue_c", "queue_aware", "queue_aware"),
     "forecast_pressure": ("distributed_queue_c", "lyapunov", "lyapunov"),
+    "production": ("distributed_queue_c", "lyapunov", "lyapunov"),
 }
 POINTS = {"nominal": ("nominal", 1.), "load2": ("load", 2.), "resource05": ("resource", .5)}
 
@@ -45,12 +46,15 @@ def worker(args):
     from scripts.evaluation import evaluate_structured_fixed_policy as dedicated
     sources = VARIANTS[args.variant]
     evaluation._FIXED_POLICY_EXEC_SOURCE_MAP["distributed_queue_c"] = sources
-    settings = dq.DQSettings(movement_weight=0, switch_weight=0, horizon_steps=args.horizon)
+    settings = dq.DQSettings(movement_weight=0, switch_weight=0,
+                            horizon_steps=args.horizon if args.variant.startswith("forecast") else 5)
     if args.variant.startswith("forecast"):
         def action(obs, cfg, variant="c", settings=None):
             effective = replace(dq.settings_from_config(cfg), horizon_steps=args.horizon)
             return dq.service_consistent_queue_action(obs, cfg, variant, effective)
         dq.distributed_queue_action = action
+    elif args.variant != "production":
+        dq.distributed_queue_action = dq.legacy_distributed_queue_action
     dest = Path(args.output)
     dest.mkdir(parents=True, exist_ok=True)
     write_json(dest / "candidate.json", dict(
@@ -65,6 +69,12 @@ def worker(args):
         "--dq_movement_weight", "0", "--dq_switch_weight", "0",
         "--out", str(dest / "episodes.csv"), "--summary_out", str(dest / "summary.json")]
     dedicated.main()
+    metadata_path = dest / "episodes.metadata.json"
+    metadata = json.loads(metadata_path.read_text())
+    metadata["dqs_revision"] = (dq.DQS_REVISION if args.variant in {"production", "forecast_pressure"}
+                                else "development:" + args.variant)
+    metadata["dq_settings"] = asdict(settings)
+    write_json(metadata_path, metadata)
 
 
 def campaign(args):
